@@ -1,0 +1,854 @@
+:root {
+  --plaster: #f3efe7;
+  --paper: #fbf9f5;
+  --well: #e8e2d6;
+  --hairline: #dcd5c8;
+  --ink: #1e2a36;
+  --muted: #56606b;
+  --construction: #8e98a3;
+  --brass: #8c5e1c;
+  --brass-light: #eadbbe;
+  --signal: #2f5bea;
+  --signal-light: #dce4fc;
+  --font-title: 'Newsreader', Georgia, serif;
+  --font-ui: 'Bricolage Grotesque', 'Helvetica Neue', system-ui, sans-serif;
+  --font-mono: 'JetBrains Mono', ui-monospace, monospace;
+}
+
+* {
+  box-sizing: border-box;
+}
+
+html,
+body {
+  height: 100%;
+  margin: 0;
+  background: var(--plaster);
+  color: var(--ink);
+  font-family: var(--font-ui);
+  overscroll-behavior: none;
+  -webkit-tap-highlight-color: transparent;
+  /* Phase 1.1 item 2: belt-and-suspenders against iOS Safari's native pinch/double-tap-zoom —
+     Safari ignores the viewport meta's user-scalable=no for accessibility, so touch-action is
+     the reliable stop. Set broadly so no two-finger gesture is ever handed to the browser
+     regardless of exactly which chrome element the fingers land on. */
+  touch-action: none;
+  -webkit-user-select: none;
+  user-select: none;
+  -webkit-touch-callout: none;
+}
+
+#app {
+  height: 100dvh;
+  width: 100vw;
+  overflow: hidden;
+  touch-action: none;
+}
+
+.app-shell {
+  position: relative;
+  height: 100%;
+  width: 100%;
+  display: flex;
+  flex-direction: column;
+  background: var(--plaster);
+}
+
+/* ---- top bar ---- */
+
+.topbar {
+  flex: 0 0 auto;
+  height: 52px;
+  padding-top: env(safe-area-inset-top, 0px);
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding-left: 6px;
+  padding-right: 6px;
+  position: relative;
+  z-index: 5;
+}
+
+.icon-btn {
+  border: none;
+  background: transparent;
+  padding: 0;
+  margin: 0;
+  cursor: pointer;
+  width: 44px;
+  height: 44px;
+  min-width: 44px;
+  min-height: 44px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  color: var(--ink);
+  border-radius: 12px;
+}
+.icon-btn:active {
+  background: var(--well);
+}
+.icon-btn:disabled {
+  opacity: 0.35;
+  cursor: default;
+}
+
+.topbar-side {
+  display: flex;
+  align-items: center;
+  gap: 0;
+  flex: 1 0 44px;
+}
+.topbar-side.right {
+  justify-content: flex-end;
+}
+
+/* Phase 3.5 item 5: Point Targets, redesigned down to plain icon-btn weight — visually aligned
+ * with menu/eye/export, not a large dark pill competing with Construct/Repeat. The icon itself
+ * (a node + a lock badge, open/closed with Free-on-curve) carries the state; `.free-on` adds one
+ * small, quiet dot only for the less-common case (Free allowed) — the top bar stays calm
+ * otherwise, with no badge at all in the default Free-off state. */
+.point-targets-btn {
+  position: relative;
+  margin-left: 2px;
+}
+.point-targets-btn.free-on::after {
+  content: '';
+  position: absolute;
+  top: 7px;
+  right: 7px;
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: var(--ink);
+  box-shadow: 0 0 0 1.5px var(--paper);
+}
+
+.segmented {
+  display: flex;
+  gap: 2px;
+  padding: 2px;
+  background: var(--well);
+  border-radius: 10px;
+  flex: 0 0 auto;
+}
+.segmented button {
+  border: none;
+  cursor: pointer;
+  width: 96px;
+  height: 32px;
+  border-radius: 8px;
+  font-size: 14px;
+  letter-spacing: 0.01em;
+  font-family: var(--font-ui);
+  background: transparent;
+  color: var(--muted);
+  font-weight: 500;
+}
+.segmented button.active {
+  background: var(--paper);
+  color: var(--ink);
+  font-weight: 600;
+  box-shadow: 0 1px 2px rgba(30, 42, 54, 0.12);
+}
+.segmented button:disabled:not(.active) {
+  opacity: 0.4;
+  cursor: not-allowed;
+}
+
+/* ---- canvas ---- */
+
+.canvas-wrap {
+  flex: 1 1 auto;
+  position: relative;
+  min-height: 0;
+}
+
+canvas.stage {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  display: block;
+  touch-action: none;
+}
+
+.canvas-overlay-bottom {
+  position: absolute;
+  left: 0;
+  right: 0;
+  bottom: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  padding: 0 8px calc(env(safe-area-inset-bottom, 0px) + 10px);
+  pointer-events: none;
+}
+.canvas-overlay-bottom > * {
+  pointer-events: auto;
+}
+
+.util-row {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+}
+
+.undo-redo-pill {
+  display: flex;
+  background: var(--paper);
+  border: 1px solid var(--hairline);
+  border-radius: 14px;
+  box-shadow: 0 4px 12px rgba(30, 42, 54, 0.06);
+}
+.undo-redo-pill button {
+  border: none;
+  background: transparent;
+  cursor: pointer;
+  width: 48px;
+  height: 46px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  color: var(--ink);
+}
+.undo-redo-pill button:disabled {
+  opacity: 0.35;
+  cursor: default;
+}
+.undo-redo-pill .divider {
+  width: 1px;
+  background: var(--hairline);
+  margin: 10px 0;
+}
+
+.fit-btn {
+  border: 1px solid var(--hairline);
+  cursor: pointer;
+  width: 48px;
+  height: 48px;
+  border-radius: 14px;
+  background: var(--paper);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  color: var(--ink);
+  box-shadow: 0 4px 12px rgba(30, 42, 54, 0.06);
+}
+
+/* Phase 3.4 item 3: Extend and Promote-to-Fair can both show at once after a fresh Construction
+ * line — a row so they sit side by side instead of stacking or overlapping. */
+.quick-actions-row {
+  display: flex;
+  align-self: flex-start;
+  gap: 8px;
+}
+
+/* Phase 3.7 item 4: Select's own compact targeting filter — a small pill row, not a permanent
+ * toolbar, shown only while Select is the active tool (see shell.ts's update()). */
+.select-filter-row {
+  display: flex;
+  align-self: flex-start;
+}
+
+/* Phase 5: Repeat's compact control panel — family, orientation rule, Guide toggle, and the
+ * live contact/rotation status line. Stacks as its own small column, replacing the Construct
+ * dock/context-bar while the Repeat workspace is active. */
+.repeat-panel {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 8px;
+}
+.repeat-status {
+  background: var(--ink);
+  color: var(--paper);
+  font-size: 12.5px;
+  font-weight: 600;
+  padding: 6px 12px;
+  border-radius: 10px;
+  box-shadow: 0 4px 12px rgba(30, 42, 54, 0.16);
+}
+.repeat-status.hidden {
+  display: none;
+}
+.repeat-panel .chip {
+  background: var(--well);
+  color: var(--ink);
+  border: none;
+  cursor: pointer;
+  padding: 0 14px;
+  height: 36px;
+  border-radius: 11px;
+  font-size: 12.5px;
+  font-weight: 500;
+}
+.repeat-panel .chip.active {
+  background: var(--ink);
+  color: var(--paper);
+  font-weight: 600;
+}
+
+.extend-chip {
+  align-self: flex-start;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  background: var(--ink);
+  color: var(--paper);
+  border: none;
+  border-radius: 12px;
+  height: 40px;
+  padding: 0 14px;
+  font-size: 13px;
+  font-weight: 600;
+  cursor: pointer;
+  box-shadow: 0 6px 18px rgba(30, 42, 54, 0.16);
+}
+
+.context-bar {
+  min-height: 56px;
+  padding: 0 8px 0 14px;
+  background: var(--paper);
+  border: 1px solid var(--hairline);
+  border-radius: 16px;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  box-shadow: 0 6px 18px rgba(30, 42, 54, 0.08);
+  overflow-x: auto;
+  /* Allow the single-finger horizontal scroll fallback (label truncation) but never a
+     multi-finger gesture, so a pinch that happens to touch this bar still reaches the canvas. */
+  touch-action: pan-x;
+}
+/* Phase 3.2 item 5: a plain, noninteractive status readout ("A → B", "Centre → Radius") in
+ * place of the old two anonymous progress dots. */
+.context-bar .step-badge {
+  font-size: 11px;
+  font-weight: 600;
+  color: var(--muted);
+  background: var(--well);
+  padding: 0 9px;
+  height: 26px;
+  display: flex;
+  align-items: center;
+  border-radius: 8px;
+  flex-shrink: 0;
+  white-space: nowrap;
+  letter-spacing: 0.01em;
+}
+.context-bar .label {
+  display: flex;
+  flex-direction: column;
+  min-width: max-content;
+  flex-grow: 1;
+  flex-shrink: 0;
+}
+.context-bar .label .title {
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--ink);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.context-bar .label .hint {
+  font-size: 12px;
+  color: var(--muted);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.context-bar .chip {
+  background: var(--well);
+  color: var(--ink);
+  border: none;
+  cursor: pointer;
+  padding: 0 12px;
+  height: 40px;
+  border-radius: 12px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 5px;
+  font-size: 13px;
+  font-weight: 500;
+  flex-shrink: 0;
+  white-space: nowrap;
+}
+.context-bar .chip.icon-only {
+  width: 40px;
+  padding: 0;
+}
+.context-bar.hidden {
+  visibility: hidden;
+}
+/* Phase 3.5 item 3: a derived point's explanation in place of a misleading disabled Delete
+ * button — plain text, not a chip, since there's no action to take here. */
+.context-bar .point-derived-note {
+  font-size: 12.5px;
+  color: var(--muted);
+  margin: 0;
+  padding: 0 2px;
+  flex-shrink: 1;
+  min-width: 0;
+}
+
+.dock {
+  min-height: 64px;
+  padding: 0 4px;
+  background: var(--paper);
+  border: 1px solid var(--hairline);
+  border-radius: 20px;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  box-shadow: 0 6px 18px rgba(30, 42, 54, 0.08);
+}
+.dock button {
+  border: none;
+  background: transparent;
+  cursor: pointer;
+  color: var(--ink);
+  width: 50px;
+  height: 54px;
+  border-radius: 13px;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 3px;
+  position: relative;
+}
+.dock button .label {
+  font-size: 10.5px;
+  font-weight: 500;
+  color: var(--muted);
+  letter-spacing: 0.02em;
+}
+.dock button.active {
+  background: var(--ink);
+  color: var(--paper);
+}
+.dock button.active .label {
+  color: var(--paper);
+}
+.dock button:disabled {
+  opacity: 0.3;
+}
+.dock button.pending-ring::after {
+  content: '';
+  position: absolute;
+  inset: 2px;
+  border-radius: 11px;
+  box-shadow: 0 0 0 2px var(--brass);
+  pointer-events: none;
+}
+.dock .divider {
+  width: 1px;
+  height: 36px;
+  background: var(--hairline);
+}
+
+/* ---- start sheet ---- */
+
+.sheet-scrim {
+  position: absolute;
+  inset: 0;
+  background: rgba(30, 42, 54, 0.18);
+  z-index: 7;
+}
+
+.sheet {
+  position: absolute;
+  left: 0;
+  right: 0;
+  bottom: 0;
+  padding: 10px 20px calc(env(safe-area-inset-bottom, 0px) + 24px);
+  background: var(--paper);
+  border-radius: 24px 24px 0 0;
+  box-shadow: 0 -8px 30px rgba(30, 42, 54, 0.14);
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+  z-index: 8;
+  max-height: 80%;
+  overflow-y: auto;
+  touch-action: pan-y;
+}
+.sheet .handle {
+  align-self: center;
+  width: 36px;
+  height: 5px;
+  border-radius: 3px;
+  background: var(--hairline);
+}
+.sheet h2 {
+  margin: 0;
+  font-family: var(--font-title);
+  font-size: 23px;
+  font-weight: 500;
+  color: var(--ink);
+}
+.sheet .sub {
+  font-size: 13px;
+  color: var(--muted);
+  margin: 2px 0 0;
+}
+.sheet-head {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+/* Phase 1.2 item 1: the reusable, compact frame picker — smaller sheet, single-tap cards. */
+.sheet.compact {
+  gap: 10px;
+  padding-bottom: calc(env(safe-area-inset-bottom, 0px) + 16px);
+}
+.sheet.compact h2 {
+  font-size: 19px;
+}
+
+/* Phase 2.1 item 1: Divide's compact live control — a ± stepper next to the live count, a
+ * minimal slider (integer steps, common values as subtle native tick "detents" via its
+ * <datalist>, not a button grid), and — closed circles only — a compact two-cell "Connect"
+ * toggle. Same chip/well vocabulary as the rest of the sheets/popovers. */
+.divide-live-row {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 18px;
+}
+.divide-step-btn {
+  width: 40px;
+  height: 40px;
+  border-radius: 13px;
+  border: none;
+  background: var(--well);
+  color: var(--ink);
+  font-size: 19px;
+  font-weight: 600;
+  cursor: pointer;
+  flex-shrink: 0;
+}
+.divide-step-btn:disabled {
+  opacity: 0.35;
+  cursor: not-allowed;
+}
+.divide-count {
+  min-width: 84px;
+  text-align: center;
+  font-size: 16px;
+  font-weight: 600;
+  color: var(--ink);
+}
+.divide-slider {
+  width: 100%;
+  accent-color: var(--ink);
+  height: 28px;
+  margin: 0;
+}
+.divide-connect-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+}
+.divide-connect-label {
+  font-size: 13px;
+  font-weight: 500;
+  color: var(--muted);
+}
+.segmented-mini {
+  display: flex;
+  background: var(--well);
+  border-radius: 11px;
+  padding: 2px;
+  gap: 2px;
+}
+.segmented-mini button {
+  border: none;
+  background: transparent;
+  color: var(--ink);
+  font-size: 12.5px;
+  font-weight: 500;
+  padding: 6px 12px;
+  border-radius: 9px;
+  cursor: pointer;
+}
+.segmented-mini button.active {
+  background: var(--ink);
+  color: var(--paper);
+}
+.segmented-mini button:disabled {
+  opacity: 0.35;
+  cursor: not-allowed;
+}
+
+.frame-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 10px;
+}
+.frame-grid.compact {
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  gap: 8px;
+}
+.frame-option {
+  border: 1px solid var(--hairline);
+  background: var(--plaster);
+  border-radius: 16px;
+  height: 132px;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 4px;
+  cursor: pointer;
+}
+.frame-option.compact {
+  height: 84px;
+  border-radius: 14px;
+  gap: 6px;
+}
+.frame-option.selected {
+  border: 1.5px solid var(--ink);
+}
+.frame-option .frame-name {
+  font-size: 14px;
+  font-weight: 600;
+  color: var(--ink);
+}
+.frame-option.compact .frame-name {
+  font-size: 12px;
+}
+.frame-option .frame-hint {
+  font-size: 11.5px;
+  color: var(--muted);
+}
+
+.sheet-actions {
+  display: flex;
+  gap: 10px;
+}
+.btn-secondary {
+  flex-grow: 1;
+  height: 50px;
+  border: none;
+  border-radius: 14px;
+  background: var(--well);
+  color: var(--ink);
+  font-size: 15px;
+  font-weight: 500;
+  cursor: pointer;
+}
+.btn-secondary.compact {
+  height: 40px;
+  font-size: 13px;
+  border-radius: 12px;
+}
+.btn-primary {
+  flex-grow: 1;
+  height: 50px;
+  border: none;
+  border-radius: 14px;
+  background: var(--ink);
+  color: var(--paper);
+  font-size: 15px;
+  font-weight: 600;
+  cursor: pointer;
+}
+.btn-primary:disabled {
+  opacity: 0.4;
+  cursor: not-allowed;
+}
+
+/* ---- popover menu (menu button, Visibility / Point Lock) ---- */
+
+.popover-menu {
+  position: fixed;
+  z-index: 20;
+  display: flex;
+  flex-direction: column;
+  background: var(--paper);
+  border: 1px solid var(--hairline);
+  border-radius: 14px;
+  box-shadow: 0 10px 28px rgba(30, 42, 54, 0.18);
+  padding: 6px;
+  min-width: 168px;
+}
+.popover-menu button {
+  border: none;
+  background: transparent;
+  text-align: left;
+  padding: 10px 12px;
+  border-radius: 9px;
+  font-size: 14px;
+  font-weight: 500;
+  color: var(--ink);
+  cursor: pointer;
+  font-family: var(--font-ui);
+}
+.popover-menu button:active {
+  background: var(--well);
+}
+/* A plain flat-list popover item's active state (e.g. none currently, kept for other menus). */
+.popover-menu button.active {
+  background: var(--well);
+  font-weight: 600;
+}
+
+/* Grouped popover (Visibility / Point Lock): two labelled sections, not one flat list. Same
+ * ink/muted/well vocabulary as the rest of the app — no Signal blue, which is reserved for
+ * geometric selection/snapping, and no heavier type than the dock/context-bar already use. */
+.popover-section-label {
+  font-size: 10.5px;
+  font-weight: 500;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  color: var(--muted);
+  padding: 8px 12px 4px;
+}
+.popover-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+}
+.popover-row .popover-row-check {
+  color: var(--ink);
+  font-size: 13px;
+  flex-shrink: 0;
+}
+.popover-row.active {
+  background: var(--well);
+  font-weight: 500;
+}
+
+.popover-toggle-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  padding: 8px 12px 2px;
+}
+.popover-toggle-row .popover-row-label {
+  font-size: 14px;
+  font-weight: 500;
+  color: var(--ink);
+}
+.popover-hint {
+  font-size: 11.5px;
+  color: var(--muted);
+  padding: 0 12px 8px;
+  margin: 0;
+}
+
+/* Phase 3.4 item 5: the Point Targets panel's three independent toggles (Primary/Derived/Free) —
+ * reintroduced from Phase 3.2 (removed then as unused once Point Lock's single toggle moved to
+ * the top bar; genuinely needed again now that there are three). */
+.toggle-switch {
+  border: none;
+  cursor: pointer;
+  width: 40px;
+  height: 24px;
+  border-radius: 12px;
+  background: var(--hairline);
+  padding: 3px;
+  display: flex;
+  align-items: center;
+  justify-content: flex-start;
+  flex-shrink: 0;
+}
+.toggle-switch .toggle-knob {
+  width: 18px;
+  height: 18px;
+  border-radius: 50%;
+  background: var(--paper);
+  box-shadow: 0 1px 3px rgba(30, 42, 54, 0.3);
+  transition: transform 0.15s ease;
+}
+.toggle-switch.on {
+  background: var(--ink);
+  justify-content: flex-end;
+}
+
+/* Phase 3H: Fair's compact stroke colour/width popover — palette swatches, a "Mine" custom
+ * colour input, and a plain range slider. Ink/well chrome everywhere except the swatches
+ * themselves, which show their actual palette colour. */
+.swatch-row {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  padding: 4px 12px 10px;
+}
+.swatch {
+  width: 30px;
+  height: 30px;
+  border-radius: 50%;
+  border: 1.5px solid var(--hairline);
+  cursor: pointer;
+  padding: 0;
+  flex-shrink: 0;
+  position: relative;
+}
+.swatch.active {
+  border-color: var(--ink);
+  box-shadow: 0 0 0 2px var(--paper), 0 0 0 3.5px var(--ink);
+}
+.swatch-custom {
+  background: conic-gradient(from 180deg, #e5484d, #f4a83c, #f7d046, #6cc24a, #2f8fea, #6b5ce7, #d0479a, #e5484d);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  cursor: pointer;
+}
+.swatch-custom input[type='color'] {
+  opacity: 0;
+  width: 1px;
+  height: 1px;
+  position: absolute;
+}
+.width-slider {
+  flex-grow: 1;
+  accent-color: var(--ink);
+  height: 28px;
+}
+.stroke-chip {
+  gap: 7px !important;
+}
+.stroke-chip-dot {
+  width: 12px;
+  height: 12px;
+  border-radius: 50%;
+  border: 1px solid rgba(30, 42, 54, 0.25);
+  flex-shrink: 0;
+}
+
+/* ---- toast ---- */
+
+.toast {
+  position: absolute;
+  left: 50%;
+  bottom: 190px;
+  transform: translateX(-50%);
+  background: var(--ink);
+  color: var(--paper);
+  font-size: 13px;
+  font-weight: 500;
+  padding: 10px 16px;
+  border-radius: 12px;
+  box-shadow: 0 6px 18px rgba(30, 42, 54, 0.2);
+  z-index: 9;
+  pointer-events: none;
+  opacity: 0;
+  transition: opacity 0.15s ease;
+  white-space: nowrap;
+  max-width: calc(100% - 32px);
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.toast.show {
+  opacity: 1;
+}

@@ -1,0 +1,95 @@
+// IndexedDB storage, spec §9. A database per origin, with `documents`, `history`
+// and `meta` stores. Maps (segmentStates, fills, repeat.gapFills) are stored
+// as-is — IndexedDB's structured-clone algorithm handles Map/Set natively.
+//
+// Simplification disclosed: §9 describes `history` as a per-document *op log*
+// with compaction every 50 ops (undo depth ≥ 200 after reload). This pass's
+// undo model is snapshot-based (§8 is satisfied via full Doc clones per
+// commit, not a replayable op log), so `history` here persists the snapshot
+// undo/redo stacks directly rather than a compacted op log. Undo/redo does
+// survive reload either way; the op-log/compaction machinery is deferred.
+
+import type { Doc } from '../model/types.ts';
+
+const DB_NAME = 'construct-and-repeat';
+const DB_VERSION = 1;
+
+export interface DocumentRecord {
+  id: string;
+  name: string;
+  createdAt: number;
+  updatedAt: number;
+  schemaVersion: number;
+  snapshot: Doc;
+}
+
+export interface HistoryRecord {
+  docId: string;
+  undoStack: Doc[];
+  redoStack: Doc[];
+}
+
+let dbPromise: Promise<IDBDatabase> | null = null;
+
+export function openDb(): Promise<IDBDatabase> {
+  if (dbPromise) return dbPromise;
+  dbPromise = new Promise((resolve, reject) => {
+    const req = indexedDB.open(DB_NAME, DB_VERSION);
+    req.onupgradeneeded = () => {
+      const db = req.result;
+      if (!db.objectStoreNames.contains('documents')) db.createObjectStore('documents', { keyPath: 'id' });
+      if (!db.objectStoreNames.contains('history')) db.createObjectStore('history', { keyPath: 'docId' });
+      if (!db.objectStoreNames.contains('meta')) db.createObjectStore('meta', { keyPath: 'key' });
+    };
+    req.onsuccess = () => resolve(req.result);
+    req.onerror = () => reject(req.error);
+  });
+  return dbPromise;
+}
+
+function tx<T>(db: IDBDatabase, store: string, mode: IDBTransactionMode, run: (s: IDBObjectStore) => IDBRequest<T>): Promise<T> {
+  return new Promise((resolve, reject) => {
+    const t = db.transaction(store, mode);
+    const req = run(t.objectStore(store));
+    req.onsuccess = () => resolve(req.result);
+    req.onerror = () => reject(req.error);
+    t.onerror = () => reject(t.error);
+  });
+}
+
+let persistRequested = false;
+
+export async function saveDocument(record: DocumentRecord): Promise<void> {
+  const db = await openDb();
+  await tx(db, 'documents', 'readwrite', (s) => s.put(record));
+  if (!persistRequested) {
+    persistRequested = true;
+    navigator.storage?.persist?.().catch(() => {});
+  }
+}
+
+export async function loadDocument(id: string): Promise<DocumentRecord | undefined> {
+  const db = await openDb();
+  return tx<DocumentRecord | undefined>(db, 'documents', 'readonly', (s) => s.get(id));
+}
+
+export async function saveHistory(record: HistoryRecord): Promise<void> {
+  const db = await openDb();
+  await tx(db, 'history', 'readwrite', (s) => s.put(record));
+}
+
+export async function loadHistory(docId: string): Promise<HistoryRecord | undefined> {
+  const db = await openDb();
+  return tx<HistoryRecord | undefined>(db, 'history', 'readonly', (s) => s.get(docId));
+}
+
+export async function setMeta(key: string, value: unknown): Promise<void> {
+  const db = await openDb();
+  await tx(db, 'meta', 'readwrite', (s) => s.put({ key, value }));
+}
+
+export async function getMeta<T>(key: string): Promise<T | undefined> {
+  const db = await openDb();
+  const rec = await tx<{ key: string; value: T } | undefined>(db, 'meta', 'readonly', (s) => s.get(key));
+  return rec?.value;
+}
