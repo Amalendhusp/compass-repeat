@@ -1,44 +1,50 @@
 import type { Doc, EntityId, FaceSig, PointId, SegmentKey, SegmentState, Vec2 } from '../model/types.ts';
+import type { PointDependent } from '../model/doc.ts';
 import { cloneDoc } from '../model/doc.ts';
 import type { PointRef } from '../interaction/pointref.ts';
 
-export type ToolId = 'select' | 'circle' | 'line' | 'polygon' | 'divide' | 'fair' | 'fill';
+/** Phase 5.2 item 1: Polygon is no longer a creation tool (connected Lines make any polygon);
+ * existing polygon groups stay fully supported as data and as Select targets. */
+export type ToolId = 'select' | 'circle' | 'line' | 'arc' | 'divide' | 'fair' | 'fill';
 
 /** Tools implemented in this pass; the rest render in the dock but are inert (§ "do not attempt the entire app in one pass"). */
-export const LIVE_TOOLS: ReadonlySet<ToolId> = new Set(['select', 'circle', 'line', 'polygon', 'divide', 'fair', 'fill']);
+export const LIVE_TOOLS: ReadonlySet<ToolId> = new Set(['select', 'circle', 'line', 'arc', 'divide', 'fair', 'fill']);
 
 export type PendingStep =
   | { kind: 'circle'; centre: PointRef }
   | { kind: 'line'; a: PointRef }
-  // vertices: every committed vertex so far, oldest first (§2A).
-  | { kind: 'polygon'; vertices: PointRef[] }
+  // Phase 5.2 item 19 / Phase 5.6 items 1–7: Arc's compass — A chosen (Measure radius only), then
+  // the open compass: its radius, where its centre sits now (carried point to point), and — when
+  // measured — the A–B measuring line, shown until the arc is drawn. Never geometry or history.
+  | { kind: 'arc'; stage: 'measure-b'; a: PointRef }
+  | { kind: 'arc'; stage: 'compass'; radius: number; centre: PointRef; measure?: { a: Vec2; b: Vec2 }; capturedAt?: number }
   | null;
 
 /** Phase 1.2 item 3 / Phase 2D: Select's target granularities — Point → Segment → whole Entity
- * or Group (a completed Polygon's edges share one groupId, §2A — selected as one shape, not N
- * unrelated lines). Region is a later phase, once Fill exists. A completed tap cycles through
- * whichever of these exist at that location. */
+ * or Group (a legacy Polygon's edges share one groupId, §2A — selected as one shape). */
 /** Phase 3.6 item 4: `from`/`to` are the SelectableGroup's outer boundary points (a run of one or
  * more consecutive granular segments acting as one tappable/Fair-able unit — see
  * geometry/segments.ts), never a raw granular DerivedSegment's own endpoints. `keys` lists every
  * granular segment key the group actually spans, so an action (Trim, Fair toggle, stroke edit)
  * can apply itself to all of them atomically while segment STATE STORAGE stays keyed granularly. */
-/** Phase 4 item 8: an already-filled region, selected by its FaceSig — Select edits/removes an
- * existing fill; it never creates one (that's Fill's own job). */
 export type SelectCandidate =
   | { kind: 'point'; id: PointId }
   | { kind: 'segment'; entityId: EntityId; from: PointId; to: PointId; fromParam: number; toParam: number; keys: SegmentKey[] }
   | { kind: 'entity'; entityId: EntityId }
   | { kind: 'group'; groupId: string; entityIds: EntityId[] }
-  | { kind: 'fill'; sig: FaceSig };
+  // Phase 5.2 items 9–11: a closed region picked by tapping inside it — stands for its whole
+  // boundary (`keys`), Fair or Construction, and (Fair only) the fill inside it.
+  | { kind: 'region'; sig: FaceSig; fair: boolean; keys: SegmentKey[] };
 
-/** Empty = nothing selected. Multiple entries = a marquee or ⇧-style multi-select (item 4). */
+/** Empty = nothing selected. Multiple entries = a drag across segments, or a long-press region set. */
 export type Selection = SelectCandidate[];
 
 export type Preview =
   | { kind: 'circle'; centre: Vec2; through: Vec2 }
   | { kind: 'line'; a: Vec2; b: Vec2 }
-  | { kind: 'polygon'; vertices: Vec2[]; current: Vec2 }
+  | { kind: 'measure'; a: Vec2; b: Vec2 }
+  // Arc: the dashed compass circle, plus the swept arc once a sweep is under way.
+  | { kind: 'arc'; centre: Vec2; radius: number; start?: number; sweep?: number }
   | null;
 
 /** Phase 2H: the precision loupe (§5.4 / §2's press-then-slide). One tool gesture hands off to
@@ -77,34 +83,25 @@ export interface PendingMerge {
   sourceId: PointId;
 }
 
-/** Phase 2C: what the Divide tool's canvas tap resolved to — either one derived segment (line
- * piece or arc, divided between its own endpoints) or a whole untouched closed circle (divided
- * all the way round). Consumed by the shell, which owns the N-picker sheet (§4.5). */
-export type DivideTarget =
+/** Phase 2C: what a Divide tap resolved to — a span of one curve (a segment, or a whole line/arc)
+ * divided between its own endpoints, or a whole closed circle divided all the way round.
+ * Phase 5.2 item 21: `scope` is where the tap-escalation cycle currently sits (segment → its
+ * parent line/circle/arc); `label` is what the compact ribbon calls it. */
+export type DivideTarget = { label: 'Segment' | 'Line' | 'Arc' | 'Circle'; scope: 'segment' | 'parent' } & (
   | { entityId: EntityId; kind: 'segment'; from: PointId; to: PointId; fromParam: number; toParam: number }
-  | { entityId: EntityId; kind: 'circle-whole' };
+  | { entityId: EntityId; kind: 'circle-whole' }
+);
 
-/** Phase 2.1 item 1: the compact Divide sheet's live preview — recomputed on every slider/stepper
- * change, read only by the renderer, never recorded in history. `chords` previews the optional
- * closed-circle star connector, empty otherwise. */
+/** Phase 2.1 item 1: Divide's live preview — recomputed on every stepper/slider change, read only
+ * by the renderer, never recorded in history. */
 export interface DividePreview {
   target: DivideTarget;
   points: Vec2[];
-  chords: [Vec2, Vec2][];
 }
 
 /** Phase 1.2 item 7: the point-visibility model. Geometry/snapping always sees every point —
  * this only controls what's drawn. */
 export type PointVisibility = 'near-finger' | 'all' | 'used' | 'none';
-
-/** Phase 3.7 item 4: Select's own targeting filter — 'all' is today's unfiltered behaviour;
- * 'fair'/'construction' narrow tap targeting and marquee to segments/entities uniformly in that
- * state (a mixed-state whole entity matches neither, only its individual SelectableGroups can);
- * 'points' narrows to eligible manual points only (see isEditablePointKind) and excludes every
- * segment/entity/group tier outright. Divide and Fair never see this — each calls
- * pickSelectCandidates with the default 'all', keeping their targeting completely independent of
- * whatever Select's filter happens to be set to. */
-export type SelectFilter = 'all' | 'fair' | 'construction' | 'points';
 
 /** Phase 3C/3D: a Fair trace in progress. `draft` overrides `doc.segmentStates` for rendering
  * only — a segment key mapped to `null` means "show as reverted to construction", mapped to a
@@ -120,10 +117,17 @@ export interface FairTraceState {
   relevantPoints: Set<PointId>;
 }
 
-/** Phase 1.2 item 4: an in-progress marquee drag, in screen space. */
-export interface Marquee {
-  start: Vec2;
-  current: Vec2;
+/** Phase 5.2 items 13–15: Select's point editing. `move` drags a hand-placed point freely;
+ * `slide` moves an on-curve point along its own curve; `rebind` re-anchors one dependent
+ * construction onto a different point (the selected point itself stays put). `chosen` is which
+ * dependent is being re-anchored — preset when there is only one. `drag` is the live finger/snap
+ * position while dragging (world space). */
+export interface PointEditState {
+  pointId: PointId;
+  mode: 'move' | 'slide' | 'rebind';
+  dependents: PointDependent[];
+  chosen: PointDependent | null;
+  drag: { at: Vec2; snapped: boolean } | null;
 }
 
 /**
@@ -131,7 +135,7 @@ export interface Marquee {
  * candidate, replacing the old single-marker snap loupe. `activeAt` is the currently-chosen
  * candidate (drawn centred and highlighted); `candidates` are other nearby points worth showing
  * so the participant can see *which* junction they're about to commit to, not just that
- * something snapped. Used by every point-taking tool (Circle/Line/Polygon/Fair's Draw-Line
+ * something snapped. Used by every point-taking tool (Circle/Line/Arc, and Select's Move/Rebind
  * mode) and by Fair's trace junction scoring.
  */
 export interface NodeInsetState {
@@ -160,21 +164,25 @@ export class AppController {
    * Construction line or a through-both-points Extension line (spec's extension-line logic,
    * dashed/subdued). Sticky across gestures, like Fair's old stroke default was. */
   lineMode: 'construction' | 'extension' = 'construction';
+  /** Phase 5.6 item 19: Repeat's Space action — while on, a one-finger tap colours negative-space
+   * classes instead of reaching the lattice handles. Session state, never saved. */
+  spaceMode = false;
   pointVisibility: PointVisibility = 'near-finger';
-  /** Phase 3.7 item 4: Select's own targeting filter, sticky across gestures like `pointVisibility`. */
-  selectFilter: SelectFilter = 'all';
   /** Screen position of the single active pointer, for "near finger" reveal; null when no
    * pointer is down. Updated by PointerManager, read by the renderer only. */
   pointerScreenPos: Vec2 | null = null;
-  marquee: Marquee | null = null;
+  /** Phase 5.2 item 12: the finger's path while a drag collects segments, for a faint trail. */
+  sweep: Vec2[] | null = null;
+  /** Phase 5.2 item 11: non-null while a long-press has started collecting regions of one type. */
+  multiRegion: { fair: boolean } | null = null;
+  pointEdit: PointEditState | null = null;
+  /** Phase 5.2 item 21: the current Divide target and N, shown in the compact ribbon. */
+  divide: { target: DivideTarget; n: number } | null = null;
   /** Phase 1.2a: true while the active tool's current touch is over a curve that Point Lock is
    * blocking from becoming a point — drives the "Point Lock · choose an existing point" hint. */
   pointLockHint = false;
   /** Phase 2H: non-null while the precision loupe is open. */
   precision: PrecisionSession | null = null;
-  /** Phase 2C: set by the Divide tool's canvas tap, cleared by whoever opens the N-picker sheet
-   * for it (the shell) — a one-shot cross-layer handoff, same shape as extendChip. */
-  pendingDivide: DivideTarget | null = null;
   /** Phase 2.1 item 1: non-null while the compact Divide sheet is open, updated live as the
    * slider/stepper/connector change — read only by the renderer. */
   dividePreview: DividePreview | null = null;
@@ -187,10 +195,15 @@ export class AppController {
   /** Phase 4 item 2/6: non-null while a Fill tap is held down on a resolvable region — a
    * translucent preview only, cleared on release either way (commit happens separately). */
   fillPreview: { sig: FaceSig; colour: string } | null = null;
-  /** Phase 5 item 4/6: non-null while a lattice-arm handle is being dragged — `rawTranslate` is
-   * the live, unsnapped world-space vector the render/preview layer uses; only committed to
-   * `doc.repeat` on release (possibly snapped to a contact detent first). */
-  repeatDrag: { dir: 'a' | 'b'; rawTranslate: Vec2 } | null = null;
+  /** Phase 5.4 items 5–8: after an "Open boundary" Fill tap — the Fair chain that fails to close
+   * and its likely open ends, shown briefly. Interaction feedback only: never part of the doc. */
+  fillDiagnostic: { keys: SegmentKey[]; endpoints: PointId[]; until: number } | null = null;
+  private diagnosticTimer: ReturnType<typeof setInterval> | null = null;
+  /** Phase 5 item 4/6: non-null while a lattice-arm handle is being dragged. Phase 5.1: `translate`
+   * is what is shown (finger position after magnetic attraction/hysteresis snapping), and exactly
+   * what gets committed on release; `snapped` says whether it currently sits on a contact detent. */
+  repeatDrag: { dir: 'a' | 'b'; translate: Vec2; snapped: boolean } | null = null;
+  repeatContactFlash: { label: string } | null = null;
   /** Phase 5 item 7: non-null while the rotation ring is being dragged — same draft/commit split
    * as `repeatDrag`. */
   repeatRotateDrag: { rawRotation: number } | null = null;
@@ -234,6 +247,7 @@ export class AppController {
    * that should show it. */
   commit(mutate: (doc: Doc) => void): void {
     this.recentPoints = null;
+    this.clearFillDiagnostic();
     const before = cloneDoc(this.doc);
     const next = cloneDoc(this.doc);
     mutate(next);
@@ -269,27 +283,74 @@ export class AppController {
   undo(): void {
     const prev = this.undoStack.pop();
     if (!prev) return;
-    const view = this.doc.view;
-    const repeatView = this.doc.repeatView;
     this.redoStack.push(this.doc);
-    this.doc = prev;
-    this.doc.view = view;
-    this.doc.repeatView = repeatView;
-    this.pending = null;
-    this.notify();
+    this.swapTo(prev);
   }
 
   redo(): void {
     const next = this.redoStack.pop();
     if (!next) return;
-    const view = this.doc.view;
-    const repeatView = this.doc.repeatView;
     this.undoStack.push(this.doc);
-    this.doc = next;
+    this.swapTo(next);
+  }
+
+  /** Camera and Repeat display preferences are not history — carry the live ones across. */
+  private swapTo(snapshot: Doc): void {
+    const { view, repeatView, repeatDisplay, toolPrefs, dividePrefs, fillDefaults, fairDefaults, pointTargets, name, named, spaceDefaults } = this.doc;
+    this.doc = snapshot;
+    // The artwork's name is not history either (Phase 5.5).
+    this.doc.name = name;
+    this.doc.named = named;
     this.doc.view = view;
     this.doc.repeatView = repeatView;
+    this.doc.repeatDisplay = repeatDisplay;
+    // Tool preferences aren't history either (Phase 5.2: the remembered radius/N survive undo).
+    this.doc.toolPrefs = toolPrefs;
+    this.doc.dividePrefs = dividePrefs;
+    this.doc.fillDefaults = fillDefaults;
+    this.doc.fairDefaults = fairDefaults;
+    this.doc.pointTargets = pointTargets;
+    this.doc.spaceDefaults = spaceDefaults;
     this.pending = null;
+    this.pointEdit = null;
+    this.divide = null;
+    this.dividePreview = null;
     this.notify();
+  }
+
+  static readonly FILL_DIAGNOSTIC_MS = 1800;
+
+  /** Shows the open-boundary diagnosis for ~1.8s (fading at the end), or until the next touch. */
+  showFillDiagnostic(diag: { keys: SegmentKey[]; endpoints: PointId[] }): void {
+    this.clearFillDiagnostic();
+    this.fillDiagnostic = { ...diag, until: Date.now() + AppController.FILL_DIAGNOSTIC_MS };
+    // Redraw steadily only so the fade-out is smooth; stops the moment it ends.
+    this.diagnosticTimer = setInterval(() => {
+      if (!this.fillDiagnostic || Date.now() >= this.fillDiagnostic.until) this.clearFillDiagnostic();
+      this.notifyView();
+    }, 60);
+    this.notifyView();
+  }
+
+  clearFillDiagnostic(): void {
+    if (this.diagnosticTimer !== null) clearInterval(this.diagnosticTimer);
+    this.diagnosticTimer = null;
+    if (!this.fillDiagnostic) return;
+    this.fillDiagnostic = null;
+    this.notifyView();
+  }
+
+  /** Phase 5.1 item 1: a brief label on first reaching a contact — never left on screen. */
+  flashRepeatContact(label: string): void {
+    const record = { label };
+    this.repeatContactFlash = record;
+    this.notifyView();
+    setTimeout(() => {
+      if (this.repeatContactFlash === record) {
+        this.repeatContactFlash = null;
+        this.notifyView();
+      }
+    }, 1100);
   }
 
   /** §1.3: tapping the lit tool, or Select, returns to Select. */
@@ -303,10 +364,14 @@ export class AppController {
     this.pendingMerge = null;
     this.pointLockHint = false;
     this.precision = null;
-    this.pendingDivide = null;
+    this.divide = null;
     this.dividePreview = null;
     this.fairTrace = null;
     this.fillPreview = null;
+    this.sweep = null;
+    this.multiRegion = null;
+    this.pointEdit = null;
+    this.clearFillDiagnostic();
     this.tool = tool === this.tool || tool === 'select' ? 'select' : tool;
     if (this.tool !== 'select') this.selection = [];
     this.notify();

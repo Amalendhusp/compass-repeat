@@ -12,6 +12,9 @@ export const color = {
   brassLight: '#EADBBE',
   signal: '#2F5BEA',
   signalLight: '#DCE4FC',
+  // Phase 5.4: transient "look here" feedback (an open Fill boundary) — a restrained amber, kept
+  // apart from Signal (selection/snap) and from every design colour.
+  alert: '#D88A12',
   pointStroke: '#9AA3AD',
 } as const;
 

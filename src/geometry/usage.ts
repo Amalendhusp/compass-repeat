@@ -1,4 +1,4 @@
-// Point-usage queries for the point-visibility model (Phase 1.2 item 7) and marquee/select.
+// Point-usage queries for the point-visibility model (Phase 1.2 item 7) and Select.
 
 import type { Doc, Point, PointId } from '../model/types.ts';
 import { deriveSegments } from './segments.ts';

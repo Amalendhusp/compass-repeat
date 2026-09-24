@@ -46,6 +46,12 @@ export function frameVertexCount(kind: Doc['frame']['kind']): number {
 // invalidated the instant a real geometry commit produces a new Doc — no manual bookkeeping.
 const perDocCache = new WeakMap<Doc, Map<PointId, Vec2>>();
 
+/** Phase 5.2: moving a point or rebinding an endpoint changes geometry WITHIN one commit without
+ * replacing the Doc — anything resolved before that change must be forgotten. */
+export function invalidateResolveCache(doc: Doc): void {
+  perDocCache.delete(doc);
+}
+
 export function resolvePoint(doc: Doc, id: PointId, cache?: Map<PointId, Vec2>): Vec2 {
   if (!cache) {
     let c = perDocCache.get(doc);

@@ -11,7 +11,7 @@
 // findRegionAt's smallest-first containment pick, and computeDirectHoles for rendering).
 
 import type { Doc, Entity, FaceSig, PointId, SegmentKey, Vec2 } from '../model/types.ts';
-import { resolveEntityGeom, resolvePoint } from './kernel.ts';
+import { epsilon, resolveEntityGeom, resolvePoint } from './kernel.ts';
 import { deriveSegments, type DerivedSegment } from './segments.ts';
 import { outgoingTangent } from './trace.ts';
 
@@ -27,6 +27,7 @@ export interface FairRegion {
   samplePoints: Vec2[];
   areaWorld: number;
   centroid: Vec2;
+  legacySig: FaceSig;
 }
 
 interface HalfEdge {
@@ -36,6 +37,9 @@ interface HalfEdge {
   from: PointId;
   to: PointId;
   angle: number; // outgoing tangent angle AT `from`
+  /** Signed curvature as it leaves `from` (+ turning towards increasing angle, − the other way, 0
+   * for a line) — only consulted to order two edges that leave a vertex in the same direction. */
+  curvature: number;
   twin: HalfEdge | null;
   used: boolean;
 }
@@ -110,34 +114,103 @@ export function pointInPolygon(poly: Vec2[], p: Vec2): boolean {
   return inside;
 }
 
-function computeFaceSig(boundary: HalfEdge[]): FaceSig {
-  const ids = boundary.map((he) => he.from);
+function rotateToMin(parts: string[]): string[] {
   let minIdx = 0;
-  for (let i = 1; i < ids.length; i++) if (ids[i]! < ids[minIdx]!) minIdx = i;
-  return [...ids.slice(minIdx), ...ids.slice(0, minIdx)].join('>');
+  for (let i = 1; i < parts.length; i++) if (parts[i]! < parts[minIdx]!) minIdx = i;
+  return [...parts.slice(minIdx), ...parts.slice(0, minIdx)];
 }
 
-function buildFairRegions(doc: Doc): FairRegion[] {
+/**
+ * Phase 5.4 items 9–12: a region's identity is its CORNERS and the curves running between them —
+ * not every point that happens to lie along those curves. A boundary vertex is a corner only
+ * where the boundary changes curve (a different entity, or the same one traversed the other way).
+ * So a new intersection, midpoint or division point landing on an unchanged Fair curve is not a
+ * corner and leaves the identity — and its Fill — untouched, while a genuine change (a new Fair
+ * edge splitting the region, a boundary opening, a different curve) changes it, and the old Fill
+ * is conservatively left behind rather than guessed onto a new region. Corner + (curve, direction)
+ * pins down one face exactly: between two corners, a given curve traversed a given way is one
+ * specific arc or line piece. A boundary that is one closed curve (a whole Fair circle) has no
+ * corners and is identified by that curve alone.
+ */
+function computeFaceSig(boundary: HalfEdge[]): FaceSig {
+  const side = (he: HalfEdge) => `${he.entity.id}${he.forward ? '+' : '-'}`;
+  const n = boundary.length;
+  const corners: string[] = [];
+  for (let i = 0; i < n; i++) {
+    const prev = boundary[(i - 1 + n) % n]!;
+    const cur = boundary[i]!;
+    if (side(prev) !== side(cur)) corners.push(`${cur.from}~${side(cur)}`);
+  }
+  if (corners.length === 0) return `loop~${side(boundary[0]!)}`;
+  return rotateToMin(corners).join('>');
+}
+
+/** The signature Fills were keyed by before Phase 5.4 (every boundary vertex) — kept only so a
+ * document saved earlier can have its Fills re-keyed on load (migrateLegacyFillKeys). */
+function legacyFaceSig(boundary: HalfEdge[]): FaceSig {
+  return rotateToMin(boundary.map((he) => he.from)).join('>');
+}
+
+type SegmentStateKind = 'construction' | 'extension' | 'fair' | 'trimmed';
+
+/** Phase 5.2 item 9: the same face trace over whichever segment states count as boundary —
+ * Fair only for Fill (Phase 4, unchanged), Construction/Extension only for selecting a closed
+ * Construction region by tapping inside it. */
+// Tangent points come from intersections computed to a small epsilon, so two genuinely tangent
+// directions can differ by rounding noise; nothing distinct is ever this close.
+const ANGLE_TIE = 1e-6;
+
+/** A tangent angle in [−π, π), so an edge pointing exactly "west" can't appear at both ends of
+ * the sorted list depending on rounding. */
+function canonicalAngle(v: Vec2): number {
+  const a = Math.atan2(v.y, v.x);
+  return a >= Math.PI - ANGLE_TIE ? -Math.PI : a;
+}
+
+/** Around a vertex, in increasing angle; two edges leaving in the same direction (tangent curves)
+ * are ordered by how they bend away — the one curving towards increasing angle comes later —
+ * rather than by chance, which could trace a face straight through its neighbour. */
+function compareAroundVertex(a: HalfEdge, b: HalfEdge): number {
+  const d = a.angle - b.angle;
+  if (Math.abs(d) > ANGLE_TIE) return d;
+  return a.curvature - b.curvature;
+}
+
+function buildRegions(doc: Doc, isBoundary: (state: SegmentStateKind) => boolean): FairRegion[] {
   const halfEdgesAtVertex = new Map<PointId, HalfEdge[]>();
   const allHalfEdges: HalfEdge[] = [];
+  // Phase 5.5 item 1: the same edge drawn twice (a Line over an existing line, the same circle
+  // placed twice, or collinear lines overlapping — each is split where the other's end lies on
+  // it) must count once. Two copies leave every shared vertex at exactly the same angle, and the
+  // trace then ran through the doubled edge and merged the faces on either side into one region —
+  // filling one filled its neighbour too. The first copy (in entity order, so stable) is kept.
+  const geomTol = epsilon(doc) * 1000;
+  const q = (v: number) => Math.round(v / geomTol);
+  const seenEdges = new Set<string>();
 
   for (const entity of doc.entities) {
+    const g = resolveEntityGeom(doc, entity);
     for (const seg of deriveSegments(doc, entity)) {
-      if ((doc.segmentStates.get(seg.key)?.state ?? 'construction') !== 'fair') continue;
-      const heF: HalfEdge = { seg, entity, forward: true, from: seg.from, to: seg.to, angle: 0, twin: null, used: false };
-      const heB: HalfEdge = { seg, entity, forward: false, from: seg.to, to: seg.from, angle: 0, twin: null, used: false };
+      if (!isBoundary(doc.segmentStates.get(seg.key)?.state ?? 'construction')) continue;
+      const edgeId =
+        g.kind === 'line'
+          ? `L:${[seg.from, seg.to].sort().join('|')}`
+          : `C:${seg.from}|${seg.to}|${q(g.centre.x)}|${q(g.centre.y)}|${q(g.radius)}`; // from→to is always counter-clockwise on its circle
+      if (seenEdges.has(edgeId)) continue;
+      seenEdges.add(edgeId);
+      const k = g.kind === 'circle' ? 1 / Math.max(g.radius, 1e-12) : 0;
+      const heF: HalfEdge = { seg, entity, forward: true, from: seg.from, to: seg.to, angle: 0, curvature: k, twin: null, used: false };
+      const heB: HalfEdge = { seg, entity, forward: false, from: seg.to, to: seg.from, angle: 0, curvature: -k, twin: null, used: false };
       heF.twin = heB;
       heB.twin = heF;
-      const tF = outgoingTangent(doc, entity, seg, seg.from);
-      const tB = outgoingTangent(doc, entity, seg, seg.to);
-      heF.angle = Math.atan2(tF.y, tF.x);
-      heB.angle = Math.atan2(tB.y, tB.x);
+      heF.angle = canonicalAngle(outgoingTangent(doc, entity, seg, seg.from));
+      heB.angle = canonicalAngle(outgoingTangent(doc, entity, seg, seg.to));
       allHalfEdges.push(heF, heB);
       (halfEdgesAtVertex.get(heF.from) ?? halfEdgesAtVertex.set(heF.from, []).get(heF.from)!).push(heF);
       (halfEdgesAtVertex.get(heB.from) ?? halfEdgesAtVertex.set(heB.from, []).get(heB.from)!).push(heB);
     }
   }
-  for (const list of halfEdgesAtVertex.values()) list.sort((a, b) => a.angle - b.angle);
+  for (const list of halfEdgesAtVertex.values()) list.sort(compareAroundVertex);
 
   const regions: FairRegion[] = [];
   for (const start of allHalfEdges) {
@@ -162,12 +235,29 @@ function buildFairRegions(doc: Doc): FairRegion[] {
     if (area <= 1e-9) continue; // the outer/unbounded trace of this Fair sub-graph — discard
 
     const keys = new Set<SegmentKey>(boundary.map((he) => he.seg.key));
-    regions.push({ sig: computeFaceSig(boundary), keys, samplePoints: pts, areaWorld: area, centroid: polygonCentroid(pts, area) });
+    regions.push({ sig: computeFaceSig(boundary), legacySig: legacyFaceSig(boundary), keys, samplePoints: pts, areaWorld: area, centroid: polygonCentroid(pts, area) });
   }
   return regions;
 }
 
-const perDocRegionCache = new WeakMap<Doc, { pointCount: number; entityCount: number; regions: FairRegion[] }>();
+type RegionCache = WeakMap<Doc, { pointCount: number; entityCount: number; regions: FairRegion[] }>;
+const perDocRegionCache: RegionCache = new WeakMap();
+const perDocConstructionRegionCache: RegionCache = new WeakMap();
+
+function cachedRegions(cache: RegionCache, doc: Doc, isBoundary: (state: SegmentStateKind) => boolean): FairRegion[] {
+  let rec = cache.get(doc);
+  if (!rec || rec.pointCount !== doc.points.length || rec.entityCount !== doc.entities.length) {
+    rec = { pointCount: doc.points.length, entityCount: doc.entities.length, regions: buildRegions(doc, isBoundary) };
+    cache.set(doc, rec);
+  }
+  return rec.regions;
+}
+
+/** Phase 5.2: see kernel.ts's invalidateResolveCache. */
+export function invalidateRegionCaches(doc: Doc): void {
+  perDocRegionCache.delete(doc);
+  perDocConstructionRegionCache.delete(doc);
+}
 
 /** Phase 4 item 15: Doc objects are only replaced wholesale by cloneDoc() on commit/undo/redo
  * (Fair promotion/Trim/Delete all go through commit()) — pan/zoom, Point Targets and Select's
@@ -175,12 +265,13 @@ const perDocRegionCache = new WeakMap<Doc, { pointCount: number; entityCount: nu
  * 13: switching Primary/Derived must not alter an existing region). Region topology is computed
  * once per real geometry commit, not once per render frame or pointer move. */
 export function computeFairRegions(doc: Doc): FairRegion[] {
-  let rec = perDocRegionCache.get(doc);
-  if (!rec || rec.pointCount !== doc.points.length || rec.entityCount !== doc.entities.length) {
-    rec = { pointCount: doc.points.length, entityCount: doc.entities.length, regions: buildFairRegions(doc) };
-    perDocRegionCache.set(doc, rec);
-  }
-  return rec.regions;
+  return cachedRegions(perDocRegionCache, doc, (state) => state === 'fair');
+}
+
+/** Phase 5.2 item 9: closed faces bounded by Construction/Extension geometry. Same caveat as Fair
+ * regions about state-only changes: Fair promotion/Trim always arrive via commit (a new Doc). */
+export function computeConstructionRegions(doc: Doc): FairRegion[] {
+  return cachedRegions(perDocConstructionRegionCache, doc, (state) => state === 'construction' || state === 'extension');
 }
 
 /** Phase 4 item 2/10: the smallest region whose boundary contains `worldPoint` — smallest-first
@@ -206,4 +297,24 @@ export function computeDirectHoles(regions: FairRegion[]): Map<FaceSig, FairRegi
     holesOf.set(outer.sig, direct);
   }
   return holesOf;
+}
+
+/** Phase 5.4: Fills saved under the pre-5.4 signature are re-keyed to the region's current
+ * signature. Only keys that match no current region but do match one region's old-style
+ * signature move — anything else is left exactly as it was. Returns true if anything changed. */
+export function migrateLegacyFillKeys(doc: Doc): boolean {
+  const regions = computeFairRegions(doc);
+  const current = new Set(regions.map((r) => r.sig));
+  const byLegacy = new Map(regions.map((r) => [r.legacySig, r.sig] as const));
+  let changed = false;
+  for (const fills of doc.fills.values()) {
+    for (const [key, colour] of [...fills]) {
+      const next = byLegacy.get(key);
+      if (current.has(key) || !next || fills.has(next)) continue;
+      fills.delete(key);
+      fills.set(next, colour);
+      changed = true;
+    }
+  }
+  return changed;
 }

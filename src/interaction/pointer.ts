@@ -7,7 +7,9 @@ import type { Vec2 } from '../model/types.ts';
 import type { AppController, ViewTransform } from '../app/controller.ts';
 import type { Gesture, ToolModule } from './tools/types.ts';
 
-const TAP_MOVE_THRESHOLD = 8; // px
+// Phase 5.2 item 30: screen px of involuntary finger movement that still counts as a tap — sized
+// for real fingertips on both iOS and Android, where 8px misread ordinary taps as tiny drags.
+const TAP_MOVE_THRESHOLD = 12;
 const MULTI_TAP_MAX_TRAVEL = 10; // pt, §2
 const MULTI_TAP_MAX_MS = 250; // §2
 const MIN_ZOOM = 0.15;
@@ -96,7 +98,20 @@ export class PointerManager {
       // tracking it ourselves; capture is a delivery guarantee, not a precondition.
     }
     const { x, y } = this.toLocal(e);
+    // A primary press is the first finger of a brand-new touch sequence (the mouse is always
+    // primary), so anything still recorded is a pointer whose release never arrived. Left in
+    // place, it would make every later touch count as a second finger — pan/zoom, never a tool —
+    // until reload. Drop it and start clean.
+    if (e.isPrimary && this.active.size > 0) {
+      this.gesture?.onCancel();
+      this.gesture = null;
+      this.active.clear();
+      this.mode = 'idle';
+      this.session = null;
+    }
     this.active.set(e.pointerId, { x, y, startX: x, startY: y, maxTravel: 0 });
+    // Phase 5.4: transient Fill diagnostics last only until the next interaction.
+    this.controller.clearFillDiagnostic();
 
     if (this.active.size === 1) {
       this.session = { startTime: performance.now(), maxTravel: 0, maxConcurrent: 1 };

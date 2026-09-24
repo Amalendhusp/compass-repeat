@@ -1,13 +1,14 @@
 // Document construction and mutation: frame creation (§4.1), the entity/point additions that
-// keep intersections materialized as explicit points (§5.2), and — Phase 2 — Divide, Trim/
-// Restore, whole-entity Delete and Polygon grouping.
+// keep intersections materialized as explicit points (§5.2), Divide, Trim, Delete, and — Phase
+// 5.2 — Arcs, and re-anchoring/moving points with their dependents recomputed.
 
-import type { Doc, Entity, EntityId, FaceSig, FrameKind, Point, PointId, SegmentKey, Vec2 } from './types.ts';
+import type { Doc, Entity, EntityId, FaceSig, FrameKind, Point, PointId, RepeatDisplay, SegmentKey, Vec2 } from './types.ts';
 import { genId } from './id.ts';
-import { epsilon, frameVertexCount, intersectEntities, pairKey, projectOntoEntity, resolvePoint } from '../geometry/kernel.ts';
+import { epsilon, frameVertexCount, intersectEntities, invalidateResolveCache, pairKey, projectOntoEntity, resolvePoint } from '../geometry/kernel.ts';
 import { dist } from '../geometry/vec.ts';
 import { withSegmentMigration } from '../geometry/segmentstate.ts';
-import { deriveSegments, isParamTrimmed } from '../geometry/segments.ts';
+import { defaultSegmentKind, deriveSegments, fairSegmentState, invalidateSegmentCaches, isParamTrimmed, unfairedSegmentState } from '../geometry/segments.ts';
+import { invalidateRegionCaches } from '../geometry/regions.ts';
 import { circleDivisionPositions, segmentDivisionPositions, type SegmentSpan } from '../geometry/divide.ts';
 import { isEditablePointKind } from '../geometry/usage.ts';
 import { color, fairPalette, stroke } from '../render/tokens.ts';
@@ -57,14 +58,25 @@ export function placeFrame(doc: Doc, origin: Vec2, radius: number, rotation: num
   doc.frame.centreId = centreId;
 }
 
-let untitledCounter = 0;
+/** Phase 5.1: `legacyGuide` carries a Phase 5 document's single Guide toggle into its successors. */
+export function defaultRepeatDisplay(legacyGuide = true): RepeatDisplay {
+  return {
+    artwork: 'design',
+    constructionOverlay: false,
+    background: color.plaster,
+    fillOpacity: 1,
+    grid: false,
+    handles: legacyGuide,
+    motifBoundary: legacyGuide,
+  };
+}
 
 export function createDoc(frameKind: FrameKind, name?: string): Doc {
   const now = Date.now();
-  untitledCounter += 1;
   const doc: Doc = {
     id: genId('doc'),
-    name: name ?? `Untitled ${untitledCounter}`,
+    name: name ?? 'Untitled',
+    named: name !== undefined,
     schemaVersion: 2,
     // Placeholder until placeFrame() runs at the end of the draw-frame gesture (§Phase 1.1 item 1).
     frame: {
@@ -99,9 +111,11 @@ export function createDoc(frameKind: FrameKind, name?: string): Doc {
     pointTargets: { primary: true, derived: true, free: false },
     fairDefaults: { colour: color.ink, width: stroke.fairDefault },
     dividePrefs: { lastN: 6 },
-    fillDefaults: { colour: fairPalette[0]!.colour },
+    fillDefaults: { colour: fairPalette[0]!.colour, opacity: 1 },
+    toolPrefs: { circleMode: 'set', arcMode: 'measure', lastRadius: null },
     repeatView: { zoom: 1, pan: { x: 0, y: 0 } },
-    repeatGuide: true,
+    repeatDisplay: defaultRepeatDisplay(),
+    spaceDefaults: { colour: fairPalette[1]!.colour, opacity: 1 },
     createdAt: now,
     updatedAt: now,
   };
@@ -176,23 +190,6 @@ export function addOnCurvePoint(doc: Doc, host: EntityId, param: number, at: Vec
   return id;
 }
 
-/** Phase 2A: commits a completed (or tool-finished-open) polygon's vertex chain as line
- * entities sharing one groupId, so Select can treat them as a single shape later. Each edge
- * goes through addEntity, so edges materialize intersections with everything else — including
- * each other — exactly like any other construction. */
-export function addPolygonEntities(doc: Doc, vertexIds: PointId[], closed: boolean): EntityId[] {
-  const groupId = genId('grp');
-  const ids: EntityId[] = [];
-  const count = closed ? vertexIds.length : vertexIds.length - 1;
-  for (let i = 0; i < count; i++) {
-    const a = vertexIds[i]!;
-    const b = vertexIds[(i + 1) % vertexIds.length]!;
-    if (a === b) continue;
-    ids.push(addLineEntity(doc, a, b, groupId).id);
-  }
-  return ids;
-}
-
 /** Phase 2C: divides a line or arc segment into `of` equal parts — `of - 1` interior points,
  * anchored at the segment's own endpoints (spec: "start/anchor: its endpoints"). Position math
  * lives in geometry/divide.ts, shared with the compact slider's live preview (Phase 2.1). */
@@ -242,20 +239,6 @@ export function addCircleDivision(doc: Doc, hostId: EntityId, of: number, anchor
   return created;
 }
 
-/** Phase 2C: n/k star chords across a closed circle's division points — closed circles only
- * (§4.5: "star chords never wrap cyclically around an arc"). */
-export function addStarChords(doc: Doc, divisionPointIds: PointId[], k: number): EntityId[] {
-  const n = divisionPointIds.length;
-  const ids: EntityId[] = [];
-  for (let i = 0; i < n; i++) {
-    const a = divisionPointIds[i]!;
-    const b = divisionPointIds[(i + k) % n]!;
-    if (a === b) continue;
-    ids.push(addLineEntity(doc, a, b).id);
-  }
-  return ids;
-}
-
 /** Phase 2F: Trim — hides one segment (excluded from rendering outside Select, and later from
  * region/fill) without touching its parent entity or any other segment. Frame segments are
  * untrimmable. Returns false if refused. */
@@ -267,12 +250,6 @@ export function trimSegment(doc: Doc, entityId: EntityId, key: SegmentKey): bool
   return true;
 }
 
-/** Phase 2F: Restore — returns a trimmed segment to construction. */
-export function restoreSegment(doc: Doc, key: SegmentKey): void {
-  doc.segmentStates.delete(key);
-  doc.updatedAt = Date.now();
-}
-
 /** Phase 3A: fairs or un-fairs one segment — a plain state write, never touching the parent
  * entity or any other derived segment on it (so fairing one of a circle's six arcs never affects
  * the other five). `stroke` is only meaningful when fairing. Phase 3.4 item 1: un-fairing demotes
@@ -282,11 +259,16 @@ export function restoreSegment(doc: Doc, key: SegmentKey): void {
  * tracked "previous state", since that flag is already the authoritative fact for the whole
  * entity. Anything else reverts to the implicit default (deleting the entry = 'construction'). */
 export function setSegmentFair(doc: Doc, key: SegmentKey, fair: boolean, stroke?: { colour: string; width: number }): void {
+  // Phase 5.6: the role to return to is remembered on the Fair state itself (segments.ts), so a
+  // Construction span on an extended line un-Fairs to Construction, not to Extension.
+  const entity = doc.entities.find((e) => e.id === key.split(':')[0]);
+  const seg = entity ? deriveSegments(doc, entity).find((sg) => sg.key === key) : undefined;
   if (fair) {
-    doc.segmentStates.set(key, { state: 'fair', stroke: stroke ?? { ...doc.fairDefaults } });
+    const st = stroke ?? { ...doc.fairDefaults };
+    doc.segmentStates.set(key, entity && seg ? fairSegmentState(doc, entity, seg, st) : { state: 'fair', stroke: st });
   } else {
-    const entity = doc.entities.find((e) => e.id === key.split(':')[0]);
-    if (entity?.kind === 'line' && entity.extended) doc.segmentStates.set(key, { state: 'extension' });
+    const next = entity && seg ? unfairedSegmentState(doc, entity, seg) : null;
+    if (next) doc.segmentStates.set(key, next);
     else doc.segmentStates.delete(key);
   }
   doc.updatedAt = Date.now();
@@ -299,7 +281,11 @@ export function promoteEntityToFair(doc: Doc, entityId: EntityId): void {
   const entity = doc.entities.find((e) => e.id === entityId);
   if (!entity) return;
   const fairStroke = { ...doc.fairDefaults };
-  for (const seg of deriveSegments(doc, entity)) setSegmentFair(doc, seg.key, true, fairStroke);
+  // Phase 5.6 item 37: only the line's own finite span — never the Extension beyond it.
+  for (const seg of deriveSegments(doc, entity)) {
+    if (defaultSegmentKind(entity, seg) === 'extension') continue;
+    setSegmentFair(doc, seg.key, true, fairStroke);
+  }
 }
 
 /** Phase 3H: edits an already-fair segment's stroke in place — a no-op if it isn't fair (the
@@ -334,36 +320,18 @@ export function getRegionFill(doc: Doc, sig: FaceSig): string | undefined {
   return doc.fills.get(doc.activeColourway)?.get(sig);
 }
 
-/** Phase 3G: "Use frame in design" / "Stop using frame in design" — promotes or returns every
- * frame boundary segment in one pass, one undo step (the caller wraps this in commit()). Frame
- * segments stay untrimmable/undeletable regardless of `designEnabled` (enforced elsewhere: Trim
- * and whole-entity Delete both already refuse a `locked` entity). */
-export function setFrameDesignEnabled(doc: Doc, enabled: boolean): void {
-  doc.frame.designEnabled = enabled;
-  for (const entityId of doc.frame.entityIds) {
-    const entity = doc.entities.find((e) => e.id === entityId);
-    if (!entity) continue;
-    for (const seg of deriveSegments(doc, entity)) {
-      if (enabled) doc.segmentStates.set(seg.key, { state: 'fair', stroke: { ...doc.fairDefaults } });
-      else doc.segmentStates.delete(seg.key);
-    }
-  }
-  doc.updatedAt = Date.now();
-}
-
 export interface DeletionPlan {
   rootEntityId: EntityId;
   entityIds: Set<EntityId>;
   pointIds: Set<PointId>;
 }
 
-/** Phase 2G: the full dependency closure a whole-entity Delete would remove — every point
- * defined through the entity (or a point that becomes dangling as a result), and every entity
- * that in turn depends on one of those points. Pure; §4.6's confirmation reads the counts off
- * this before anything is actually removed. Frame entities/points are never included. */
-export function computeDeletionPlan(doc: Doc, rootEntityId: EntityId): DeletionPlan {
-  const entityIds = new Set<EntityId>([rootEntityId]);
-  const pointIds = new Set<PointId>();
+/** Phase 2G / Phase 5.2: everything that stops being constructible once `entityIds` and
+ * `pointIds` are gone — every point defined through them (or left dangling as a result), and
+ * every entity that in turn depends on one of those points — grown in place. Frame entities and
+ * points are never included. Also takes each removed circle's hidden radius handle, which has no
+ * other role. */
+function growDependencyClosure(doc: Doc, entityIds: Set<EntityId>, pointIds: Set<PointId>): void {
   let changed = true;
   while (changed) {
     changed = false;
@@ -374,7 +342,7 @@ export function computeDeletionPlan(doc: Doc, rootEntityId: EntityId): DeletionP
       let depends = false;
       if (p.kind === 'intersection' && (entityIds.has(p.entities[0]) || entityIds.has(p.entities[1]))) depends = true;
       else if (p.kind === 'on-curve' && entityIds.has(p.host)) depends = true;
-      else if (p.kind === 'division' && entityIds.has(p.host)) depends = true;
+      else if (p.kind === 'division' && (entityIds.has(p.host) || (p.span && (pointIds.has(p.span[0]) || pointIds.has(p.span[1]))))) depends = true;
       else if (p.kind === 'centre' && entityIds.has(p.entity)) depends = true;
       else if (p.kind === 'midpoint' && (pointIds.has(p.a) || pointIds.has(p.b))) depends = true;
       if (depends) {
@@ -391,7 +359,30 @@ export function computeDeletionPlan(doc: Doc, rootEntityId: EntityId): DeletionP
       }
     }
   }
+  for (const e of doc.entities) {
+    if (!entityIds.has(e.id) || e.kind !== 'circle') continue;
+    const handle = doc.points.find((p) => p.id === e.through);
+    const sharedElsewhere = doc.entities.some((o) => !entityIds.has(o.id) && o.kind === 'circle' && o.through === e.through);
+    if (handle?.kind === 'free' && handle.hidden && !sharedElsewhere) pointIds.add(handle.id);
+  }
+}
+
+export function computeDeletionPlan(doc: Doc, rootEntityId: EntityId): DeletionPlan {
+  const entityIds = new Set<EntityId>([rootEntityId]);
+  const pointIds = new Set<PointId>();
+  growDependencyClosure(doc, entityIds, pointIds);
   return { rootEntityId, entityIds, pointIds };
+}
+
+/** Phase 5.2: Delete for any selection — the union over every selected shape. The frame is never
+ * deleted (it stays protected from destructive edits even though it can now be Faired directly). */
+export function computeEntitiesDeletionPlan(doc: Doc, ids: EntityId[]): DeletionPlan | null {
+  const roots = ids.filter((id) => !doc.entities.find((e) => e.id === id)?.locked);
+  if (roots.length === 0) return null;
+  const entityIds = new Set<EntityId>(roots);
+  const pointIds = new Set<PointId>();
+  growDependencyClosure(doc, entityIds, pointIds);
+  return { rootEntityId: roots[0]!, entityIds, pointIds };
 }
 
 /** Every OTHER entity sharing a group with `entityId` (Polygon's edges), if any. */
@@ -432,22 +423,18 @@ export interface PointDeletionPlan {
   pointIds: Set<PointId>; // includes pointId itself
 }
 
-/** Phase 3.5 item 3: the dependency closure deleting one editable point would remove — every
- * entity directly anchored on it (circle centre/through, line a/b), plus whatever THOSE entities'
- * own deletion would in turn take with them (reuses computeDeletionPlan per dependent entity).
- * Null for a derived/structural point kind — there is no "delete" for those, only an explanation. */
+/** Phase 3.5 item 3 / Phase 5.2 item 13: what deleting one point removes. A hand-placed point
+ * (free/on-curve) goes itself, with everything built on it. A derived point (intersection,
+ * midpoint, division, centre…) is mathematically fixed by the geometry that defines it, so it
+ * stays; Delete then means "remove what was built FROM this point". Null when that is nothing. */
 export function computePointDeletionPlan(doc: Doc, pointId: PointId): PointDeletionPlan | null {
   const point = doc.points.find((p) => p.id === pointId);
-  if (!point || !isEditablePointKind(point.kind)) return null;
-  const entityIds = new Set<EntityId>();
-  const pointIds = new Set<PointId>([pointId]);
-  for (const e of doc.entities) {
-    const dependsOnPoint = e.kind === 'circle' ? e.centre === pointId || e.through === pointId : e.a === pointId || e.b === pointId;
-    if (!dependsOnPoint) continue;
-    const plan = computeDeletionPlan(doc, e.id);
-    for (const eid of plan.entityIds) entityIds.add(eid);
-    for (const pid of plan.pointIds) pointIds.add(pid);
-  }
+  if (!point) return null;
+  const editable = isEditablePointKind(point.kind);
+  const entityIds = new Set<EntityId>(pointDependents(doc, pointId).map((d) => d.entityId));
+  if (!editable && entityIds.size === 0) return null;
+  const pointIds = new Set<PointId>(editable ? [pointId] : []);
+  growDependencyClosure(doc, entityIds, pointIds);
   return { pointId, entityIds, pointIds };
 }
 
@@ -464,35 +451,45 @@ export function applyPointDeletionPlan(doc: Doc, plan: PointDeletionPlan): void 
 }
 
 /**
- * Phase 3.5 item 3: "Merge into…" — redirects every compatible reference to `sourceId` (an
- * editable free/on-curve point only — the caller is expected to have checked) onto `destId`
- * instead of removing them, then drops the now-unreferenced source point. Unlike Delete, nothing
- * else is removed: every entity/point that depended on the source keeps working, just anchored
- * on the destination now — "preserve geometry integrity." `destId` may be any existing point of
- * any kind (merging a stray free point onto an intersection that already sits there is exactly
- * the motivating case), never a new coordinate — this never moves a derived point, only
- * repoints references that used to terminate at the source.
+ * Phase 3.5 item 3 / Phase 5.2: "Merge into…" — every construction anchored on `sourceId` is
+ * re-anchored on `destId` instead, then recomputed (its crossings with everything else follow it).
+ * A hand-placed source point is then dropped; a derived one stays, since the geometry defining it
+ * still exists. A shape that would collapse onto itself (a line whose two ends are now the same
+ * point) is removed rather than left degenerate. One commit, one undo step.
  */
-export function mergePoint(doc: Doc, sourceId: PointId, destId: PointId): void {
-  const redirect = (id: PointId): PointId => (id === sourceId ? destId : id);
-  for (const e of doc.entities) {
-    if (e.kind === 'circle') {
-      e.centre = redirect(e.centre);
-      e.through = redirect(e.through);
-    } else {
-      e.a = redirect(e.a);
-      e.b = redirect(e.b);
-    }
-  }
-  for (const p of doc.points) {
-    if (p.kind === 'midpoint') {
-      p.a = redirect(p.a);
-      p.b = redirect(p.b);
-    } else if (p.kind === 'division' && p.span) {
-      p.span = [redirect(p.span[0]), redirect(p.span[1])];
-    }
-  }
-  doc.points = doc.points.filter((p) => p.id !== sourceId);
+export function mergePointInto(doc: Doc, sourceId: PointId, destId: PointId): void {
+  if (sourceId === destId) return;
+  const source = doc.points.find((p) => p.id === sourceId);
+  if (!source) return;
+  withSegmentMigration(
+    doc,
+    doc.entities.map((e) => e.id),
+    () => {
+      const changed = dependentEntities(doc, pointDependents(doc, sourceId).map((d) => d.entityId));
+      const redirect = (id: PointId): PointId => (id === sourceId ? destId : id);
+      for (const e of doc.entities) {
+        if (e.locked) continue;
+        if (e.kind === 'circle') {
+          e.centre = redirect(e.centre);
+          e.through = redirect(e.through);
+        } else {
+          e.a = redirect(e.a);
+          e.b = redirect(e.b);
+        }
+      }
+      for (const p of doc.points) {
+        if (p.kind === 'midpoint') {
+          p.a = redirect(p.a);
+          p.b = redirect(p.b);
+        } else if (p.kind === 'division' && p.span) {
+          p.span = [redirect(p.span[0]), redirect(p.span[1])];
+        }
+      }
+      if (isEditablePointKind(source.kind)) doc.points = doc.points.filter((p) => p.id !== sourceId);
+      removeDegenerateEntities(doc, changed);
+      refreshIntersections(doc, changed);
+    },
+  );
   doc.updatedAt = Date.now();
 }
 
@@ -540,4 +537,258 @@ export function cloneDoc(doc: Doc): Doc {
     },
     view: { ...doc.view, pan: { ...doc.view.pan } },
   };
+}
+
+// ---- Phase 5.2: editing existing geometry in place ----
+
+/** Every geometry cache keyed on a Doc — needed whenever a point MOVES within one commit (the
+ * caches' own count-based guards only notice points/entities being added or removed). */
+export function invalidateGeometryCaches(doc: Doc): void {
+  invalidateResolveCache(doc);
+  invalidateSegmentCaches(doc);
+  invalidateRegionCaches(doc);
+}
+
+export type EndpointRole = 'a' | 'b' | 'centre' | 'through';
+export interface PointDependent {
+  entityId: EntityId;
+  role: EndpointRole;
+}
+
+/** Phase 5.2 items 14/15: the constructions that use `pointId` as a defining point — a line's
+ * end, a circle's centre, or a circle's (visible) radius point. The frame is never re-anchored. */
+export function pointDependents(doc: Doc, pointId: PointId): PointDependent[] {
+  const out: PointDependent[] = [];
+  for (const e of doc.entities) {
+    if (e.locked) continue;
+    if (e.kind === 'line') {
+      if (e.a === pointId) out.push({ entityId: e.id, role: 'a' });
+      if (e.b === pointId) out.push({ entityId: e.id, role: 'b' });
+    } else {
+      if (e.centre === pointId) out.push({ entityId: e.id, role: 'centre' });
+      if (e.through === pointId) out.push({ entityId: e.id, role: 'through' });
+    }
+  }
+  return out;
+}
+
+/** `ids` plus every construction whose geometry follows from them — the set that must be
+ * recomputed when any of `ids` changes shape or position. */
+function dependentEntities(doc: Doc, ids: EntityId[]): Set<EntityId> {
+  const entityIds = new Set<EntityId>(ids);
+  growDependencyClosure(doc, entityIds, new Set<PointId>());
+  return entityIds;
+}
+
+function removeDegenerateEntities(doc: Doc, candidates: Set<EntityId>): void {
+  const degenerate = doc.entities.filter((e) => candidates.has(e.id) && (e.kind === 'line' ? e.a === e.b : e.centre === e.through));
+  if (degenerate.length === 0) return;
+  const plan = computeEntitiesDeletionPlan(
+    doc,
+    degenerate.map((e) => e.id),
+  );
+  if (plan) applyDeletionPlan(doc, plan);
+  for (const e of degenerate) candidates.delete(e.id);
+}
+
+/** New crossings between `entity` and `others`, as explicit intersection points — never inside a
+ * trimmed span of either curve (a removed piece, or the unswept part of an Arc). */
+function materializeIntersections(doc: Doc, entity: Entity, others: Entity[]): void {
+  for (const other of others) {
+    if (other.id === entity.id) continue;
+    const [ka, kb] = pairKey(entity.id, other.id);
+    intersectEntities(doc, entity, other).forEach((loc, i) => {
+      if (isParamTrimmed(doc, other, projectOntoEntity(doc, other, loc).param)) return;
+      if (isParamTrimmed(doc, entity, projectOntoEntity(doc, entity, loc).param)) return;
+      mergeOrCreatePoint(doc, loc, (id) => ({ id, kind: 'intersection', entities: [ka, kb], branch: i as 0 | 1 }));
+    });
+  }
+}
+
+/**
+ * After `changed` entities moved or changed shape: crossings that no longer exist are removed
+ * (together with anything that was built on them), and new crossings are materialized — so
+ * "dependent geometry recomputes" rather than leaving stale points behind. Callers wrap this in
+ * withSegmentMigration so Fair/Trim state follows the pieces it belonged to.
+ */
+function refreshIntersections(doc: Doc, changed: Set<EntityId>): void {
+  invalidateGeometryCaches(doc);
+  const dead = new Set<PointId>();
+  for (const p of doc.points) {
+    if (p.kind !== 'intersection' || !(changed.has(p.entities[0]) || changed.has(p.entities[1]))) continue;
+    const e1 = doc.entities.find((e) => e.id === p.entities[0]);
+    const e2 = doc.entities.find((e) => e.id === p.entities[1]);
+    if (!e1 || !e2 || intersectEntities(doc, e1, e2).length <= p.branch) dead.add(p.id);
+  }
+  if (dead.size > 0) {
+    const entityIds = new Set<EntityId>();
+    for (const e of doc.entities) {
+      if (e.locked) continue;
+      const anchored = e.kind === 'circle' ? dead.has(e.centre) || dead.has(e.through) : dead.has(e.a) || dead.has(e.b);
+      if (anchored) entityIds.add(e.id);
+    }
+    growDependencyClosure(doc, entityIds, dead);
+    applyDeletionPlan(doc, { rootEntityId: '', entityIds, pointIds: dead });
+    for (const id of entityIds) changed.delete(id);
+    invalidateGeometryCaches(doc);
+  }
+  const all = doc.entities.slice();
+  for (const id of changed) {
+    const e = doc.entities.find((x) => x.id === id);
+    if (e) materializeIntersections(doc, e, all);
+  }
+  invalidateGeometryCaches(doc);
+}
+
+/** A circle's hidden radius handle (the same device the circle frame uses): a point with no
+ * user-facing role that fixes the radius when it comes from a remembered distance, not a point. */
+function addRadiusHandle(doc: Doc, centre: Vec2, radius: number, angle: number): PointId {
+  const id = genId('pt');
+  doc.points.push({ id, kind: 'free', x: centre.x + radius * Math.cos(angle), y: centre.y + radius * Math.sin(angle), hidden: true });
+  return id;
+}
+
+function hiddenRadiusHandle(doc: Doc, pointId: PointId): Extract<Point, { kind: 'free' }> | null {
+  const p = doc.points.find((pt) => pt.id === pointId);
+  return p?.kind === 'free' && p.hidden ? p : null;
+}
+
+/** Phase 5.2 item 17: Circle's "Same radius" — a new circle at `centreId` with a remembered radius. */
+export function addCircleWithRadius(doc: Doc, centreId: PointId, radius: number): Entity {
+  const c = resolvePoint(doc, centreId);
+  return addCircleEntity(doc, centreId, addRadiusHandle(doc, c, radius, 0));
+}
+
+function normalizeAngle(a: number): number {
+  const twoPi = Math.PI * 2;
+  return ((a % twoPi) + twoPi) % twoPi;
+}
+
+/**
+ * Phase 5.2 item 19: an Arc, built the way a compass draws one — a circle entity whose unswept
+ * part is trimmed away. Trim already means "genuinely absent" everywhere (not drawn, not hit, no
+ * new crossings, no region boundary), so an Arc needs no new entity kind: Fair, Divide, Fill,
+ * Select and Repeat all read it correctly as-is. Its two ends are real points (`arcEnd`) that
+ * other constructions can snap to. `sweep` is signed: positive counter-clockwise.
+ */
+export function addArc(doc: Doc, centreId: PointId, radius: number, startAngle: number, sweep: number): EntityId {
+  const c = resolvePoint(doc, centreId);
+  const span = Math.min(Math.abs(sweep), Math.PI * 2);
+  if (span >= Math.PI * 2 - 1e-3) return addCircleEntity(doc, centreId, addRadiusHandle(doc, c, radius, startAngle)).id;
+  const from = sweep >= 0 ? startAngle : startAngle + sweep; // counter-clockwise start
+  const circle: Entity = { id: genId('en'), kind: 'circle', centre: centreId, through: addRadiusHandle(doc, c, radius, from) };
+  const others = doc.entities.slice();
+  withSegmentMigration(doc, [...others.map((e) => e.id), circle.id], () => {
+    doc.entities.push(circle);
+    for (const angle of [from, from + span]) {
+      const at = { x: c.x + radius * Math.cos(angle), y: c.y + radius * Math.sin(angle) };
+      mergeOrCreatePoint(doc, at, (id) => ({ id, kind: 'on-curve', host: circle.id, param: normalizeAngle(angle), arcEnd: true }));
+    }
+    for (const seg of deriveSegments(doc, circle)) {
+      let segSpan = seg.toParam - seg.fromParam;
+      if (segSpan <= 0) segSpan += Math.PI * 2;
+      const mid = seg.fromParam + segSpan / 2;
+      if (normalizeAngle(mid - from) > span) doc.segmentStates.set(seg.key, { state: 'trimmed' });
+    }
+    materializeIntersections(doc, circle, others);
+  });
+  doc.updatedAt = Date.now();
+  return circle.id;
+}
+
+/** A whole circle with fewer than two points on it has no segments, so there is nothing to Fair
+ * or Trim yet. Give it two structural on-curve points (opposite each other, anchored on whatever
+ * point it already has) so the whole circle can be promoted as one closed shape. */
+export function ensureCircleSegments(doc: Doc, entityId: EntityId): void {
+  const e = doc.entities.find((x) => x.id === entityId);
+  if (!e || e.kind !== 'circle' || deriveSegments(doc, e).length > 0) return;
+  const c = resolvePoint(doc, e.centre);
+  const r = dist(c, resolvePoint(doc, e.through));
+  const eps = epsilon(doc);
+  const onIt = doc.points.find((p) => {
+    if (p.id === e.through || (p.kind === 'free' && p.hidden)) return false;
+    return Math.abs(dist(resolvePoint(doc, p.id), c) - r) < eps;
+  });
+  const t = resolvePoint(doc, e.through);
+  const base = onIt ? Math.atan2(resolvePoint(doc, onIt.id).y - c.y, resolvePoint(doc, onIt.id).x - c.x) : Math.atan2(t.y - c.y, t.x - c.x);
+  const angles = onIt ? [base + Math.PI] : [base, base + Math.PI];
+  for (const a of angles) addOnCurvePoint(doc, e.id, normalizeAngle(a), { x: c.x + r * Math.cos(a), y: c.y + r * Math.sin(a) });
+}
+
+/**
+ * Phase 5.2 item 14: re-anchor one construction's defining point, e.g. line A→B becomes A→C.
+ * The old point is untouched (an intersection stays where the mathematics puts it); only the
+ * dependency changes, and everything downstream recomputes. A circle whose radius came from a
+ * remembered distance keeps that radius when its centre is re-anchored. One commit, one undo step.
+ */
+export function rebindEndpoint(doc: Doc, dep: PointDependent, newPointId: PointId): void {
+  const entity = doc.entities.find((e) => e.id === dep.entityId);
+  if (!entity || entity.locked) return;
+  withSegmentMigration(
+    doc,
+    doc.entities.map((e) => e.id),
+    () => {
+      if (entity.kind === 'line') {
+        if (dep.role === 'a') entity.a = newPointId;
+        else if (dep.role === 'b') entity.b = newPointId;
+      } else if (dep.role === 'centre') {
+        const handle = hiddenRadiusHandle(doc, entity.through);
+        if (handle) {
+          const oldC = resolvePoint(doc, entity.centre);
+          const newC = resolvePoint(doc, newPointId);
+          handle.x += newC.x - oldC.x;
+          handle.y += newC.y - oldC.y;
+        }
+        entity.centre = newPointId;
+      } else if (dep.role === 'through') {
+        entity.through = newPointId;
+      }
+      const changed = dependentEntities(doc, [entity.id]);
+      removeDegenerateEntities(doc, changed);
+      refreshIntersections(doc, changed);
+    },
+  );
+  doc.updatedAt = Date.now();
+}
+
+/** Phase 5.2 item 14: a hand-placed point moves directly, carrying what's built on it (circles
+ * centred on it keep a remembered radius). */
+export function moveFreePoint(doc: Doc, pointId: PointId, to: Vec2): void {
+  const p = doc.points.find((pt) => pt.id === pointId);
+  if (!p || p.kind !== 'free') return;
+  withSegmentMigration(
+    doc,
+    doc.entities.map((e) => e.id),
+    () => {
+      const dx = to.x - p.x;
+      const dy = to.y - p.y;
+      p.x = to.x;
+      p.y = to.y;
+      for (const e of doc.entities) {
+        if (e.kind !== 'circle' || e.centre !== pointId) continue;
+        const handle = hiddenRadiusHandle(doc, e.through);
+        if (handle) {
+          handle.x += dx;
+          handle.y += dy;
+        }
+      }
+      refreshIntersections(doc, dependentEntities(doc, pointDependents(doc, pointId).map((d) => d.entityId)));
+    },
+  );
+  doc.updatedAt = Date.now();
+}
+
+/** Phase 5.2 item 14: an on-curve point (including an Arc's end) slides along its own curve. */
+export function slideOnCurvePoint(doc: Doc, pointId: PointId, param: number): void {
+  const p = doc.points.find((pt) => pt.id === pointId);
+  if (!p || p.kind !== 'on-curve') return;
+  withSegmentMigration(
+    doc,
+    doc.entities.map((e) => e.id),
+    () => {
+      p.param = param;
+      refreshIntersections(doc, dependentEntities(doc, pointDependents(doc, pointId).map((d) => d.entityId)));
+    },
+  );
+  doc.updatedAt = Date.now();
 }

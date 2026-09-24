@@ -29,7 +29,9 @@ export type Point =
       arcSpan?: number;
     }
   | { id: PointId; kind: 'midpoint'; a: PointId; b: PointId }
-  | { id: PointId; kind: 'on-curve'; host: EntityId; param: number }
+  // arcEnd (Phase 5.2): an Arc's own start/end point — a real construction node, so it snaps as
+  // a Primary target even though it is stored like any other on-curve point.
+  | { id: PointId; kind: 'on-curve'; host: EntityId; param: number; arcEnd?: boolean }
   // free: unconstrained; used for free radii and the frame circle's own
   // internal through-point. `hidden` is an internal rendering hint (not part
   // of the spec's snippet) so a frame circle's defining through-point, which
@@ -50,6 +52,10 @@ export type SegmentKey = string; // `${entityId}:${fromPointId}:${toPointId}`
 export interface SegmentState {
   state: 'construction' | 'extension' | 'fair' | 'trimmed';
   stroke?: { colour: string; width: number };
+  /** Phase 5.6: what a Fair segment was before it was promoted (Construction or Extension), so
+   * un-Fairing returns exactly that — a finite Construction span on an extended line goes back to
+   * solid Construction, an Extension-only line's span back to dashed Extension. */
+  base?: 'construction' | 'extension';
 }
 
 export type FaceSig = string;
@@ -82,6 +88,16 @@ export interface RepeatSystem {
   gapFills: Map<string, string>;
 }
 
+export interface RepeatDisplay {
+  artwork: 'design' | 'stroke' | 'fill';
+  constructionOverlay: boolean;
+  background: string;
+  fillOpacity: number; // 0..1, applied at render time only
+  grid: boolean;
+  handles: boolean;
+  motifBoundary: boolean;
+}
+
 export interface ViewState {
   zoom: number;
   pan: { x: number; y: number };
@@ -105,6 +121,8 @@ export interface Frame {
 export interface Doc {
   id: string;
   name: string;
+  /** Phase 5.5 item 6: true once the participant has given this artwork a name (Save asks once). */
+  named: boolean;
   schemaVersion: 2;
   frame: Frame;
   points: Point[];
@@ -119,7 +137,7 @@ export interface Doc {
   view: ViewState;
   /**
    * Phase 3.4 item 5: replaces the old binary Point Lock. Governs which existing point KINDS
-   * compete as snap/select targets for the geometry-creation tools (Circle/Line/Polygon) — not
+   * compete as snap/select targets for the geometry-creation tools (Circle/Line/Arc) — not
    * merely what's drawn (that's `PointVisibility`, deliberately kept separate — item 9). A
    * document preference, not undo-tracked (like `view`).
    * - `primary`: intersections, centres, frame vertices.
@@ -142,18 +160,24 @@ export interface Doc {
   /** Phase 4 item 5: the Fill tool's own current colour — what tapping a region next applies,
    * mirroring `fairDefaults`. What an already-filled region actually renders is its own entry in
    * `fills`, undo-tracked normally through commit(); this is only the tool's next-fill default. */
-  fillDefaults: { colour: string };
+  fillDefaults: { colour: string; opacity: number };
+  /** Phase 5.2 items 17/19: Circle's and Arc's own modes, and the radius they share — the last
+   * radius Circle set or Arc measured, reused by either tool's "Same radius". A document
+   * preference like `dividePrefs`: not undo-tracked, persisted by autosave. */
+  toolPrefs: { circleMode: 'set' | 'same'; arcMode: 'measure' | 'same'; lastRadius: number | null };
   /** Phase 5 item 12: Repeat's own pan/zoom — separate from `view` so navigating the tessellation
    * never moves the participant's Construct viewport (and vice versa). Not undo-tracked, exactly
    * like `view` (Phase 3.6 item 2's fix applies here too — see AppController.undo/redo). Which
    * workspace is showing right now is `view.workspace`, already part of the schema. */
   repeatView: { zoom: number; pan: Vec2 };
-  /** Phase 5 item 14: the optional Guide overlay (motif/frame boundary, lattice directions,
-   * neighbour anchors) — an interaction aid, never part of the artwork, so it's a display
-   * preference like `pointVisibility`, not undo-tracked and not part of `repeat` itself (which
-   * IS undo-tracked — keeping this out of it avoids the same view/undo bug Phase 3.6 item 2 fixed
-   * for `view`, since a whole-`repeat` snapshot restore must never silently fight a live toggle). */
-  repeatGuide: boolean;
+  /** Phase 5.1: how Repeat draws the motif and its guides — display preferences only, never the
+   * artwork's own stored Fair/fill state. Not undo-tracked (carried across undo/redo like
+   * `repeatView`). Replaces Phase 5's single `repeatGuide` boolean. */
+  repeatDisplay: RepeatDisplay;
+  /** Phase 5.6 item 20: Space's own next colour and opacity (null = "No fill", which only clears).
+   * A tool preference like `fillDefaults`; what each Space class actually shows is its own entry in
+   * `repeat.gapFills`, undo-tracked through commit(). */
+  spaceDefaults: { colour: string | null; opacity: number };
   createdAt: number;
   updatedAt: number;
 }

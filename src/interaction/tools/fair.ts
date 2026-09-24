@@ -8,10 +8,11 @@ import type { Doc, Entity, SegmentKey, SegmentState, Vec2 } from '../../model/ty
 import type { AppController, FairTraceState, ViewTransform } from '../../app/controller.ts';
 import { worldToScreen } from '../../app/controller.ts';
 import { resolvePoint } from '../../geometry/kernel.ts';
-import { deriveSegments, deriveSelectableGroups, groupContainingParam, segmentKey, type DerivedSegment } from '../../geometry/segments.ts';
+import { deriveSegments, deriveSelectableGroups, fairSegmentState, groupContainingParam, segmentKey, unfairedSegmentState, type DerivedSegment } from '../../geometry/segments.ts';
 import { angleBetween, otherEndpoint, outgoingTangent, segmentsAtJunction, type JunctionCandidate } from '../../geometry/trace.ts';
 import { dist } from '../../geometry/vec.ts';
 import { pickCurveHit, segmentContainingParam } from '../hittest.ts';
+import { ensureCircleSegments, setSegmentFair } from '../../model/doc.ts';
 import type { Gesture, ToolModule } from './types.ts';
 
 const TAP_TRAVEL_PX = 6; // spec §4.7: "Tap (≤ 6 px travel)"
@@ -31,18 +32,14 @@ interface ChainLink {
   entryHeadingScreen: Vec2;
 }
 
-function fairStateFor(controller: AppController): SegmentState {
-  return { state: 'fair', stroke: { ...controller.doc.fairDefaults } };
+function fairStateFor(controller: AppController, entity: Entity, seg: DerivedSegment): SegmentState {
+  return fairSegmentState(controller.doc, entity, seg, controller.doc.fairDefaults);
 }
 
-/** Phase 3.4 item 1: "demote it back to its previous non-Fair state" — an Extension line's
- * segment reverts to Extension (derived from its parent entity's own `extended` flag, the one
- * authoritative fact, rather than tracking a separate "previous state"), everything else reverts
- * to the implicit default by clearing the entry (= 'construction'). Mirrors model/doc.ts's
- * setSegmentFair, which the tap-only path (no active trace) still goes through directly. */
-function revertState(controller: AppController, entityId: string): SegmentState | null {
-  const entity = controller.doc.entities.find((e) => e.id === entityId);
-  return entity?.kind === 'line' && entity.extended ? { state: 'extension' } : null;
+/** Phase 3.4 item 1 / Phase 5.6: demote back to the role the piece had before it was Faired
+ * (remembered on its Fair state — see segments.ts), null meaning "no entry: the default". */
+function revertState(controller: AppController, entity: Entity, seg: DerivedSegment): SegmentState | null {
+  return unfairedSegmentState(controller.doc, entity, seg);
 }
 
 function selectableGroupHere(doc: Doc, entity: Entity, param: number) {
@@ -56,21 +53,19 @@ function beginFairTraceGesture(controller: AppController, view: ViewTransform, s
   if (!hit) return null;
   const { entity } = hit;
 
-  if (entity.locked && !doc.frame.designEnabled) {
-    // Phase 3.6 item 7: locked only protects destructive edits (Trim/Delete) — Fair must still be
-    // able to select/highlight a frame segment so the context band can offer "Use frame in
-    // design", the one valid action on it while it's outside the design.
+  // Phase 5.2 item 25: the frame Fairs like anything else — no "use frame in design" step. It
+  // stays protected only from destructive edits (Trim/Delete), which Fair never performs.
+  // A whole circle with nothing on it yet has no segments; a tap promotes the whole circle.
+  if (deriveSegments(doc, entity).length === 0) {
     return {
       onMove() {},
-      onUp(sp, wasDrag) {
+      onUp(_sp, wasDrag) {
         if (wasDrag) return;
-        const reHit = pickCurveHit(doc, view, sp) ?? hit;
-        const group = selectableGroupHere(doc, reHit.entity, reHit.param);
-        if (group) {
-          controller.select([{ kind: 'segment', entityId: group.entityId, from: group.from, to: group.to, fromParam: group.fromParam, toParam: group.toParam, keys: group.segments.map((s) => s.key) }]);
-        } else {
-          controller.select([{ kind: 'entity', entityId: reHit.entity.id }]);
-        }
+        controller.commit((d) => {
+          ensureCircleSegments(d, entity.id);
+          const fresh = d.entities.find((e) => e.id === entity.id);
+          if (fresh) for (const s of deriveSegments(d, fresh)) setSegmentFair(d, s.key, true);
+        });
       },
       onCancel() {
         controller.notify();
@@ -94,7 +89,7 @@ function beginFairTraceGesture(controller: AppController, view: ViewTransform, s
   for (const groupSeg of group?.segments ?? [seg]) {
     const k = segmentKey(entity.id, groupSeg.from, groupSeg.to);
     originalStates.set(k, doc.segmentStates.get(k));
-    draft.set(k, fairing ? fairStateFor(controller) : revertState(controller, entity.id));
+    draft.set(k, fairing ? fairStateFor(controller, entity, groupSeg) : revertState(controller, entity, groupSeg));
   }
 
   const chain: ChainLink[] = [];
@@ -146,7 +141,8 @@ function beginFairTraceGesture(controller: AppController, view: ViewTransform, s
   function markTouched(entityId: string, s: DerivedSegment): SegmentKey {
     const k = segmentKey(entityId, s.from, s.to);
     if (!originalStates.has(k)) originalStates.set(k, doc.segmentStates.get(k));
-    draft.set(k, fairing ? fairStateFor(controller) : revertState(controller, entityId));
+    const owner = doc.entities.find((e) => e.id === entityId)!;
+    draft.set(k, fairing ? fairStateFor(controller, owner, s) : revertState(controller, owner, s));
     return k;
   }
 
@@ -175,7 +171,6 @@ function beginFairTraceGesture(controller: AppController, view: ViewTransform, s
     if (!headingScreen) return false;
     let best: { entityId: string; seg: DerivedSegment; endpointId: string; angle: number } | null = null;
     for (const e of doc.entities) {
-      if (e.locked && !doc.frame.designEnabled) continue;
       for (const s of deriveSegments(doc, e)) {
         const k = segmentKey(e.id, s.from, s.to);
         if (draft.has(k)) continue;
@@ -268,7 +263,7 @@ function beginFairTraceGesture(controller: AppController, view: ViewTransform, s
       const distToJunction = dist(sp, junctionScreen);
 
       if (distToJunction <= JUNCTION_ZONE_PX) {
-        const candidates = segmentsAtJunction(doc, last.exitJunction, last.key, doc.frame.designEnabled);
+        const candidates = segmentsAtJunction(doc, last.exitJunction, last.key);
         currentJunctionCandidates = candidates;
         const scored = candidates
           .map((c) => {

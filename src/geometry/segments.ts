@@ -2,7 +2,7 @@
 // to the Divide/Fair/Fill pass — this covers just enough to let Select distinguish "a piece of
 // this curve" from "the whole entity", per Phase 1.2 item 3).
 
-import type { Doc, Entity, EntityId, PointId, Vec2 } from '../model/types.ts';
+import type { Doc, Entity, EntityId, PointId, SegmentState, Vec2 } from '../model/types.ts';
 import { epsilon, projectOntoEntity, resolvePoint } from './kernel.ts';
 
 export interface DerivedSegment {
@@ -139,6 +139,49 @@ export function deriveSegments(doc: Doc, entity: Entity): DerivedSegment[] {
   return segs;
 }
 
+// ---- Phase 5.6 items 32–38: Construction and Extension on one supporting line ----
+//
+// A line entity is ONE supporting line: its own span a–b, plus — when `extended` — the rest of the
+// infinite line as Extension. So "Construction A–B" and "Extension through A–B" are two roles of the
+// same entity, never two coincident lines (a doubled edge is exactly what used to merge Fill regions).
+// Pieces outside a–b on an extended line are Extension unless something explicit says otherwise;
+// the a–b span is Construction unless marked (an Extension-mode line marks its span 'extension').
+
+export type BaseKind = 'construction' | 'extension';
+
+export function defaultSegmentKind(entity: Entity, seg: { fromParam: number; toParam: number }): BaseKind {
+  if (entity.kind !== 'line' || !entity.extended) return 'construction';
+  const mid = (seg.fromParam + seg.toParam) / 2;
+  return mid < -1e-9 || mid > 1 + 1e-9 ? 'extension' : 'construction';
+}
+
+/** What a piece is whenever it isn't Fair or trimmed: its explicit role, the role it had before it
+ * was Faired, or its default by position. */
+export function segmentBaseKind(doc: Doc, entity: Entity, seg: DerivedSegment): BaseKind {
+  const st = doc.segmentStates.get(seg.key);
+  if (st?.state === 'construction' || st?.state === 'extension') return st.state;
+  if (st?.base) return st.base;
+  // Fair saved before Phase 5.6 carries no base: the old rule (an extended line reverts to Extension).
+  if (st?.state === 'fair' && entity.kind === 'line' && entity.extended) return 'extension';
+  return defaultSegmentKind(entity, seg);
+}
+
+/** The state a piece is drawn with — explicit, else its default role. */
+export function effectiveSegmentKind(doc: Doc, entity: Entity, seg: DerivedSegment): SegmentState['state'] {
+  return doc.segmentStates.get(seg.key)?.state ?? defaultSegmentKind(entity, seg);
+}
+
+/** Fair, remembering the role to return to. */
+export function fairSegmentState(doc: Doc, entity: Entity, seg: DerivedSegment, stroke: { colour: string; width: number }): SegmentState {
+  return { state: 'fair', stroke: { ...stroke }, base: segmentBaseKind(doc, entity, seg) };
+}
+
+/** Un-Fair: back to the remembered role (null = no entry needed, the default already is it). */
+export function unfairedSegmentState(doc: Doc, entity: Entity, seg: DerivedSegment): SegmentState | null {
+  const base = segmentBaseKind(doc, entity, seg);
+  return base === defaultSegmentKind(entity, seg) ? null : { state: base };
+}
+
 /**
  * Phase 2.1 item 4: true Trim — a param genuinely inside a trimmed segment reads as trimmed
  * regardless of what's asking (rendering, hit-testing, or a new entity's intersection
@@ -233,6 +276,13 @@ function computeSelectableGroups(doc: Doc, entity: Entity): SelectableGroup[] {
 // part of the cache key too — this is the literal mechanism behind item 4's "recompute derived
 // selectable segments when the target-category settings change."
 const perDocGroupCache = new WeakMap<Doc, { pointCount: number; entityCount: number; derived: boolean; byEntity: Map<EntityId, SelectableGroup[]> }>();
+
+/** Phase 5.2: see kernel.ts's invalidateResolveCache — the count-based guards above can't see a
+ * point that MOVED, only one added or removed. */
+export function invalidateSegmentCaches(doc: Doc): void {
+  perDocSegmentCache.delete(doc);
+  perDocGroupCache.delete(doc);
+}
 
 export function deriveSelectableGroups(doc: Doc, entity: Entity): SelectableGroup[] {
   const derived = doc.pointTargets.derived;

@@ -1,5 +1,8 @@
-// A small reusable confirm sheet — used by Clear drawing (Phase 1.2 item 2); general enough for
-// any other destructive action that needs a confirmation step later.
+// A small reusable confirm sheet — used by Clear drawing (Phase 1.2 item 2) and Delete. Phase 5.2
+// item 28: every control reacts to a genuine tap on itself (ui/tap.ts), so a stray synthetic click
+// left over from the tap that opened the sheet can't dismiss it before it's been seen.
+
+import { onTap } from './tap.ts';
 
 export function openConfirmSheet(
   root: HTMLElement,
@@ -16,28 +19,35 @@ export function openConfirmSheet(
     sheet.remove();
   };
 
-  scrim.addEventListener('click', () => {
+  onTap(scrim, () => {
     close();
     opts.onCancel?.();
   });
 
   const head = document.createElement('div');
   head.className = 'sheet-head';
-  head.innerHTML = `<h2>${opts.title}</h2><p class="sub">${opts.body}</p>`;
+  // Plain text only: titles can carry an artwork's own name (Phase 5.6).
+  const h2 = document.createElement('h2');
+  h2.textContent = opts.title;
+  const sub = document.createElement('p');
+  sub.className = 'sub';
+  sub.textContent = opts.body;
+  head.appendChild(h2);
+  head.appendChild(sub);
 
   const actions = document.createElement('div');
   actions.className = 'sheet-actions';
   const cancelBtn = document.createElement('button');
   cancelBtn.className = 'btn-secondary';
   cancelBtn.textContent = 'Cancel';
-  cancelBtn.addEventListener('click', () => {
+  onTap(cancelBtn, () => {
     close();
     opts.onCancel?.();
   });
   const confirmBtn = document.createElement('button');
   confirmBtn.className = 'btn-primary';
   confirmBtn.textContent = opts.confirmLabel;
-  confirmBtn.addEventListener('click', () => {
+  onTap(confirmBtn, () => {
     close();
     opts.onConfirm();
   });

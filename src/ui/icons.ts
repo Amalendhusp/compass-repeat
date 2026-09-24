@@ -4,8 +4,6 @@ const paths: Record<string, string> = {
   select: '<path d="M6 3.5l12.5 7.2-5.6 1.7-2.6 5.4z"/>',
   circle: '<circle cx="12" cy="12" r="7.5"/><circle cx="12" cy="12" r="1.3" fill="currentColor"/><path d="M12 12l5.3-5.3"/>',
   line: '<path d="M5 19L19 5"/><circle cx="5" cy="19" r="1.8" fill="currentColor"/><circle cx="19" cy="5" r="1.8" fill="currentColor"/>',
-  polygon:
-    '<path d="M12 4.5l7.5 13.5h-15z"/><circle cx="12" cy="4.5" r="1.6" fill="currentColor"/><circle cx="19.5" cy="18" r="1.6" fill="currentColor"/><circle cx="4.5" cy="18" r="1.6" fill="currentColor"/>',
   divide: '<circle cx="12" cy="12" r="7"/><path d="M12 3v3M12 18v3M3 12h3M18 12h3M5.6 5.6l2 2M16.4 16.4l2 2M18.4 5.6l-2 2M7.6 16.4l-2 2"/>',
   fair: '<path d="M4 18l6-12 4 8 6-10" stroke-width="1" opacity=".45"/><path d="M4 18l6-12" stroke-width="3.2"/>',
   fill: '<path d="M12 3.5l7.4 4.25v8.5L12 20.5l-7.4-4.25v-8.5z"/><path d="M12 3.5l7.4 4.25v8.5L12 20.5z" fill="currentColor" opacity=".45" stroke="none"/>',
@@ -30,6 +28,11 @@ const paths: Record<string, string> = {
     '<circle cx="4" cy="4" r="1.2" fill="currentColor" opacity=".3"/><circle cx="20" cy="4" r="1.2" fill="currentColor" opacity=".3"/><circle cx="4" cy="20" r="1.2" fill="currentColor" opacity=".3"/><circle cx="20" cy="20" r="1.2" fill="currentColor" opacity=".3"/><path d="M3.5 12S7.5 6.5 12 6.5 20.5 12 20.5 12 16.5 17.5 12 17.5 3.5 12 3.5 12z"/><circle cx="12" cy="12" r="2.6" fill="currentColor"/>',
   pointsEyeOff:
     '<circle cx="4" cy="4" r="1.2" fill="currentColor" opacity=".12"/><circle cx="20" cy="4" r="1.2" fill="currentColor" opacity=".12"/><circle cx="4" cy="20" r="1.2" fill="currentColor" opacity=".12"/><circle cx="20" cy="20" r="1.2" fill="currentColor" opacity=".12"/><path d="M3.5 12S7.5 6.5 12 6.5 20.5 12 20.5 12 16.5 17.5 12 17.5 3.5 12 3.5 12z" opacity=".55"/><circle cx="12" cy="12" r="2.6" fill="currentColor" opacity=".55"/>',
+  // Phase 5.2 item 19: a compass arc — centre, a swept arc, and its two end points.
+  arc: '<circle cx="7" cy="17" r="1.6" fill="currentColor"/><path d="M19 17a12 12 0 00-10.5-11.9"/><circle cx="19" cy="17" r="1.8" fill="currentColor"/><circle cx="8.5" cy="5.1" r="1.8" fill="currentColor"/><path d="M7 17l1.5-11.9" stroke-dasharray="2 2" opacity=".5"/>',
+  // Phase 5.1 item 2: Repeat's own top-bar pair, in the slots Point Targets / Points use in Construct.
+  appearance: '<circle cx="12" cy="12" r="8"/><path d="M12 4a8 8 0 010 16z" fill="currentColor" opacity=".45" stroke="none"/>',
+  gridGuides: '<rect x="4" y="4" width="16" height="16" rx="2"/><path d="M12 4v16M4 12h16" opacity=".55"/><circle cx="12" cy="12" r="1.8" fill="currentColor"/>',
 };
 
 export type IconName = keyof typeof paths;

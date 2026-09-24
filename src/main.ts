@@ -1,11 +1,11 @@
 import './style.css';
-import { clearDrawing, createDoc, placeFrame } from './model/doc.ts';
+import { clearDrawing, createDoc, defaultRepeatDisplay, placeFrame } from './model/doc.ts';
 import { AppController, type ViewTransform } from './app/controller.ts';
 import { PointerManager } from './interaction/pointer.ts';
 import { selectTool } from './interaction/tools/select.ts';
 import { circleTool } from './interaction/tools/circle.ts';
 import { lineTool } from './interaction/tools/line.ts';
-import { polygonTool } from './interaction/tools/polygon.ts';
+import { arcTool } from './interaction/tools/arc.ts';
 import { divideTool } from './interaction/tools/divide.ts';
 import { fairTool } from './interaction/tools/fair.ts';
 import { fillTool } from './interaction/tools/fill.ts';
@@ -21,21 +21,32 @@ import { initToast } from './ui/toast.ts';
 import type { Doc, FrameKind } from './model/types.ts';
 import { resolvePoint } from './geometry/kernel.ts';
 import { worldToScreen } from './app/controller.ts';
-import { attachAutosave } from './persist/autosave.ts';
-import { getMeta, loadDocument, loadHistory } from './persist/db.ts';
+import { attachAutosave, type AutosaveHandle } from './persist/autosave.ts';
+import { deleteArtwork, getMeta, listArtworks, loadDocument, loadHistory } from './persist/db.ts';
+import { openArtworksSheet, openNameSheet } from './ui/artworks.ts';
+import { showToast } from './ui/toast.ts';
+import { genId } from './model/id.ts';
 import { setupCanvasDPR } from './render/canvasSetup.ts';
 import { computeVisibleBounds } from './geometry/bounds.ts';
 import { ensureRepeatDefaults, fitBounds as repeatFitBounds, firstEntryBounds } from './geometry/lattice.ts';
 import { preventSafariPageZoom } from './interaction/preventPageZoom.ts';
+import { migrateLegacyFillKeys } from './geometry/regions.ts';
 
 const root = document.getElementById('app');
 if (!root) throw new Error('missing #app root');
 
 preventSafariPageZoom();
 
-const tools = { select: selectTool, circle: circleTool, line: lineTool, polygon: polygonTool, divide: divideTool, fair: fairTool, fill: fillTool } as const;
+const tools = { select: selectTool, circle: circleTool, line: lineTool, arc: arcTool, divide: divideTool, fair: fairTool, fill: fillTool } as const;
 
-let detachCurrentAutosave: (() => void) | null = null;
+/** Phase 5.5: the artwork currently open. Tearing it down stops its render loop, resize observer
+ * and autosave, so switching artworks never leaves an old one drawing or saving in the background. */
+let session: { controller: AppController; autosave: AutosaveHandle; teardown: () => void } | null = null;
+
+function endSession(): void {
+  session?.teardown();
+  session = null;
+}
 
 const FIT_PADDING = 0.86; // consistent margin around the fitted geometry, both axes
 
@@ -110,16 +121,21 @@ function fitRepeatFirstEntry(controller: AppController, canvas: HTMLCanvasElemen
 
 /** Boots the app on a document. `fitToScreen: false` preserves a drawn/restored viewport. */
 function boot(doc: Doc, opts: { fitToScreen: boolean; history?: { undo: Doc[]; redo: Doc[] } }): void {
-  detachCurrentAutosave?.();
+  endSession();
   const controller = new AppController(doc);
   // §9 restore: "the tool reset to Select" — AppController already defaults tool to 'select'.
   if (opts.history) controller.restoreHistory(opts.history.undo, opts.history.redo);
 
   const { canvas, overlay } = buildShell(root!, controller, {
     onFit: () => (controller.doc.view.workspace === 'repeat' ? fitRepeatView(controller, canvas, overlay) : fitView(controller, canvas, overlay)),
-    onFrame: () => {
-      openFramePicker(root!, { dismissible: true, onChoose: (k) => armDrawFrame(k) });
+    onNewArtwork: () => {
+      // The artwork being left is saved as it stands; a new one never overwrites it.
+      session?.autosave.flush({ thumbnail: true });
+      openFramePicker(root!, { dismissible: true, onChoose: (k) => armDrawFrame(k), onMyArtworks: () => void showMyArtworks() });
     },
+    onMyArtworks: () => void showMyArtworks(),
+    onSave: () => saveArtwork(),
+    onSaveAsNew: () => saveAsNewArtwork(),
     onClearDrawing: () => {
       openConfirmSheet(root!, {
         title: 'Clear drawing?',
@@ -131,6 +147,7 @@ function boot(doc: Doc, opts: { fitToScreen: boolean; history?: { undo: Doc[]; r
         },
       });
     },
+    getView: () => getView(),
     onSwitchWorkspace: (ws) => {
       if (controller.doc.view.workspace === ws) return;
       // Phase 5 item 2: the frame only ever SUGGESTS a lattice, and only the very first time —
@@ -168,7 +185,7 @@ function boot(doc: Doc, opts: { fitToScreen: boolean; history?: { undo: Doc[]; r
     () => (controller.doc.view.workspace === 'repeat' ? repeatTool : (tools[controller.tool] ?? null)),
     () => (controller.doc.view.workspace === 'repeat' ? controller.doc.repeatView : controller.doc.view),
   );
-  detachCurrentAutosave = attachAutosave(controller);
+  const autosave = attachAutosave(controller);
 
   if (import.meta.env.DEV) {
     (window as unknown as { __app: unknown }).__app = {
@@ -188,12 +205,14 @@ function boot(doc: Doc, opts: { fitToScreen: boolean; history?: { undo: Doc[]; r
   // canvas redraws for either — but this loop never touches the DOM itself either way.
   controller.subscribeView(requestDraw);
 
-  setupCanvasDPR(canvas, ctx, () => {
+  const stopResizing = setupCanvasDPR(canvas, ctx, () => {
     dirty = true;
   });
   if (opts.fitToScreen) fitView(controller, canvas, overlay);
 
+  let running = true;
   function loop(): void {
+    if (!running) return;
     if (dirty) {
       dirty = false;
       if (controller.doc.view.workspace === 'repeat') renderRepeat(ctx!, controller, getView());
@@ -202,15 +221,120 @@ function boot(doc: Doc, opts: { fitToScreen: boolean; history?: { undo: Doc[]; r
     requestAnimationFrame(loop);
   }
   requestAnimationFrame(loop);
+
+  session = {
+    controller,
+    autosave,
+    teardown: () => {
+      running = false;
+      stopResizing();
+      autosave.detach();
+    },
+  };
+}
+
+// ---- Phase 5.5 items 3–9: saved artworks ----
+
+/** Save: the first time, the artwork gets a name; after that it simply writes (autosave keeps
+ * writing to the same artwork in between). */
+function saveArtwork(): void {
+  const s = session;
+  if (!s) return;
+  const done = () => {
+    s.autosave.flush({ thumbnail: true });
+    showToast(`Saved “${s.controller.doc.name}”`);
+  };
+  if (s.controller.doc.named) return done();
+  openNameSheet(root!, {
+    title: 'Name this artwork',
+    initial: '',
+    confirmLabel: 'Save',
+    onConfirm: (name) => {
+      s.controller.doc.name = name;
+      s.controller.doc.named = true;
+      s.controller.notify();
+      done();
+    },
+  });
+}
+
+/** Save as new: the current artwork (saved as it stands) is copied into a new artwork with its own
+ * id and name, and that copy is what's open afterwards — the original is left exactly as it was. */
+function saveAsNewArtwork(): void {
+  const s = session;
+  if (!s) return;
+  openNameSheet(root!, {
+    title: 'Save as new artwork',
+    initial: s.controller.doc.named ? `${s.controller.doc.name} variant` : '',
+    confirmLabel: 'Save',
+    onConfirm: (name) => {
+      s.autosave.flush({ thumbnail: true });
+      const copy = structuredClone(s.controller.doc);
+      const now = Date.now();
+      copy.id = genId('doc');
+      copy.name = name;
+      copy.named = true;
+      copy.createdAt = now;
+      copy.updatedAt = now;
+      boot(copy, { fitToScreen: false });
+      showToast(`Saved as “${name}”`);
+    },
+  });
+}
+
+async function showMyArtworks(): Promise<void> {
+  // Reachable with no artwork open too (from the first-launch frame picker).
+  session?.autosave.flush({ thumbnail: true });
+  const artworks = await listArtworks();
+  if (artworks.length === 0) {
+    showToast('No saved artworks yet');
+    return;
+  }
+  openArtworksSheet(root!, {
+    currentId: session?.controller.doc.id ?? '',
+    artworks,
+    onOpen: (id) => void openArtwork(id),
+    onDelete: (id) => removeArtwork(id),
+  });
+}
+
+/** Phase 5.6 items 15–16: deleting another artwork touches only that one. Deleting the open one
+ * stops its autosave FIRST (so nothing can write it back), removes it, then opens the most recently
+ * edited artwork left — or, with none left, the ordinary new-artwork frame picker. */
+async function removeArtwork(id: string): Promise<void> {
+  const deletingOpen = session?.controller.doc.id === id;
+  if (deletingOpen) endSession();
+  await deleteArtwork(id);
+  if (!deletingOpen) return;
+  const remaining = await listArtworks();
+  for (const next of remaining) if (await openArtwork(next.id)) return;
+  root!.innerHTML = '';
+  openFramePicker(root!, { dismissible: false, onChoose: (k) => armDrawFrame(k), onMyArtworks: () => void showMyArtworks() });
+}
+
+/** Loads one saved artwork — its whole editable state, history included — and opens it. */
+async function openArtwork(id: string): Promise<boolean> {
+  const [docRecord, historyRecord] = await Promise.all([loadDocument(id), loadHistory(id)]);
+  if (!docRecord || docRecord.schemaVersion !== 2 || !docRecord.snapshot) return false;
+  upgradeSnapshot(docRecord.snapshot, docRecord.named);
+  // Phase 5.4: Fills keyed by the old every-vertex region signature move to the new corner-based
+  // one — for the document and every undo/redo snapshot alike.
+  historyRecord?.undoStack.forEach(migrateLegacyFillKeys);
+  historyRecord?.redoStack.forEach(migrateLegacyFillKeys);
+  boot(docRecord.snapshot, {
+    fitToScreen: false,
+    history: historyRecord ? { undo: historyRecord.undoStack, redo: historyRecord.redoStack } : undefined,
+  });
+  return true;
 }
 
 /** Phase 1.1 item 1: arms the draw-frame gesture — the participant places, sizes and
  * orients the frame themselves, rather than receiving a pre-positioned one (§4.1 still
  * governs the resulting locked-frame metadata once it's built). */
 function armDrawFrame(kind: FrameKind): void {
-  detachCurrentAutosave?.();
+  endSession();
   const hud = buildDrawFrameHud(root!, kind, () => {
-    openFramePicker(root!, { dismissible: false, onChoose: (k) => armDrawFrame(k) });
+    openFramePicker(root!, { dismissible: false, onChoose: (k) => armDrawFrame(k), onMyArtworks: () => void showMyArtworks() });
   });
   attachDrawFrame(
     hud.canvas,
@@ -225,44 +349,55 @@ function armDrawFrame(kind: FrameKind): void {
   );
 }
 
+/** Brings a snapshot saved by any earlier version up to the current document shape. */
+function upgradeSnapshot(doc: Doc, recordNamed: boolean | undefined): void {
+  // Phase 3.4 item 5: snapshots saved before Point Targets replaced the old binary Point
+  // Lock carry a `pointLock` boolean instead — translate it (locked ⟺ free=false) so a
+  // restored document's targeting behaves exactly as it did before, not silently reset.
+  if (!doc.pointTargets) {
+    const legacy = doc as unknown as { pointLock?: boolean };
+    const wasLocked = legacy.pointLock !== false; // undefined defaulted to true (Phase 1.2a)
+    doc.pointTargets = { primary: true, derived: true, free: !wasLocked };
+  }
+  // Phase 3H: snapshots saved before Fair existed have no stroke default recorded.
+  if (doc.fairDefaults === undefined) doc.fairDefaults = { colour: '#1E2A36', width: 2.5 };
+  // Phase 3.7 item 10: snapshots saved before Divide remembered its last N.
+  if (doc.dividePrefs === undefined) doc.dividePrefs = { lastN: 6 };
+  // Phase 4 item 5: snapshots saved before Fill existed have no default colour recorded.
+  if (doc.fillDefaults === undefined) doc.fillDefaults = { colour: '#1E3A6E', opacity: 1 };
+  // Phase 5.2: fill opacity, and Circle/Arc's modes + shared remembered radius.
+  if (doc.fillDefaults.opacity === undefined) doc.fillDefaults.opacity = 1;
+  if (doc.toolPrefs === undefined) doc.toolPrefs = { circleMode: 'set', arcMode: 'measure', lastRadius: null };
+  // Phase 5 item 18: snapshots saved before Repeat existed have no separate viewport/guide.
+  if (doc.repeatView === undefined) doc.repeatView = { zoom: 1, pan: { x: 0, y: 0 } };
+  // Phase 5.1 item 13: Phase 5's single Guide toggle becomes handles + motif boundary.
+  if (doc.repeatDisplay === undefined) {
+    const legacy = doc as unknown as { repeatGuide?: boolean };
+    doc.repeatDisplay = defaultRepeatDisplay(legacy.repeatGuide !== false);
+    delete legacy.repeatGuide;
+  }
+  // Phase 5.4: Fills keyed by the old every-vertex region signature move to the new one.
+  migrateLegacyFillKeys(doc);
+  // Phase 5.6: Space colouring's own next colour.
+  if (doc.spaceDefaults === undefined) doc.spaceDefaults = { colour: '#B5502E', opacity: 1 };
+  if (!(doc.repeat.gapFills instanceof Map)) doc.repeat.gapFills = new Map();
+  // Phase 5.5: artworks saved before naming existed were never named by the participant.
+  if (doc.named === undefined) doc.named = recordNamed ?? false;
+}
+
 async function launch(): Promise<void> {
   try {
     const lastId = await getMeta<string>('lastOpenDocId');
-    if (lastId) {
-      const [docRecord, historyRecord] = await Promise.all([loadDocument(lastId), loadHistory(lastId)]);
-      if (docRecord && docRecord.schemaVersion === 2 && docRecord.snapshot) {
-        // Phase 3.4 item 5: snapshots saved before Point Targets replaced the old binary Point
-        // Lock carry a `pointLock` boolean instead — translate it (locked ⟺ free=false) so a
-        // restored document's targeting behaves exactly as it did before, not silently reset.
-        if (!docRecord.snapshot.pointTargets) {
-          const legacy = docRecord.snapshot as unknown as { pointLock?: boolean };
-          const wasLocked = legacy.pointLock !== false; // undefined defaulted to true (Phase 1.2a)
-          docRecord.snapshot.pointTargets = { primary: true, derived: true, free: !wasLocked };
-        }
-        // Phase 3H: snapshots saved before Fair existed have no stroke default recorded.
-        if (docRecord.snapshot.fairDefaults === undefined) docRecord.snapshot.fairDefaults = { colour: '#1E2A36', width: 2.5 };
-        // Phase 3.7 item 10: snapshots saved before Divide remembered its last N.
-        if (docRecord.snapshot.dividePrefs === undefined) docRecord.snapshot.dividePrefs = { lastN: 6 };
-        // Phase 4 item 5: snapshots saved before Fill existed have no default colour recorded.
-        if (docRecord.snapshot.fillDefaults === undefined) docRecord.snapshot.fillDefaults = { colour: '#1E3A6E' };
-        // Phase 5 item 18: snapshots saved before Repeat existed have no separate viewport/guide.
-        if (docRecord.snapshot.repeatView === undefined) docRecord.snapshot.repeatView = { zoom: 1, pan: { x: 0, y: 0 } };
-        if (docRecord.snapshot.repeatGuide === undefined) docRecord.snapshot.repeatGuide = true;
-        boot(docRecord.snapshot, {
-          fitToScreen: false,
-          history: historyRecord ? { undo: historyRecord.undoStack, redo: historyRecord.redoStack } : undefined,
-        });
-        return;
-      }
-    }
+    if (lastId && (await openArtwork(lastId))) return;
   } catch (err) {
-    // §9: "If the snapshot fails schema validation, fall back to..." — with nothing else
-    // to fall back to yet (single-document v1), fall through to the frame picker.
+    // §9: "If the snapshot fails schema validation, fall back to..." — fall through to the
+    // frame picker.
     console.warn('Restore failed, starting fresh:', err);
   }
   openFramePicker(root!, {
     dismissible: false,
     onChoose: (kind) => armDrawFrame(kind),
+    onMyArtworks: () => void showMyArtworks(),
   });
 }
 

@@ -49,16 +49,3 @@ export function circleDivisionPositions(doc: Doc, host: Entity, of: number, anch
   }
   return positions;
 }
-
-/** n/k star chord endpoints across a set of division positions — closed circles only. */
-export function starChordPairs(positions: Vec2[], k: number): [Vec2, Vec2][] {
-  const n = positions.length;
-  const pairs: [Vec2, Vec2][] = [];
-  for (let i = 0; i < n; i++) {
-    const a = positions[i]!;
-    const b = positions[(i + k) % n]!;
-    if (a === b) continue;
-    pairs.push([a, b]);
-  }
-  return pairs;
-}

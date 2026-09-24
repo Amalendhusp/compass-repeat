@@ -5,10 +5,19 @@
 
 import type { Doc, FrameKind, RepeatSystem, Vec2 } from '../model/types.ts';
 import type { ViewTransform } from '../app/controller.ts';
-import { screenToWorld } from '../app/controller.ts';
-import { pointInPolygon } from './regions.ts';
+import { screenToWorld, worldToScreen } from '../app/controller.ts';
+import { computeFairRegions, pointInPolygon } from './regions.ts';
+import { resolveEntityGeom } from './kernel.ts';
+import { deriveSegments } from './segments.ts';
 
-export type LatticeFamily = 'square' | 'hex';
+/** Phase 5.1 item 10: Triangle and Hexagon are separate choices in the UI but share one 60°
+ * lattice underneath — they differ only in how the grid presents that lattice (see
+ * render/repeatRenderer.ts's drawLatticeGrid). */
+export type LatticeFamily = 'square' | 'triangle' | 'hex';
+
+export function isSixtyDegreeFamily(family: RepeatSystem['family']): boolean {
+  return family === 'triangle' || family === 'hex';
+}
 
 /** Phase 5 item 2: the frame only ever suggests — never forces — an initial lattice family. */
 export function suggestedFamily(frameKind: FrameKind): LatticeFamily {
@@ -16,8 +25,9 @@ export function suggestedFamily(frameKind: FrameKind): LatticeFamily {
     case 'square':
       return 'square';
     case 'hexagon':
-    case 'triangle':
       return 'hex';
+    case 'triangle':
+      return 'triangle';
     case 'circle':
       return 'square'; // no strong preference — a neutral, still fully user-changeable default
   }
@@ -38,7 +48,7 @@ export function defaultLatticeVectors(doc: Doc, family: LatticeFamily): { a: Vec
   if (family === 'square') {
     return { a: { x: spacing, y: 0 }, b: { x: 0, y: spacing } };
   }
-  // hex/triangular: a 60° basis, sharing the same underlying math per spec item 2's note.
+  // triangle/hex: one shared 60° basis (spec item 2's note).
   const angle = Math.PI / 3;
   return { a: { x: spacing, y: 0 }, b: { x: spacing * Math.cos(angle), y: spacing * Math.sin(angle) } };
 }
@@ -135,12 +145,71 @@ const MAX_INSTANCES = 400; // a hard safety cap — never render/iterate more th
  * margin for the motif's own radius) — generated from the viewport itself, so pan/zoom reveals
  * more copies naturally and nothing needs to be pre-baked for "infinite" extent. */
 export function visibleInstances(doc: Doc, view: ViewTransform): InstancePose[] {
+  const reach = motifExtent(doc);
+  const range = visibleLatticeRange(doc, view, reach);
+  if (!range) return [instancePose(doc.repeat, 0, 0)]; // degenerate basis — just the reference
+  const { i0, i1, j0, j1 } = range;
+  const pivot = doc.frame.origin;
+  const reachPx = reach * view.zoom;
+  const out: InstancePose[] = [];
+  // Phase 5.3: the (i, j) box of a skewed lattice is far larger than the screen it covers — keep
+  // only copies whose drawn extent actually touches the viewport BEFORE the safety cap, so the
+  // cap can never drop a copy that is really on screen (it used to, zoomed far out).
+  outer: for (let j = j0; j <= j1; j++) {
+    for (let i = i0; i <= i1; i++) {
+      const pose = instancePose(doc.repeat, i, j);
+      const s = worldToScreen(view, { x: pivot.x + pose.translate.x, y: pivot.y + pose.translate.y });
+      if (s.x < -reachPx || s.x > view.w + reachPx || s.y < -reachPx || s.y > view.h + reachPx) continue;
+      out.push(pose);
+      if (out.length >= MAX_INSTANCES) break outer;
+    }
+  }
+  return out;
+}
+
+const extentCache = new WeakMap<Doc, number>();
+
+/** How far the motif's drawn artwork actually reaches from its pivot — Fair strokes and fills can
+ * extend well past the frame (a petal circle centred on the frame's rim reaches twice its radius).
+ * Never less than the frame itself. Cached per Doc (a new Doc on every commit). */
+export function motifExtent(doc: Doc): number {
+  const cached = extentCache.get(doc);
+  if (cached !== undefined) return cached;
+  const pivot = doc.frame.origin;
+  let reach = motifRadius(doc);
+  const far = (p: Vec2) => (reach = Math.max(reach, Math.hypot(p.x - pivot.x, p.y - pivot.y)));
+  for (const e of doc.entities) {
+    const fair = deriveSegments(doc, e).some((seg) => doc.segmentStates.get(seg.key)?.state === 'fair');
+    if (!fair) continue;
+    const g = resolveEntityGeom(doc, e);
+    if (g.kind === 'circle') reach = Math.max(reach, Math.hypot(g.centre.x - pivot.x, g.centre.y - pivot.y) + g.radius);
+    else {
+      far(g.a);
+      far(g.b);
+    }
+  }
+  for (const r of computeFairRegions(doc)) for (const p of r.samplePoints) far(p);
+  extentCache.set(doc, reach * 1.02);
+  return reach * 1.02;
+}
+
+export interface LatticeRange {
+  i0: number;
+  i1: number;
+  j0: number;
+  j1: number;
+}
+
+/** The integer (i, j) box whose lattice points cover the viewport plus `marginWorld` — shared by
+ * instancing and the Grid overlay so both always agree on the same translations. Null for a
+ * degenerate (collinear) basis. */
+export function visibleLatticeRange(doc: Doc, view: ViewTransform, marginWorld: number): LatticeRange | null {
   const { a, b } = doc.repeat;
   const det = a.x * b.y - a.y * b.x;
-  if (Math.abs(det) < 1e-9) return [instancePose(doc.repeat, 0, 0)]; // degenerate basis — just the reference
+  if (Math.abs(det) < 1e-9) return null;
 
   const pivot = doc.frame.origin;
-  const margin = motifRadius(doc) * 1.15;
+  const margin = marginWorld * view.zoom; // screen px
   const corners: Vec2[] = [
     screenToWorld(view, { x: -margin, y: -margin }),
     screenToWorld(view, { x: view.w + margin, y: -margin }),
@@ -163,19 +232,12 @@ export function visibleInstances(doc: Doc, view: ViewTransform): InstancePose[] 
     jMax = Math.max(jMax, j);
   }
   const pad = 1; // one extra ring so a motif's own extent past its lattice point is still covered
-  const i0 = Math.floor(iMin) - pad;
-  const i1 = Math.ceil(iMax) + pad;
-  const j0 = Math.floor(jMin) - pad;
-  const j1 = Math.ceil(jMax) + pad;
-
-  const out: InstancePose[] = [];
-  outer: for (let j = j0; j <= j1; j++) {
-    for (let i = i0; i <= i1; i++) {
-      out.push(instancePose(doc.repeat, i, j));
-      if (out.length >= MAX_INSTANCES) break outer;
-    }
-  }
-  return out;
+  return {
+    i0: Math.floor(iMin) - pad,
+    i1: Math.ceil(iMax) + pad,
+    j0: Math.floor(jMin) - pad,
+    j1: Math.ceil(jMax) + pad,
+  };
 }
 
 /** Phase 5 item 13: Fit should read as a tessellation, not one tiny motif — a fixed small
@@ -222,13 +284,25 @@ export function fitBounds(doc: Doc): { minX: number; minY: number; maxX: number;
 
 export type ContactState = 'overlap' | 'edges-meet' | 'tips-touch' | 'gap';
 
-function framePolygonLocal(doc: Doc): Vec2[] | null {
-  if (doc.frame.kind === 'circle') return null;
+/** Which lattice neighbour a handle drags: `a` moves instance (1, 0), `b` moves (0, 1). */
+function neighbourPose(repeat: RepeatSystem, dir: 'a' | 'b'): InstancePose {
+  return dir === 'a' ? instancePose(repeat, 1, 0) : instancePose(repeat, 0, 1);
+}
+
+/** The frame polygon exactly as drawn for `pose` (motif rotation and orientation rule applied),
+ * relative to the pivot with the pose's own translation left out. Phase 5.1: Phase 5 used the
+ * unrotated frame here, so a rotated motif (or an Alternate/Mirror neighbour) was tested against
+ * a boundary that no longer matched the one on screen. */
+function posedPolygon(doc: Doc, pose: InstancePose): Vec2[] {
+  const pivot = doc.frame.origin;
+  const orientOnly: InstancePose = { ...pose, translate: { x: 0, y: 0 } };
   const n = doc.frame.kind === 'square' ? 4 : doc.frame.kind === 'hexagon' ? 6 : 3;
   const pts: Vec2[] = [];
   for (let k = 0; k < n; k++) {
     const angle = doc.frame.rotation + (k / n) * Math.PI * 2;
-    pts.push({ x: doc.frame.radius * Math.cos(angle), y: doc.frame.radius * Math.sin(angle) });
+    const local = { x: pivot.x + doc.frame.radius * Math.cos(angle), y: pivot.y + doc.frame.radius * Math.sin(angle) };
+    const p = transformPoint(pivot, orientOnly, local);
+    pts.push({ x: p.x - pivot.x, y: p.y - pivot.y });
   }
   return pts;
 }
@@ -285,47 +359,105 @@ function polygonContactAnalysis(polyA: Vec2[], polyB: Vec2[]): { distance: numbe
 }
 const motifRadiusEpsilonFallback = 1e-3;
 
-/** Phase 5 item 6: classifies the CURRENT translation between the reference motif and one
- * neighbour — real frame geometry (circle tangency, or polygon edge/vertex proximity), not a
- * hardcoded per-lattice-family guess. */
-export function classifyContact(doc: Doc, translate: Vec2): ContactState {
-  const snapEps = motifRadius(doc) * 0.03;
-  if (doc.frame.kind === 'circle') {
-    const d = Math.hypot(translate.x, translate.y);
-    const twoR = doc.frame.radius * 2;
-    if (d < twoR - snapEps) return 'overlap';
-    if (Math.abs(d - twoR) <= snapEps) return 'tips-touch'; // two circles touch at one point
-    return 'gap';
-  }
-  const polyA = framePolygonLocal(doc)!;
-  const polyB = polyA.map((p) => ({ x: p.x + translate.x, y: p.y + translate.y }));
-  if (polygonsOverlap(polyA, polyB)) return 'overlap';
-  const { distance, sharedVertexPairs } = polygonContactAnalysis(polyA, polyB);
-  if (distance > snapEps) return 'gap';
-  return sharedVertexPairs >= 2 ? 'edges-meet' : 'tips-touch';
+export interface ContactDetent {
+  translate: Vec2;
+  state: 'edges-meet' | 'tips-touch';
 }
 
-/** Phase 5 item 6: "let it settle there" — rescales the translation along the participant's own
- * drag direction until the frames first touch (binary search on the scale factor; monotonic for
- * convex shapes moving apart along a fixed ray), so a drag "toward edges meet" actually lands
- * exactly on contact rather than merely near it. Returns null when the raw translation isn't
- * already close enough to a contact state to be worth snapping (free positioning stays free). */
-export function snapContact(doc: Doc, rawTranslate: Vec2): Vec2 | null {
-  const state = classifyContact(doc, rawTranslate);
-  if (state === 'gap') return null;
-  if (state !== 'overlap') return rawTranslate; // already essentially touching — nothing to adjust
-  const dir = Math.hypot(rawTranslate.x, rawTranslate.y) < 1e-9 ? { x: 1, y: 0 } : rawTranslate;
-  const len = Math.hypot(dir.x, dir.y);
-  const unit = { x: dir.x / len, y: dir.y / len };
-  let lo = len; // overlapping here
-  let hi = len + motifRadius(doc) * 3; // comfortably a gap out here
-  for (let iter = 0; iter < 24; iter++) {
-    const mid = (lo + hi) / 2;
-    const candidate = { x: unit.x * mid, y: unit.y * mid };
-    if (classifyContact(doc, candidate) === 'overlap') lo = mid;
-    else hi = mid;
+/**
+ * Phase 5.1: everything a neighbour-drag needs about contact, prepared once when the drag begins
+ * (the poses can't change mid-drag — only the translation does).
+ * - `classify` is Phase 5's contact classification, unchanged apart from using posed polygons.
+ * - `contactDistance(unit)` is how far along a direction the neighbour first stops overlapping
+ *   the reference: the "touching" contour a drag can slide along.
+ * - `detents` are the exact placements worth landing on: whole edges coinciding (edges meet) and
+ *   corner-to-corner touches (tips touch). A circle frame has only its tangency contour.
+ */
+export interface ContactModel {
+  classify(translate: Vec2): ContactState;
+  contactDistance(unit: Vec2): number;
+  detents: ContactDetent[];
+}
+
+export function contactModel(doc: Doc, dir: 'a' | 'b'): ContactModel {
+  const R = motifRadius(doc);
+  const snapEps = R * 0.03;
+
+  if (doc.frame.kind === 'circle') {
+    const twoR = doc.frame.radius * 2;
+    return {
+      classify(t) {
+        const d = Math.hypot(t.x, t.y);
+        if (d < twoR - snapEps) return 'overlap';
+        if (Math.abs(d - twoR) <= snapEps) return 'tips-touch'; // two circles touch at one point
+        return 'gap';
+      },
+      contactDistance: () => twoR,
+      detents: [],
+    };
   }
-  return { x: unit.x * hi, y: unit.y * hi };
+
+  const polyA = posedPolygon(doc, instancePose(doc.repeat, 0, 0));
+  const baseB = posedPolygon(doc, neighbourPose(doc.repeat, dir));
+
+  const classify = (t: Vec2): ContactState => {
+    const polyB = baseB.map((p) => ({ x: p.x + t.x, y: p.y + t.y }));
+    if (polygonsOverlap(polyA, polyB)) return 'overlap';
+    const { distance, sharedVertexPairs } = polygonContactAnalysis(polyA, polyB);
+    if (distance > snapEps) return 'gap';
+    return sharedVertexPairs >= 2 ? 'edges-meet' : 'tips-touch';
+  };
+
+  // Monotonic along a ray for convex shapes: overlapping at the reference, clear by 2R.
+  const contactDistance = (unit: Vec2): number => {
+    let lo = 0;
+    let hi = R * 2.05;
+    for (let iter = 0; iter < 22; iter++) {
+      const mid = (lo + hi) / 2;
+      if (classify({ x: unit.x * mid, y: unit.y * mid }) === 'overlap') lo = mid;
+      else hi = mid;
+    }
+    return hi;
+  };
+
+  // Exactly-coincident boundaries are ambiguous to the point-in-polygon test, so each detent sits
+  // a hair outside true contact — well inside `snapEps`, so it still classifies as contact.
+  const nudge = R * 0.002;
+  const pushOut = (t: Vec2): Vec2 => {
+    const len = Math.hypot(t.x, t.y);
+    return len < 1e-9 ? t : { x: t.x + (t.x / len) * nudge, y: t.y + (t.y / len) * nudge };
+  };
+
+  const detents: ContactDetent[] = [];
+  const nA = polyA.length;
+  const nB = baseB.length;
+  for (let i = 0; i < nA; i++) {
+    const p1 = polyA[i]!;
+    const p2 = polyA[(i + 1) % nA]!;
+    for (let j = 0; j < nB; j++) {
+      const q1 = baseB[j]!;
+      const q2 = baseB[(j + 1) % nB]!;
+      // Antiparallel, equal-length edges can lie exactly along one another.
+      if (Math.hypot(p2.x - p1.x + (q2.x - q1.x), p2.y - p1.y + (q2.y - q1.y)) > R * 1e-3) continue;
+      const t = pushOut({ x: p1.x - q2.x, y: p1.y - q2.y });
+      if (classify(t) === 'edges-meet') detents.push({ translate: t, state: 'edges-meet' });
+    }
+  }
+  for (const p of polyA) {
+    for (const q of baseB) {
+      const t = pushOut({ x: p.x - q.x, y: p.y - q.y });
+      if (detents.some((d) => Math.hypot(d.translate.x - t.x, d.translate.y - t.y) < R * 0.01)) continue;
+      if (classify(t) === 'tips-touch') detents.push({ translate: t, state: 'tips-touch' });
+    }
+  }
+
+  return { classify, contactDistance, detents };
+}
+
+/** Phase 5 item 6: classifies the translation between the reference motif and one neighbour —
+ * real frame geometry (circle tangency, or polygon edge/vertex proximity). */
+export function classifyContact(doc: Doc, translate: Vec2, dir: 'a' | 'b' = 'a'): ContactState {
+  return contactModel(doc, dir).classify(translate);
 }
 
 // ---- Rotation (item 7) ----

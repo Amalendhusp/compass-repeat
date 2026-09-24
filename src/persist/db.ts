@@ -17,10 +17,23 @@ const DB_VERSION = 1;
 export interface DocumentRecord {
   id: string;
   name: string;
+  /** Phase 5.5: whether the participant named it (unnamed artworks are still kept and listed). */
+  named?: boolean;
   createdAt: number;
   updatedAt: number;
   schemaVersion: number;
+  /** Phase 5.5 item 3: a small PNG data URL of the artwork, for My Artworks. */
+  thumbnail?: string;
   snapshot: Doc;
+}
+
+export interface ArtworkSummary {
+  id: string;
+  name: string;
+  named: boolean;
+  createdAt: number;
+  updatedAt: number;
+  thumbnail?: string;
 }
 
 export interface HistoryRecord {
@@ -71,6 +84,30 @@ export async function saveDocument(record: DocumentRecord): Promise<void> {
 export async function loadDocument(id: string): Promise<DocumentRecord | undefined> {
   const db = await openDb();
   return tx<DocumentRecord | undefined>(db, 'documents', 'readonly', (s) => s.get(id));
+}
+
+/** Phase 5.5 item 8: every saved artwork, newest first — metadata and thumbnail only. */
+export async function listArtworks(): Promise<ArtworkSummary[]> {
+  const db = await openDb();
+  const records = await tx<DocumentRecord[]>(db, 'documents', 'readonly', (s) => s.getAll());
+  return records
+    .filter((r) => r.schemaVersion === 2 && r.snapshot)
+    .map((r) => ({ id: r.id, name: r.name, named: r.named ?? r.snapshot.named ?? false, createdAt: r.createdAt, updatedAt: r.updatedAt, thumbnail: r.thumbnail }))
+    .sort((a, b) => b.updatedAt - a.updatedAt);
+}
+
+/** Phase 5.6 item 15: removes one artwork from this device — its document (with thumbnail) and its
+ * undo history, in one transaction. */
+export async function deleteArtwork(id: string): Promise<void> {
+  const db = await openDb();
+  await new Promise<void>((resolve, reject) => {
+    const t = db.transaction(['documents', 'history'], 'readwrite');
+    t.objectStore('documents').delete(id);
+    t.objectStore('history').delete(id);
+    t.oncomplete = () => resolve();
+    t.onerror = () => reject(t.error);
+    t.onabort = () => reject(t.error);
+  });
 }
 
 export async function saveHistory(record: HistoryRecord): Promise<void> {

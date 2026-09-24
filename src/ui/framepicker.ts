@@ -3,7 +3,7 @@
 // first-launch sheet and as the quick picker from the menu or Circle's long-press.
 
 import type { FrameKind } from '../model/types.ts';
-import { showToast } from './toast.ts';
+import { onTap } from './tap.ts';
 
 const PREVIEWS: Record<FrameKind, string> = {
   circle:
@@ -19,7 +19,7 @@ const PREVIEWS: Record<FrameKind, string> = {
 const ORDER: FrameKind[] = ['circle', 'triangle', 'square', 'hexagon'];
 const LABELS: Record<FrameKind, string> = { circle: 'Circle', triangle: 'Triangle', square: 'Square', hexagon: 'Hexagon' };
 
-export function openFramePicker(root: HTMLElement, opts: { dismissible: boolean; onChoose: (kind: FrameKind) => void; onCancel?: () => void }): void {
+export function openFramePicker(root: HTMLElement, opts: { dismissible: boolean; onChoose: (kind: FrameKind) => void; onCancel?: () => void; onMyArtworks?: () => void }): void {
   const scrim = document.createElement('div');
   scrim.className = 'sheet-scrim';
 
@@ -32,7 +32,8 @@ export function openFramePicker(root: HTMLElement, opts: { dismissible: boolean;
   };
 
   if (opts.dismissible) {
-    scrim.addEventListener('click', () => {
+    // Phase 5.5: genuine taps only (ui/tap.ts) — the menu tap that opened this can't close it.
+    onTap(scrim, () => {
       close();
       opts.onCancel?.();
     });
@@ -48,17 +49,18 @@ export function openFramePicker(root: HTMLElement, opts: { dismissible: boolean;
     const btn = document.createElement('button');
     btn.className = 'frame-option compact';
     btn.innerHTML = `${PREVIEWS[kind]}<span class="frame-name">${LABELS[kind]}</span>`;
-    btn.addEventListener('click', () => {
+    onTap(btn, () => {
       close();
       opts.onChoose(kind);
     });
     grid.appendChild(btn);
   }
 
-  const recentBtn = document.createElement('button');
-  recentBtn.className = 'btn-secondary compact';
-  recentBtn.textContent = 'Open recent';
-  recentBtn.addEventListener('click', () => showToast('No saved documents yet'));
+  // Phase 5.5 item 7: saved artworks open from here too (the sheet stacks above this one).
+  const artworksBtn = document.createElement('button');
+  artworksBtn.className = 'btn-secondary compact';
+  artworksBtn.textContent = 'My Artworks';
+  if (opts.onMyArtworks) onTap(artworksBtn, opts.onMyArtworks);
 
   const handle = document.createElement('div');
   handle.className = 'handle';
@@ -66,7 +68,7 @@ export function openFramePicker(root: HTMLElement, opts: { dismissible: boolean;
   sheet.appendChild(handle);
   sheet.appendChild(head);
   sheet.appendChild(grid);
-  sheet.appendChild(recentBtn);
+  if (opts.onMyArtworks) sheet.appendChild(artworksBtn);
 
   root.appendChild(scrim);
   root.appendChild(sheet);

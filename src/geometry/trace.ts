@@ -12,12 +12,11 @@ export interface JunctionCandidate {
   seg: DerivedSegment;
 }
 
-/** Every live segment (not trimmed; frame segments only when `allowFrame`) incident on
- * `pointId`, across every entity in the doc, excluding the one the trace just came from. */
-export function segmentsAtJunction(doc: Doc, pointId: PointId, excludeKey: string | null, allowFrame: boolean): JunctionCandidate[] {
+/** Every live (not trimmed) segment incident on `pointId`, across every entity in the doc —
+ * frame included (Phase 5.2 item 25) — excluding the one the trace just came from. */
+export function segmentsAtJunction(doc: Doc, pointId: PointId, excludeKey: string | null): JunctionCandidate[] {
   const out: JunctionCandidate[] = [];
   for (const e of doc.entities) {
-    if (e.locked && !allowFrame) continue;
     for (const seg of deriveSegments(doc, e)) {
       if (seg.key === excludeKey) continue;
       if (seg.from !== pointId && seg.to !== pointId) continue;
