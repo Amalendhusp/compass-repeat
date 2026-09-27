@@ -30,7 +30,7 @@ import { color, fairPalette } from '../render/tokens.ts';
 import { defaultLatticeVectors, isSixtyDegreeFamily, type LatticeFamily } from '../geometry/lattice.ts';
 import { rotationFractionLabel } from '../render/repeatRenderer.ts';
 import { CAPTURED_CUE_MS } from '../interaction/tools/arc.ts';
-import { cancelIncircle, createIncircle, incirclePrompt } from '../interaction/tools/circle.ts';
+import { cancelIncircle, copyRadiusPrompt, createCopiedCircle, createIncircle, finishCopyRadius, incirclePrompt } from '../interaction/tools/circle.ts';
 import { syncSnapChooser } from './snapchooser.ts';
 import { deriveSelectableGroups } from '../geometry/segments.ts';
 import { deliverFile, exportVisibleView, fileShareSupport, type ExportSettings } from '../render/export.ts';
@@ -1397,15 +1397,26 @@ export function buildShell(
         [
           { id: 'centre-radius', label: 'Centre–Radius' },
           { id: 'three-lines', label: 'Between 3 Lines' },
+          { id: 'copy-radius', label: 'Copy Radius' },
         ],
         controller.circleVariant,
         (variant) => {
           controller.cancelPending();
           controller.circleVariant = variant;
           controller.incircle = null;
+          controller.copyRadius = null;
           controller.notify();
         },
       );
+      if (controller.circleVariant === 'copy-radius') {
+        cue(copyRadiusPrompt(controller));
+        if (controller.copyRadius?.centre) {
+          const create = chip('Create', () => createCopiedCircle(controller));
+          create.classList.add('primary');
+        }
+        if (controller.copyRadius?.radius) chip('Done', () => finishCopyRadius(controller));
+        return;
+      }
       if (controller.circleVariant === 'three-lines') {
         cue(incirclePrompt(controller));
         if (controller.incircle?.result) {

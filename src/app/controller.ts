@@ -10,7 +10,20 @@ import type { Incircle } from '../geometry/incircle.ts';
 export type ToolId = 'select' | 'circle' | 'line' | 'arc' | 'divide' | 'fair' | 'fill';
 
 /** Phase 5.12b: Circle's two ways of making a circle. */
-export type CircleVariant = 'centre-radius' | 'three-lines';
+export type CircleVariant = 'centre-radius' | 'three-lines' | 'copy-radius';
+
+/** Phase 5.12d: Circle → Copy Radius. `sourceId`/`radius` once a circle has been chosen (the radius
+ * read exactly from its stored geometry); `centre`/`centreAt` once a centre has been chosen for the
+ * next copy (shown as a ghost until Create). */
+export interface CopyRadiusState {
+  sourceId: EntityId | null;
+  radius: number | null;
+  /** The source is shown strongly until this time (ms, performance.now), then quietly. */
+  flashUntil: number;
+  centre: PointRef | null;
+  centreAt: Vec2 | null;
+  note: string | null;
+}
 
 /** Phase 5.12b/c: one edge chosen for Circle → Between 3 Lines — the whole (infinite) line takes
  * part in the geometry; the edge is the visible run of it that was tapped, between the nearest
@@ -248,7 +261,8 @@ type GestureTransientKey =
   | 'repeatDrag'
   | 'repeatContactFlash'
   | 'repeatRotateDrag'
-  | 'incircle';
+  | 'incircle'
+  | 'copyRadius';
 export interface GestureSnapshot {
   doc: Doc;
   undo: Doc[];
@@ -329,6 +343,8 @@ export class AppController {
   circleVariant: CircleVariant = 'centre-radius';
   /** Phase 5.12b: the lines chosen so far in Circle → Between 3 Lines, and what they give. */
   incircle: IncircleState | null = null;
+  /** Phase 5.12d: Circle → Copy Radius — the source circle and the next centre. */
+  copyRadius: CopyRadiusState | null = null;
   /** Phase 4 item 2/6: non-null while a Fill tap is held down on a resolvable region — a
    * translucent preview only, cleared on release either way (commit happens separately). */
   fillPreview: { sig: FaceSig; colour: string } | null = null;
@@ -453,6 +469,7 @@ export class AppController {
         repeatContactFlash: this.repeatContactFlash,
         repeatRotateDrag: this.repeatRotateDrag,
         incircle: this.incircle,
+        copyRadius: this.copyRadius,
       },
     };
   }
@@ -510,6 +527,8 @@ export class AppController {
     this.lineChoice = null;
     // Phase 5.12b: chosen lines may not exist in the other snapshot — choose again.
     this.incircle = null;
+    // Phase 5.12d: keep copying the same radius after an Undo, but drop a not-yet-created centre.
+    if (this.copyRadius) this.copyRadius = { ...this.copyRadius, centre: null, centreAt: null, note: null };
     this.notify();
   }
 
@@ -553,6 +572,7 @@ export class AppController {
     if (!LIVE_TOOLS.has(tool)) return;
     this.lineChoice = null;
     this.incircle = null;
+    this.copyRadius = null;
     this.noPoint = null;
     this.cue = null;
     this.pressHighlight = null;

@@ -1310,6 +1310,54 @@ function drawIncircle(ctx: CanvasRenderingContext2D, controller: AppController, 
   ctx.restore();
 }
 
+/** Phase 5.12d: Circle → Copy Radius. The whole source circle (every part of it, even trimmed ones —
+ * it is the circle's radius being copied) flashes strongly when chosen, then stays quietly marked;
+ * a centre chosen for the next copy shows as a ghost circle of exactly that radius. */
+function drawCopyRadius(ctx: CanvasRenderingContext2D, controller: AppController, view: ViewTransform): void {
+  const st = controller.copyRadius;
+  if (controller.tool !== 'circle' || controller.circleVariant !== 'copy-radius' || !st || st.radius === null) return;
+  const doc = controller.doc;
+  ctx.save();
+  const source = st.sourceId ? doc.entities.find((e) => e.id === st.sourceId) : undefined;
+  if (source && source.kind === 'circle') {
+    const g = resolveEntityGeom(doc, source);
+    if (g.kind === 'circle') {
+      const c = worldToScreen(view, g.centre);
+      const strong = performance.now() < st.flashUntil;
+      ctx.beginPath();
+      ctx.arc(c.x, c.y, g.radius * view.zoom, 0, Math.PI * 2);
+      ctx.strokeStyle = color.signal;
+      ctx.lineWidth = strong ? 4 : 2;
+      ctx.globalAlpha = strong ? 1 : 0.4;
+      ctx.stroke();
+      ctx.globalAlpha = 1;
+    }
+  }
+  if (st.centreAt) {
+    const c = worldToScreen(view, st.centreAt);
+    const r = st.radius * view.zoom;
+    ctx.beginPath();
+    ctx.arc(c.x, c.y, r, 0, Math.PI * 2);
+    ctx.strokeStyle = color.paper;
+    ctx.lineWidth = 5;
+    ctx.globalAlpha = 0.8;
+    ctx.stroke();
+    ctx.globalAlpha = 1;
+    ctx.strokeStyle = color.signal;
+    ctx.lineWidth = 2.25;
+    ctx.setLineDash([9, 5]);
+    ctx.stroke();
+    ctx.setLineDash([]);
+    ctx.beginPath();
+    ctx.arc(c.x, c.y, 5, 0, Math.PI * 2);
+    ctx.fillStyle = color.plaster;
+    ctx.fill();
+    ctx.lineWidth = 1.6;
+    ctx.stroke();
+  }
+  ctx.restore();
+}
+
 function drawPendingAnchor(ctx: CanvasRenderingContext2D, controller: AppController, view: ViewTransform): void {
   const pending = controller.pending;
   if (!pending) return;
@@ -1703,6 +1751,7 @@ export function render(ctx: CanvasRenderingContext2D, controller: AppController,
   drawSelectionHighlights(ctx, controller.doc, view, controller.selection);
   drawPressHighlight(ctx, controller, view);
   drawIncircle(ctx, controller, view);
+  drawCopyRadius(ctx, controller, view);
   drawFairTracePreview(ctx, controller, view);
   drawArcMeasure(ctx, controller, view);
   drawPreview(ctx, controller, view);

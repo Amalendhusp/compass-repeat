@@ -3,8 +3,8 @@
 // remembered) and Same radius (the remembered radius, placed at each new centre). The remembered
 // radius is shared with Arc (doc.toolPrefs.lastRadius).
 
-import { addCircleEntity, addCircleWithRadius, addOnCurvePoint, addOrReuseFreePoint } from '../../model/doc.ts';
-import type { AppController, IncircleLine, ViewTransform } from '../../app/controller.ts';
+import { addCircleEntity, addCircleWithExactRadius, addCircleWithRadius, addOnCurvePoint, addOrReuseFreePoint } from '../../model/doc.ts';
+import type { AppController, CopyRadiusState, IncircleLine, ViewTransform } from '../../app/controller.ts';
 import { screenToWorld } from '../../app/controller.ts';
 import { dist } from '../../geometry/vec.ts';
 import { curveCandidatesAt, isNearAnyCurve } from '../hittest.ts';
@@ -98,6 +98,7 @@ export const circleTool: ToolModule = {
   id: 'circle',
   hint(controller) {
     if (controller.circleVariant === 'three-lines') return incirclePrompt(controller);
+    if (controller.circleVariant === 'copy-radius') return copyRadiusPrompt(controller);
     if (controller.pending?.kind === 'circle') {
       return controller.pointLockHint ? 'Point Targets · choose an existing point' : 'Drag to set the radius, or tap a point';
     }
@@ -105,6 +106,7 @@ export const circleTool: ToolModule = {
   },
   beginGesture(controller, view, screenPos): Gesture | null {
     if (controller.circleVariant === 'three-lines') return threeLinesGesture(controller, view);
+    if (controller.circleVariant === 'copy-radius') return copyRadiusGesture(controller, view, screenPos);
     const doc = controller.doc;
     const remembered = doc.toolPrefs.lastRadius;
     if (doc.toolPrefs.circleMode === 'same' && remembered) return sameRadiusGesture(controller, view, screenPos, remembered);
@@ -470,5 +472,129 @@ export function createIncircle(controller: AppController): void {
 
 export function cancelIncircle(controller: AppController): void {
   controller.incircle = emptyIncircle();
+  controller.notify();
+}
+
+// ---- Phase 5.12d: Copy Radius — any existing circle's exact radius, at new centres ----
+//
+// Once made, a circle is just a centre and a radius, however it was constructed (Centre–Radius,
+// Same radius, Between 3 Lines…). Tap the circle itself — anywhere on it — and its radius is read
+// exactly from its stored geometry (never measured from the screen). Then press a point to see a
+// ghost circle of that radius there (slide to another point to move it), release to keep the ghost,
+// and Create commits it as its own undo step. The mode stays ready for the next centre until Done
+// (or another tool).
+
+const SOURCE_FLASH_MS = 1200;
+
+function copyState(controller: AppController): CopyRadiusState {
+  return controller.copyRadius ?? { sourceId: null, radius: null, flashUntil: 0, centre: null, centreAt: null, note: null };
+}
+
+export function copyRadiusPrompt(controller: AppController): string {
+  const st = controller.copyRadius;
+  if (st?.note) return st.note;
+  if (!st?.radius) return 'Tap a circle to copy its radius';
+  if (st.centre) return 'Same radius · Create, or choose another centre';
+  return 'Same radius · Select centre';
+}
+
+function copyRadiusGesture(controller: AppController, view: ViewTransform, screenPos: { x: number; y: number }): Gesture | null {
+  const st = copyState(controller);
+  const doc = controller.doc;
+
+  if (st.radius === null) {
+    // Choosing the source: a tap on any circle (or arc) — its curve, not a point on it.
+    return {
+      onMove() {},
+      onUp(sp, wasDrag) {
+        if (wasDrag) return;
+        const hit = curveCandidatesAt(doc, view, sp).find((h) => h.entity.kind === 'circle');
+        const g = hit ? resolveEntityGeom(doc, hit.entity) : null;
+        if (!hit || !g || g.kind !== 'circle') {
+          controller.copyRadius = { ...st, note: 'Tap a circle' };
+          controller.notify();
+          return;
+        }
+        const until = performance.now() + SOURCE_FLASH_MS;
+        controller.copyRadius = { sourceId: hit.entity.id, radius: g.radius, flashUntil: until, centre: null, centreAt: null, note: null };
+        setTimeout(() => controller.notifyView(), SOURCE_FLASH_MS + 30);
+        controller.notify();
+      },
+      onCancel() {},
+    };
+  }
+
+  // Choosing a centre: the ghost follows the finger over points; release keeps it for Create.
+  const radius = st.radius;
+  const tracker = new SnapTracker(doc);
+  let centre = tracker.pick(view, screenPos);
+  if (!centre) return tracker.noPoint ? noPointGesture(controller, tracker.noPoint) : null;
+  const show = () => {
+    controller.preview = centre ? { kind: 'circle', centre: centre.at, through: { x: centre.at.x + radius, y: centre.at.y } } : null;
+    controller.notifyView();
+  };
+  show();
+  const hold = new PointHold(controller, view, tracker, screenPos);
+  return {
+    onMove(sp) {
+      const held = hold.move(sp);
+      if (held !== undefined) {
+        centre = held;
+        show();
+        return;
+      }
+      if (hold.open) return;
+      centre = tracker.pick(view, sp);
+      controller.nodeInset = centre ? buildNodeInset(doc, view, sp, centre.at, tracker) : null;
+      show();
+    },
+    onUp(_sp, wasDrag) {
+      const held = hold.release();
+      if (held) centre = held;
+      const hit = centre;
+      controller.preview = null;
+      controller.nodeInset = null;
+      if (!hit) {
+        controller.notify();
+        return;
+      }
+      const keep = (h: NonNullable<typeof hit>) => {
+        controller.copyRadius = { ...copyState(controller), centre: refFromHit(h), centreAt: h.at, note: null };
+      };
+      if (wasDrag || held) {
+        confirmSnap(controller, hit);
+        keep(hit);
+      } else resolveTap(controller, tracker, hit, keep);
+      controller.notify();
+    },
+    onCancel() {
+      hold.cancel();
+      controller.preview = null;
+      controller.nodeInset = null;
+      controller.notify();
+    },
+  };
+}
+
+/** Creates the ghost circle: the chosen centre, and exactly the source radius. One undo step. */
+export function createCopiedCircle(controller: AppController): void {
+  const st = controller.copyRadius;
+  if (!st?.centre || st.radius === null) return;
+  const { centre, radius } = st;
+  if (circleExists(controller.doc, centre, radius)) {
+    showToast('Already drawn');
+    return;
+  }
+  controller.commit((d) => {
+    addCircleWithExactRadius(d, materializeRef(d, centre), radius);
+  });
+  controller.copyRadius = { ...st, centre: null, centreAt: null, note: null };
+  controller.notify();
+}
+
+/** Leaves placement: back to choosing a circle to copy. */
+export function finishCopyRadius(controller: AppController): void {
+  controller.copyRadius = null;
+  controller.preview = null;
   controller.notify();
 }

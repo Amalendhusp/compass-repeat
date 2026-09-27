@@ -669,6 +669,33 @@ export function addCircleWithRadius(doc: Doc, centreId: PointId, radius: number)
   return addCircleEntity(doc, centreId, addRadiusHandle(doc, c, radius, 0));
 }
 
+/** Phase 5.12d (Copy Radius): as addCircleWithRadius, but the hidden radius handle goes on
+ * whichever axis direction from the centre (±x, ±y) reproduces `radius` most exactly. A circle's
+ * radius is always re-derived as dist(centre, through-point), and storing centre ± radius as a
+ * coordinate can round in its last bit; of the four placements the one whose derived radius is
+ * nearest (usually bit-identical) is kept, so a copied radius matches its source. */
+export function addCircleWithExactRadius(doc: Doc, centreId: PointId, radius: number): Entity {
+  const c = resolvePoint(doc, centreId);
+  const options: Vec2[] = [
+    { x: c.x + radius, y: c.y },
+    { x: c.x - radius, y: c.y },
+    { x: c.x, y: c.y + radius },
+    { x: c.x, y: c.y - radius },
+  ];
+  let best = options[0]!;
+  let bestErr = Infinity;
+  for (const o of options) {
+    const err = Math.abs(dist(c, o) - radius);
+    if (err < bestErr) {
+      best = o;
+      bestErr = err;
+    }
+  }
+  const id = genId('pt');
+  doc.points.push({ id, kind: 'free', x: best.x, y: best.y, hidden: true });
+  return addCircleEntity(doc, centreId, id);
+}
+
 function normalizeAngle(a: number): number {
   const twoPi = Math.PI * 2;
   return ((a % twoPi) + twoPi) % twoPi;
