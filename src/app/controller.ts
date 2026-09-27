@@ -12,11 +12,15 @@ export type ToolId = 'select' | 'circle' | 'line' | 'arc' | 'divide' | 'fair' | 
 /** Phase 5.12b: Circle's two ways of making a circle. */
 export type CircleVariant = 'centre-radius' | 'three-lines';
 
-/** Phase 5.12b: one line chosen for Circle → Between 3 Lines — the whole (infinite) line takes part
- * in the geometry, but only the local piece that was tapped is highlighted. */
+/** Phase 5.12b/c: one edge chosen for Circle → Between 3 Lines — the whole (infinite) line takes
+ * part in the geometry; the edge is the visible run of it that was tapped, between the nearest
+ * genuine crossings with other curves (params `t0`–`t1` along the line, world ends `a`–`b`). */
 export interface IncircleLine {
   entityId: EntityId;
-  keys: SegmentKey[];
+  t0: number;
+  t1: number;
+  a: Vec2;
+  b: Vec2;
 }
 
 export interface IncircleState {

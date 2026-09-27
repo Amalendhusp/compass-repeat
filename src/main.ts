@@ -134,6 +134,8 @@ function fitRepeatFirstEntry(controller: AppController, canvas: HTMLCanvasElemen
 }
 
 /** Boots the app on a document. `fitToScreen: false` preserves a drawn/restored viewport. */
+const KEY_ZOOM_STEP = 1.25;
+
 function boot(doc: Doc, opts: { fitToScreen: boolean; history?: { undo: Doc[]; redo: Doc[] } }): void {
   endSession();
   const controller = new AppController(doc);
@@ -193,7 +195,7 @@ function boot(doc: Doc, opts: { fitToScreen: boolean; history?: { undo: Doc[]; r
     return { zoom: vs.zoom, pan: vs.pan, w: canvas.clientWidth, h: canvas.clientHeight };
   }
 
-  new PointerManager(
+  const pointer = new PointerManager(
     canvas,
     controller,
     getView,
@@ -246,6 +248,21 @@ function boot(doc: Doc, opts: { fitToScreen: boolean; history?: { undo: Doc[]; r
   };
   document.addEventListener('visibilitychange', onVisibility);
 
+  // Phase 5.12c: keyboard zoom for desktop — + / − about the canvas centre, 0 = Fit. Plain keys
+  // only (⌘/Ctrl + keeps the browser's own meaning), and never while typing into a field.
+  const onKey = (e: KeyboardEvent) => {
+    if (e.metaKey || e.ctrlKey || e.altKey) return;
+    const t = e.target as HTMLElement | null;
+    if (t && (t.isContentEditable || /^(INPUT|TEXTAREA|SELECT)$/.test(t.tagName))) return;
+    const centre = { x: canvas.clientWidth / 2, y: canvas.clientHeight / 2 };
+    if (e.key === '+' || e.key === '=') pointer.zoomAt(centre, KEY_ZOOM_STEP);
+    else if (e.key === '-' || e.key === '_' || e.key === '\u2212') pointer.zoomAt(centre, 1 / KEY_ZOOM_STEP);
+    else if (e.key === '0') controller.doc.view.workspace === 'repeat' ? fitRepeatView(controller, canvas, overlay) : fitView(controller, canvas, overlay);
+    else return;
+    e.preventDefault();
+  };
+  window.addEventListener('keydown', onKey);
+
   const stopResizing = setupCanvasDPR(canvas, ctx, requestDraw);
   if (opts.fitToScreen) fitView(controller, canvas, overlay);
   requestDraw();
@@ -258,6 +275,7 @@ function boot(doc: Doc, opts: { fitToScreen: boolean; history?: { undo: Doc[]; r
       running = false;
       stopResizing();
       document.removeEventListener('visibilitychange', onVisibility);
+      window.removeEventListener('keydown', onKey);
       diagnostics?.detach();
       autosave.detach();
     },

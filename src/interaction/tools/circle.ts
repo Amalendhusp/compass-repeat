@@ -8,14 +8,14 @@ import type { AppController, IncircleLine, ViewTransform } from '../../app/contr
 import { screenToWorld } from '../../app/controller.ts';
 import { dist } from '../../geometry/vec.ts';
 import { curveCandidatesAt, isNearAnyCurve } from '../hittest.ts';
-import { deriveSelectableGroups, groupContainingParam } from '../../geometry/segments.ts';
+import { deriveSegments, isParamTrimmed } from '../../geometry/segments.ts';
 import { incircleOfLines, type InfiniteLine } from '../../geometry/incircle.ts';
 import { buildNodeInset } from '../nodeinset.ts';
 import { confirmSnap, noPointGesture, PointHold, resolveTap, showNoPoint, SnapTracker } from '../snap.ts';
 import { materializeRef, refAt, refFromHit, refLocation, type PointRef } from '../pointref.ts';
 import { showToast } from '../../ui/toast.ts';
-import type { Doc } from '../../model/types.ts';
-import { resolveEntityGeom, epsilon } from '../../geometry/kernel.ts';
+import type { Doc, Entity, Vec2 } from '../../model/types.ts';
+import { resolveEntityGeom, epsilon, intersectEntities, projectOntoEntity } from '../../geometry/kernel.ts';
 import type { Gesture, ToolModule } from './types.ts';
 
 /** Phase 5.5: the same circle again (same centre point, same radius) is never useful, and a
@@ -250,25 +250,73 @@ export const circleTool: ToolModule = {
   },
 };
 
-// ---- Phase 5.12b: Between 3 Lines — the circle inscribed in the triangle three lines form ----
+// ---- Phase 5.12b/c: Between 3 Lines — the circle inscribed in the triangle three edges bound ----
 //
-// Each tap chooses one line: the whole infinite line takes part in the geometry, but only the
-// local piece that was tapped is highlighted (Phase 5.10 — a tap never lights up a whole line).
-// Tapping a chosen piece again removes it; with three chosen, a new line replaces the most recent
-// choice, so an invalid set can be corrected without starting over. The geometry always uses the
-// lines in a fixed order, so the order they were chosen in never changes the circle.
+// Phase 5.12c: a tap chooses an EDGE — the continuous visible stretch of the tapped line between the
+// nearest genuine crossings with other curves on either side — because that is how an edge is read
+// in a dense construction. Division points, on-curve points, tangency contacts and collinear lines
+// do not break it (for this tool only; Select and Fair keep their own piece semantics). The whole
+// infinite line takes part in the geometry. Tapping a chosen edge again removes it; with three
+// chosen, a new edge replaces the most recent choice. The lines are used in a fixed order, so the
+// order edges were chosen in never changes the circle. The three edges must bound a triangle near
+// them — not merely have extensions that meet somewhere far away.
 
 const TRIANGLE_PROBLEM = 'These three lines do not form a triangle';
+const NOT_NEARBY_PROBLEM = 'These edges do not bound a nearby triangle';
 const MIN_RADIUS_EPS = 20;
-const ORDINALS = ['first', 'second', 'third'];
+/** Every triangle corner must lie within this many edge-lengths (the longest chosen edge) of the
+ * two chosen edges that meet there — otherwise the triangle is somewhere else. */
+const NEARBY_EDGE_LENGTHS = 3;
 
 function emptyIncircle(): NonNullable<AppController['incircle']> {
   return { lines: [], result: null, problem: null };
 }
 
-/** The chosen lines in a fixed order (by entity id), independent of the order they were tapped. */
+/** The chosen edges in a fixed order (by entity id), independent of the order they were tapped. */
 function canonicalLines(lines: IncircleLine[]): IncircleLine[] {
   return [...lines].sort((p, q) => (p.entityId < q.entityId ? -1 : p.entityId > q.entityId ? 1 : 0));
+}
+
+function lineAt(g: { a: Vec2; b: Vec2 }, t: number): Vec2 {
+  return { x: g.a.x + (g.b.x - g.a.x) * t, y: g.a.y + (g.b.y - g.a.y) * t };
+}
+
+/**
+ * The edge of `line` through `param`: out to the nearest genuine crossing with another curve on
+ * each side, else to where the line's visible extent (or a trimmed gap) ends. A crossing is
+ * genuine only where the other curve is really there — inside a finite line's own span, not in a
+ * trimmed piece — and a circle merely touching the line (tangent) does not count.
+ */
+export function edgeRunAt(doc: Doc, line: Extract<Entity, { kind: 'line' }>, param: number): { t0: number; t1: number } | null {
+  const eps = epsilon(doc);
+  const segs = deriveSegments(doc, line);
+  if (segs.length === 0) return null;
+  const extent = [Math.min(...segs.map((s) => s.fromParam)), Math.max(...segs.map((s) => s.toParam))] as const;
+  if (param < extent[0] - 1e-9 || param > extent[1] + 1e-9) return null;
+  const stops: number[] = [extent[0], extent[1]];
+  for (const s of segs) {
+    if (doc.segmentStates.get(s.key)?.state !== 'trimmed') continue;
+    if (param > s.fromParam && param < s.toParam) return null; // tapped where nothing is drawn
+    stops.push(s.fromParam, s.toParam);
+  }
+  for (const other of doc.entities) {
+    if (other.id === line.id) continue;
+    const pts = intersectEntities(doc, line, other);
+    if (other.kind === 'circle' && pts.length === 1) continue; // tangent: touches, doesn't cross
+    for (const pt of pts) {
+      const onOther = projectOntoEntity(doc, other, pt).param;
+      if (other.kind === 'line' && !other.extended && (onOther < -eps || onOther > 1 + eps)) continue;
+      if (isParamTrimmed(doc, other, onOther)) continue;
+      stops.push(projectOntoEntity(doc, line, pt).param);
+    }
+  }
+  let t0 = extent[0];
+  let t1 = extent[1];
+  for (const t of stops) {
+    if (t < param && t > t0) t0 = t;
+    if (t > param && t < t1) t1 = t;
+  }
+  return t1 - t0 > 1e-12 ? { t0, t1 } : null;
 }
 
 function infiniteLine(doc: Doc, entityId: string): InfiniteLine | null {
@@ -278,14 +326,23 @@ function infiniteLine(doc: Doc, entityId: string): InfiniteLine | null {
   return g.kind === 'line' ? { a: g.a, b: g.b } : null;
 }
 
-/** Recomputes the circle for the lines chosen so far (only three give one). */
+function distToSegment(p: Vec2, a: Vec2, b: Vec2): number {
+  const dx = b.x - a.x;
+  const dy = b.y - a.y;
+  const l2 = dx * dx + dy * dy;
+  const t = l2 < 1e-24 ? 0 : Math.max(0, Math.min(1, ((p.x - a.x) * dx + (p.y - a.y) * dy) / l2));
+  return Math.hypot(a.x + dx * t - p.x, a.y + dy * t - p.y);
+}
+
+/** Recomputes the circle for the edges chosen so far (only three give one). */
 export function recomputeIncircle(controller: AppController): void {
   const st = controller.incircle;
   if (!st) return;
   st.result = null;
   st.problem = null;
   if (st.lines.length < 3) return;
-  const lines = canonicalLines(st.lines).map((l) => infiniteLine(controller.doc, l.entityId));
+  const edges = canonicalLines(st.lines);
+  const lines = edges.map((l) => infiniteLine(controller.doc, l.entityId));
   if (lines.some((l) => !l)) {
     st.problem = TRIANGLE_PROBLEM;
     return;
@@ -293,24 +350,60 @@ export function recomputeIncircle(controller: AppController): void {
   // Smaller than this and its centre and tangency points would merge into each other (the model
   // merges points closer than epsilon), so it could not be built as a true tangent circle.
   const r = incircleOfLines(lines as [InfiniteLine, InfiniteLine, InfiniteLine], epsilon(controller.doc) * MIN_RADIUS_EPS);
-  if (r.ok) st.result = r.circle;
-  else st.problem = r.reason === 'same-line' ? 'Two of these are the same line' : TRIANGLE_PROBLEM;
+  if (!r.ok) {
+    st.problem = r.reason === 'same-line' ? 'Two of these are the same line' : TRIANGLE_PROBLEM;
+    return;
+  }
+  // Local triangle: each chosen edge lies on its own side of the triangle, and each corner is near
+  // the two chosen edges that meet there.
+  const [A, Bv, Cv] = r.circle.vertices; // A opposite line 0 (on lines 1, 2), B opposite 1, C opposite 2
+  const sides: [Vec2, Vec2][] = [
+    [Bv, Cv],
+    [Cv, A],
+    [A, Bv],
+  ];
+  const longest = Math.max(...edges.map((e) => Math.hypot(e.b.x - e.a.x, e.b.y - e.a.y)));
+  const onSide = edges.every((e, i) => {
+    const g = lines[i]!;
+    const [p, q] = sides[i]!;
+    const tp = projectOntoEntityParam(g, p);
+    const tq = projectOntoEntityParam(g, q);
+    const lo = Math.max(Math.min(e.t0, e.t1), Math.min(tp, tq));
+    const hi = Math.min(Math.max(e.t0, e.t1), Math.max(tp, tq));
+    return hi - lo > 0.01 * Math.abs(e.t1 - e.t0);
+  });
+  const cornersNear = [
+    [A, 1, 2],
+    [Bv, 2, 0],
+    [Cv, 0, 1],
+  ].every(([v, i, j]) => {
+    const vv = v as Vec2;
+    const ei = edges[i as number]!;
+    const ej = edges[j as number]!;
+    return distToSegment(vv, ei.a, ei.b) <= NEARBY_EDGE_LENGTHS * longest && distToSegment(vv, ej.a, ej.b) <= NEARBY_EDGE_LENGTHS * longest;
+  });
+  if (!onSide || !cornersNear) {
+    st.problem = NOT_NEARBY_PROBLEM;
+    return;
+  }
+  st.result = r.circle;
+}
+
+function projectOntoEntityParam(g: InfiniteLine, p: Vec2): number {
+  const dx = g.b.x - g.a.x;
+  const dy = g.b.y - g.a.y;
+  return ((p.x - g.a.x) * dx + (p.y - g.a.y) * dy) / (dx * dx + dy * dy);
 }
 
 export function incirclePrompt(controller: AppController): string {
   const st = controller.incircle;
   const n = st?.lines.length ?? 0;
-  if (st?.problem) return n === 3 ? `${st.problem} · tap a chosen line to swap it` : st.problem;
-  if (n === 0) return 'Select first line';
-  if (n < 3) return `${n} of 3 · Select ${ORDINALS[n]} line`;
-  return '3 of 3';
+  if (st?.problem) return n === 3 ? `${st.problem} · tap a chosen edge to swap it` : st.problem;
+  if (n < 3) return `Tap Edge ${n + 1}`;
+  return 'Edges 1–3 · incircle shown';
 }
 
-function sameKeys(a: string[], b: string[]): boolean {
-  return a.length === b.length && a.every((k, i) => k === b[i]);
-}
-
-/** A tap chooses (or un-chooses) the line under the finger; a drag does nothing. */
+/** A tap chooses (or un-chooses) the edge under the finger; a drag does nothing. */
 function threeLinesGesture(controller: AppController, view: ViewTransform): Gesture {
   return {
     onMove() {},
@@ -320,20 +413,22 @@ function threeLinesGesture(controller: AppController, view: ViewTransform): Gest
       const prev = controller.incircle ?? emptyIncircle();
       const near = curveCandidatesAt(doc, view, sp);
       const hit = near.find((h) => h.entity.kind === 'line');
-      if (!hit) {
-        // With three lines already chosen, a stray tap changes nothing; before that, say what's wanted.
+      const run = hit && hit.entity.kind === 'line' ? edgeRunAt(doc, hit.entity, hit.param) : null;
+      if (!hit || hit.entity.kind !== 'line' || !run) {
+        // With three edges already chosen, a stray tap changes nothing; before that, say what's wanted.
         if (prev.lines.length === 3) return;
-        controller.incircle = { lines: prev.lines, result: null, problem: near.length > 0 ? 'Choose a straight line' : 'Tap a line' };
+        controller.incircle = { lines: prev.lines, result: null, problem: near.length > 0 ? 'Choose a straight edge' : 'Tap an edge' };
         controller.notify();
         return;
       }
-      const group = groupContainingParam(deriveSelectableGroups(doc, hit.entity), hit.param, false);
-      const pick: IncircleLine = { entityId: hit.entity.id, keys: group ? group.segments.map((s) => s.key) : [] };
+      const g = resolveEntityGeom(doc, hit.entity);
+      if (g.kind !== 'line') return;
+      const pick: IncircleLine = { entityId: hit.entity.id, t0: run.t0, t1: run.t1, a: lineAt(g, run.t0), b: lineAt(g, run.t1) };
       const lines = [...prev.lines];
       const i = lines.findIndex((l) => l.entityId === pick.entityId);
       if (i >= 0) {
-        // The same line again: tapping its chosen piece removes it; another piece just moves the mark.
-        if (sameKeys(lines[i]!.keys, pick.keys)) lines.splice(i, 1);
+        // The same line again: tapping the chosen edge removes it; another edge of it moves the choice.
+        if (Math.abs(lines[i]!.t0 - pick.t0) < 1e-9 && Math.abs(lines[i]!.t1 - pick.t1) < 1e-9) lines.splice(i, 1);
         else lines[i] = pick;
       } else if (lines.length < 3) lines.push(pick);
       else lines[2] = pick;

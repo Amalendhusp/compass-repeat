@@ -18,6 +18,11 @@ const MIN_ZOOM = 0.15;
 // size. Every hit/snap radius, stroke width and marker is in screen px, so none of them scale
 // with this. Fit keeps its own ceiling of 8 (main.ts) — only a pinch goes further.
 const MAX_ZOOM = 24;
+// Phase 5.12c: desktop wheel zoom — a trackpad pinch sends small deltas many times a second; a
+// mouse wheel notch sends ~100 at once, clamped so one notch is one comfortable step (~×1.5).
+const WHEEL_ZOOM_RATE = 0.01;
+const WHEEL_ZOOM_CLAMP = 40;
+const WHEEL_IDLE_MS = 140;
 
 interface PointerRecord {
   x: number;
@@ -72,9 +77,88 @@ export class PointerManager {
     canvas.addEventListener('pointermove', this.onMove);
     canvas.addEventListener('pointerup', this.onUp);
     canvas.addEventListener('pointercancel', this.onCancelPointer);
+    // Phase 5.12c: desktop zoom and pan (trackpad pinch, ⌘/Ctrl + scroll, plain scroll).
+    canvas.addEventListener('wheel', this.onWheel, { passive: false });
+    canvas.addEventListener('gesturestart', this.onGestureStart as EventListener, { passive: false });
+    canvas.addEventListener('gesturechange', this.onGestureChange as EventListener, { passive: false });
+    canvas.addEventListener('gestureend', this.onGestureEnd as EventListener, { passive: false });
   }
 
-  private toLocal(e: PointerEvent): Vec2 {
+  // ---- Phase 5.12c: desktop zoom ----
+  //
+  // A Mac trackpad pinch arrives as a wheel event with ctrlKey set in Chrome/Firefox/Edge, and as
+  // WebKit's own gesturestart/change/end in Safari; ⌘/Ctrl + mouse wheel is the same zoom. Plain
+  // scrolling (two fingers on a trackpad, or a mouse wheel) pans the drawing instead of the page.
+  // Every zoom keeps the construction point under the cursor where it is, within the same
+  // MIN_ZOOM–MAX_ZOOM as a touch pinch. Touch pinch itself is untouched: WebKit also fires gesture
+  // events for a two-finger touch pinch on iOS, so they are ignored while touch pointers are down.
+
+  private gestureScale = 1;
+  private wheelIdle: ReturnType<typeof setTimeout> | null = null;
+
+  /** Scales the view by `factor` about `anchor` (canvas px), keeping the world point there fixed. */
+  zoomAt(anchor: Vec2, factor: number): void {
+    const view = this.getView();
+    const viewState = this.getViewState();
+    const oldZoom = viewState.zoom;
+    const newZoom = Math.min(MAX_ZOOM, Math.max(MIN_ZOOM, oldZoom * factor));
+    if (newZoom === oldZoom) return;
+    const world = { x: (anchor.x - view.w / 2) / oldZoom - viewState.pan.x, y: (anchor.y - view.h / 2) / oldZoom - viewState.pan.y };
+    viewState.zoom = newZoom;
+    viewState.pan = { x: (anchor.x - view.w / 2) / newZoom - world.x, y: (anchor.y - view.h / 2) / newZoom - world.y };
+    this.markViewGesture();
+  }
+
+  /** Continuous wheel/gesture zoom and pan draw light, like a touch pinch, until input pauses. */
+  private markViewGesture(): void {
+    this.controller.viewGesture = true;
+    this.controller.notifyView();
+    if (this.wheelIdle !== null) clearTimeout(this.wheelIdle);
+    this.wheelIdle = setTimeout(() => {
+      this.wheelIdle = null;
+      if (this.mode !== 'multi') this.controller.viewGesture = false;
+      this.controller.notifyView();
+    }, WHEEL_IDLE_MS);
+  }
+
+  private onWheel = (e: WheelEvent): void => {
+    e.preventDefault();
+    if (this.active.size > 0) return;
+    const unit = e.deltaMode === 1 ? 16 : e.deltaMode === 2 ? this.canvas.clientHeight : 1;
+    const dx = e.deltaX * unit;
+    const dy = e.deltaY * unit;
+    if (e.ctrlKey || e.metaKey) {
+      const step = Math.max(-WHEEL_ZOOM_CLAMP, Math.min(WHEEL_ZOOM_CLAMP, dy));
+      this.zoomAt(this.toLocal(e), Math.exp(-step * WHEEL_ZOOM_RATE));
+      return;
+    }
+    const viewState = this.getViewState();
+    const [px, py] = e.shiftKey && dx === 0 ? [dy, 0] : [dx, dy];
+    viewState.pan = { x: viewState.pan.x - px / viewState.zoom, y: viewState.pan.y - py / viewState.zoom };
+    this.markViewGesture();
+  };
+
+  private onGestureStart = (e: Event & { scale?: number }): void => {
+    e.preventDefault();
+    this.gestureScale = 1;
+  };
+
+  private onGestureChange = (e: Event & { scale?: number; clientX?: number; clientY?: number }): void => {
+    e.preventDefault();
+    if (this.active.size > 0 || !e.scale) return; // an iOS touch pinch — the pointer path owns it
+    const factor = e.scale / this.gestureScale;
+    this.gestureScale = e.scale;
+    const rect = this.canvas.getBoundingClientRect();
+    const anchor = e.clientX !== undefined && e.clientY !== undefined ? { x: e.clientX - rect.left, y: e.clientY - rect.top } : { x: rect.width / 2, y: rect.height / 2 };
+    this.zoomAt(anchor, factor);
+  };
+
+  private onGestureEnd = (e: Event): void => {
+    e.preventDefault();
+    this.gestureScale = 1;
+  };
+
+  private toLocal(e: MouseEvent): Vec2 {
     const rect = this.canvas.getBoundingClientRect();
     return { x: e.clientX - rect.left, y: e.clientY - rect.top };
   }

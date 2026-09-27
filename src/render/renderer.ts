@@ -1193,51 +1193,93 @@ function drawPreview(ctx: CanvasRenderingContext2D, controller: AppController, v
  * Arc's chosen centre) stays strongly highlighted — independent of the live
  * preview — and survives pinch/pan untouched, since it reads straight from controller.pending
  * rather than any gesture-local state. */
-/** Phase 5.12b: Circle → Between 3 Lines. The chosen local pieces in Signal with their numbers,
- * and — once three lines bound a triangle — the proposed circle in the same dashed style as every
- * other circle preview, its centre, and the three tangency points. */
+/** Phase 5.12b/c: Circle → Between 3 Lines. Each chosen edge as one continuous Signal stroke with
+ * its label; once three edges bound a nearby triangle, the triangle itself (a faint tint, a quiet
+ * dashed outline and its three corners), the proposed incircle — a stronger dashed stroke over a
+ * pale halo so it reads clearly over dense construction, yet never looks like committed geometry —
+ * its centre, and the three tangency points. A circle too small to see at this zoom gets a locator
+ * ring around its centre. */
 function drawIncircle(ctx: CanvasRenderingContext2D, controller: AppController, view: ViewTransform): void {
   const st = controller.incircle;
   if (controller.tool !== 'circle' || controller.circleVariant !== 'three-lines' || !st) return;
-  const doc = controller.doc;
   ctx.save();
-  st.lines.forEach((line, i) => {
-    let mid: Vec2 | null = null;
-    let normal: Vec2 = { x: 0, y: -1 };
-    for (const key of line.keys) {
-      const piece = keyPiece(doc, key);
-      if (!piece) continue;
-      segmentPath(ctx, doc, view, piece.entity, piece.seg.fromParam, piece.seg.toParam);
-      ctx.strokeStyle = color.signal;
-      ctx.lineWidth = 3.5;
-      ctx.lineCap = 'round';
-      ctx.setLineDash([]);
-      ctx.stroke();
-      if (!mid) {
-        const a = worldToScreen(view, resolvePoint(doc, piece.seg.from));
-        const b = worldToScreen(view, resolvePoint(doc, piece.seg.to));
-        const len = Math.hypot(b.x - a.x, b.y - a.y) || 1;
-        mid = { x: (a.x + b.x) / 2, y: (a.y + b.y) / 2 };
-        normal = { x: -(b.y - a.y) / len, y: (b.x - a.x) / len };
-      }
-    }
-    if (mid) drawNumberBadge(ctx, { x: mid.x + normal.x * 16, y: mid.y + normal.y * 16 }, i + 1, color.signal, false, 1);
-  });
   const c = st.result;
   if (c) {
-    const centre = worldToScreen(view, c.centre);
+    const [A, Bv, Cv] = c.vertices.map((v) => worldToScreen(view, v));
+    const tri = new Path2D();
+    tri.moveTo(A!.x, A!.y);
+    tri.lineTo(Bv!.x, Bv!.y);
+    tri.lineTo(Cv!.x, Cv!.y);
+    tri.closePath();
+    ctx.fillStyle = color.signalLight;
+    ctx.globalAlpha = 0.45;
+    ctx.fill(tri);
+    ctx.globalAlpha = 1;
     ctx.strokeStyle = color.signal;
-    ctx.lineWidth = 1.6;
-    ctx.lineCap = 'butt';
-    ctx.setLineDash(stroke.previewDash);
+    ctx.lineWidth = 1;
+    ctx.setLineDash([3, 3]);
+    ctx.stroke(tri);
+    ctx.setLineDash([]);
+  }
+  st.lines.forEach((line) => {
+    const a = worldToScreen(view, line.a);
+    const b = worldToScreen(view, line.b);
     ctx.beginPath();
-    ctx.arc(centre.x, centre.y, c.radius * view.zoom, 0, Math.PI * 2);
+    ctx.moveTo(a.x, a.y);
+    ctx.lineTo(b.x, b.y);
+    ctx.strokeStyle = color.signal;
+    ctx.lineWidth = 4;
+    ctx.lineCap = 'round';
+    ctx.stroke();
+  });
+  if (c) {
+    for (const v of c.vertices) {
+      const s = worldToScreen(view, v);
+      ctx.beginPath();
+      ctx.rect(s.x - 3.5, s.y - 3.5, 7, 7);
+      ctx.fillStyle = color.paper;
+      ctx.fill();
+      ctx.lineWidth = 1.5;
+      ctx.strokeStyle = color.signal;
+      ctx.stroke();
+    }
+    const centre = worldToScreen(view, c.centre);
+    const r = c.radius * view.zoom;
+    ctx.lineCap = 'butt';
+    ctx.beginPath();
+    ctx.arc(centre.x, centre.y, r, 0, Math.PI * 2);
+    ctx.strokeStyle = color.paper;
+    ctx.lineWidth = 5;
+    ctx.globalAlpha = 0.8;
+    ctx.stroke();
+    ctx.globalAlpha = 1;
+    ctx.strokeStyle = color.signal;
+    ctx.lineWidth = 2.25;
+    ctx.setLineDash([9, 5]);
     ctx.stroke();
     ctx.setLineDash([]);
+    if (r < 10) {
+      ctx.beginPath();
+      ctx.arc(centre.x, centre.y, 16, 0, Math.PI * 2);
+      ctx.strokeStyle = color.signal;
+      ctx.lineWidth = 1.5;
+      ctx.setLineDash([2, 3]);
+      ctx.stroke();
+      ctx.setLineDash([]);
+    }
     ctx.beginPath();
-    ctx.arc(centre.x, centre.y, 5, 0, Math.PI * 2);
-    ctx.fillStyle = color.plaster;
+    ctx.arc(centre.x, centre.y, 4, 0, Math.PI * 2);
+    ctx.fillStyle = color.paper;
     ctx.fill();
+    ctx.lineWidth = 1.6;
+    ctx.strokeStyle = color.signal;
+    ctx.stroke();
+    ctx.beginPath();
+    ctx.moveTo(centre.x - 7, centre.y);
+    ctx.lineTo(centre.x + 7, centre.y);
+    ctx.moveTo(centre.x, centre.y - 7);
+    ctx.lineTo(centre.x, centre.y + 7);
+    ctx.lineWidth = 1;
     ctx.stroke();
     for (const f of c.feet) {
       const s = worldToScreen(view, f);
@@ -1250,6 +1292,21 @@ function drawIncircle(ctx: CanvasRenderingContext2D, controller: AppController, 
       ctx.stroke();
     }
   }
+  // Labels last, so no preview stroke covers them.
+  st.lines.forEach((line, i) => {
+    const a = worldToScreen(view, line.a);
+    const b = worldToScreen(view, line.b);
+    const len = Math.hypot(b.x - a.x, b.y - a.y) || 1;
+    const n = { x: -(b.y - a.y) / len, y: (b.x - a.x) / len };
+    const mid = { x: (a.x + b.x) / 2, y: (a.y + b.y) / 2 };
+    // Put the label on the side away from the circle, when there is one.
+    let side = 1;
+    if (c) {
+      const cs = worldToScreen(view, c.centre);
+      if ((cs.x - mid.x) * n.x + (cs.y - mid.y) * n.y > 0) side = -1;
+    }
+    drawLabelPill(ctx, { x: mid.x + n.x * 18 * side, y: mid.y + n.y * 18 * side }, [`Edge ${i + 1}`], view);
+  });
   ctx.restore();
 }
 
