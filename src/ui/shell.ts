@@ -30,7 +30,7 @@ import { color, fairPalette } from '../render/tokens.ts';
 import { defaultLatticeVectors, isSixtyDegreeFamily, type LatticeFamily } from '../geometry/lattice.ts';
 import { rotationFractionLabel } from '../render/repeatRenderer.ts';
 import { CAPTURED_CUE_MS } from '../interaction/tools/arc.ts';
-import { cancelIncircle, copyRadiusPrompt, createCopiedCircle, createIncircle, finishCopyRadius, incirclePrompt } from '../interaction/tools/circle.ts';
+import { cancelIncircle, copyRadiusStatus, createCopiedCircle, createIncircle, finishCopyRadius, incircleStatus } from '../interaction/tools/circle.ts';
 import { syncSnapChooser } from './snapchooser.ts';
 import { deriveSelectableGroups } from '../geometry/segments.ts';
 import { deliverFile, exportVisibleView, fileShareSupport, type ExportSettings } from '../render/export.ts';
@@ -1392,12 +1392,14 @@ export function buildShell(
     const pending = controller.pending;
 
     if (tool === 'circle') {
-      // Phase 5.12b: Centre–Radius (the existing Set/Same radius circle) or Between 3 Lines.
+      // Phase 5.12e: one compact, single-layer row — Radius | 3 Edges | Copy, then only what the
+      // current state needs (a two-word status and/or its actions). No popover, no second row, no
+      // horizontal scroll; the canvas shows the geometry itself.
       modeToggle(
         [
-          { id: 'centre-radius', label: 'Centre–Radius' },
-          { id: 'three-lines', label: 'Between 3 Lines' },
-          { id: 'copy-radius', label: 'Copy Radius' },
+          { id: 'centre-radius', label: 'Radius' },
+          { id: 'three-lines', label: '3 Edges' },
+          { id: 'copy-radius', label: 'Copy' },
         ],
         controller.circleVariant,
         (variant) => {
@@ -1408,37 +1410,45 @@ export function buildShell(
           controller.notify();
         },
       );
-      if (controller.circleVariant === 'copy-radius') {
-        cue(copyRadiusPrompt(controller));
-        if (controller.copyRadius?.centre) {
-          const create = chip('Create', () => createCopiedCircle(controller));
-          create.classList.add('primary');
+      const status = (text: string) => {
+        if (text) cue(text);
+      };
+      if (controller.circleVariant === 'three-lines') {
+        const st = controller.incircle;
+        status(incircleStatus(controller));
+        if (st?.result) chip('Create', () => createIncircle(controller)).classList.add('primary');
+        if ((st?.lines.length ?? 0) > 0) {
+          const cancel = chip('×', () => cancelIncircle(controller));
+          cancel.classList.add('icon-only');
+          cancel.setAttribute('aria-label', 'Cancel');
         }
+        return;
+      }
+      if (controller.circleVariant === 'copy-radius') {
+        status(copyRadiusStatus(controller));
+        if (controller.copyRadius?.centre) chip('Create', () => createCopiedCircle(controller)).classList.add('primary');
+        // Done is also the way back to choosing a different circle, so it stays while a radius is held.
         if (controller.copyRadius?.radius) chip('Done', () => finishCopyRadius(controller));
         return;
       }
-      if (controller.circleVariant === 'three-lines') {
-        cue(incirclePrompt(controller));
-        if (controller.incircle?.result) {
-          const create = chip('Create', () => createIncircle(controller));
-          create.classList.add('primary');
-        }
-        if ((controller.incircle?.lines.length ?? 0) > 0) chip('Cancel', () => cancelIncircle(controller));
+      if (pending?.kind === 'circle') {
+        status('Tap radius point');
         return;
       }
-      modeToggle(
-        [
-          { id: 'set', label: 'Set radius' },
-          { id: 'same', label: 'Same radius', disabled: !prefs.lastRadius },
-        ],
-        prefs.circleMode === 'same' && prefs.lastRadius ? 'same' : 'set',
-        (mode) => {
-          controller.cancelPending();
-          prefs.circleMode = mode;
-          controller.notify();
-        },
-      );
-      if (pending?.kind === 'circle') cue('Centre selected → choose radius');
+      status('Tap centre');
+      // Same radius (the remembered radius at each new centre) stays one tap away, in the same row,
+      // once there is a radius to remember.
+      if (!prefs.lastRadius) return;
+      const same = prefs.circleMode === 'same';
+      const sameChip = chip('Same', () => {
+        controller.cancelPending();
+        prefs.circleMode = same ? 'set' : 'same';
+        controller.notify();
+      });
+      sameChip.classList.add('toggle');
+      sameChip.classList.toggle('on', same);
+      sameChip.setAttribute('aria-pressed', String(same));
+      sameChip.setAttribute('aria-label', 'Same radius');
     } else if (tool === 'line') {
       modeToggle(
         [
@@ -1538,6 +1548,7 @@ export function buildShell(
    * otherwise it hides — but its slot keeps its height, so Undo/Redo and the dock never move. */
   function renderRibbon(): void {
     contextBar.innerHTML = '';
+    contextBar.classList.toggle('circle-bar', controller.tool === 'circle' && controller.doc.view.workspace !== 'repeat');
     if (controller.tool === 'select') renderSelectRibbon();
     else renderToolRibbon(controller.tool);
     contextBar.classList.toggle('hidden', !contextBar.hasChildNodes());

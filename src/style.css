@@ -426,6 +426,53 @@ canvas.stage {
 .context-bar.hidden {
   visibility: hidden;
 }
+/* Phase 5.12e: the Circle ribbon — one compact row, never scrolling sideways. The three method tabs
+ * keep a fixed size (same height as every segmented control); the status word takes whatever room
+ * is left and truncates rather than pushing the action buttons, which never shrink. */
+.context-bar.circle-bar {
+  overflow-x: hidden;
+  padding-left: 8px;
+  gap: 6px;
+}
+.context-bar.circle-bar .segmented-mini button {
+  height: 36px;
+  padding: 0 10px;
+}
+.context-bar.circle-bar .step-badge {
+  flex: 0 1 auto;
+  min-width: 0;
+  display: block;
+  line-height: 26px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.context-bar.circle-bar .chip {
+  padding: 0 11px;
+}
+.context-bar.circle-bar .chip.icon-only {
+  padding: 0;
+}
+/* The narrowest phones (320 pt: iPhone SE 1st gen, Display Zoom): tighter spacing, same heights. */
+@media (max-width: 359px) {
+  .context-bar.circle-bar {
+    padding-left: 6px;
+    padding-right: 6px;
+    gap: 4px;
+  }
+  .context-bar.circle-bar .segmented-mini button {
+    padding: 0 7px;
+  }
+  .context-bar.circle-bar .step-badge {
+    padding: 0 6px;
+  }
+  .context-bar.circle-bar .chip {
+    padding: 0 9px;
+  }
+}
+.context-bar .chip.toggle.on {
+  background: var(--ink);
+  color: var(--paper);
+}
 .dock {
   min-height: 64px;
   padding: 0 4px;

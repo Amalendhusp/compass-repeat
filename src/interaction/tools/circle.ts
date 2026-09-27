@@ -598,3 +598,24 @@ export function finishCopyRadius(controller: AppController): void {
   controller.preview = null;
   controller.notify();
 }
+
+// ---- Phase 5.12e: the compact Circle ribbon's short status words ----
+
+/** Between 3 Lines, in two or three words — the canvas shows the rest. */
+export function incircleStatus(controller: AppController): string {
+  const st = controller.incircle;
+  const n = st?.lines.length ?? 0;
+  if (st?.problem === TRIANGLE_PROBLEM) return 'Not a triangle';
+  if (st?.problem === NOT_NEARBY_PROBLEM) return 'Not nearby';
+  if (st?.problem === 'Two of these are the same line') return 'Same line twice';
+  if (st?.problem === 'Choose a straight edge') return 'Lines only';
+  if (st?.problem) return st.problem;
+  return n < 3 ? `Edge ${n + 1} of 3` : '';
+}
+
+/** Copy Radius, in two words. */
+export function copyRadiusStatus(controller: AppController): string {
+  const st = controller.copyRadius;
+  if (!st?.radius) return 'Tap circle';
+  return st.centre ? '' : 'Select centre';
+}
