@@ -1,6 +1,7 @@
 import type { Doc, EntityId, FaceSig, PointId, SegmentKey, SegmentState, Vec2 } from '../model/types.ts';
 import type { PointDependent } from '../model/doc.ts';
 import { cloneDoc } from '../model/doc.ts';
+import { invalidatePointFacts } from '../geometry/usage.ts';
 import type { PointRef } from '../interaction/pointref.ts';
 
 /** Phase 5.2 item 1: Polygon is no longer a creation tool (connected Lines make any polygon);
@@ -324,6 +325,10 @@ export class AppController {
     const before = cloneDoc(this.doc);
     const next = cloneDoc(this.doc);
     mutate(next);
+    // Phase 5.11: point facts read while `mutate` was still editing `next` (a Trim can change a
+    // segment's state without changing any count the cache guards on) are dropped here, so the
+    // committed document always derives them fresh.
+    invalidatePointFacts(next);
     next.updatedAt = Date.now();
     this.undoStack.push(before);
     this.redoStack = [];

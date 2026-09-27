@@ -3,7 +3,7 @@ import type { AppController, SelectCandidate, ViewTransform } from '../app/contr
 import { resolveEntityGeom, resolvePoint } from '../geometry/kernel.ts';
 import { defaultSegmentKind, deriveSegments, segmentKey, type DerivedSegment } from '../geometry/segments.ts';
 import { computeConstructionRegions, computeDirectHoles, computeFairRegions } from '../geometry/regions.ts';
-import { isFramePoint, isPointOrphanedByTrim, isPointUsed } from '../geometry/usage.ts';
+import { isFramePoint, isPointOrphanedByTrim, isPointUsed, pointById } from '../geometry/usage.ts';
 import { dist } from '../geometry/vec.ts';
 import { refLocation } from '../interaction/pointref.ts';
 import { color, font, stroke } from './tokens.ts';
@@ -1355,7 +1355,7 @@ function drawPointEdit(ctx: CanvasRenderingContext2D, controller: AppController,
 }
 
 function isHiddenPoint(doc: Doc, id: PointId): boolean {
-  const p = doc.points.find((pt) => pt.id === id);
+  const p = pointById(doc, id);
   return p?.kind === 'free' && !!p.hidden;
 }
 
@@ -1397,7 +1397,7 @@ function isPointVisible(
   // Phase 5.2 item 16: committed division points are real, persistent points — visible whenever
   // points are shown at all, in every tool, never on a timer.
   const mode = controller.pointVisibility;
-  if (mode !== 'none' && doc.points.find((p) => p.id === pointId)?.kind === 'division') return true;
+  if (mode !== 'none' && pointById(doc, pointId)?.kind === 'division') return true;
 
   if (controller.tool === 'fair') {
     if (controller.fairTrace?.relevantPoints.has(pointId)) return true;

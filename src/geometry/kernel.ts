@@ -23,8 +23,32 @@ export function epsilon(doc: Doc): number {
   return Math.max(1e-6 * doc.frame.radius * 8, 1e-9);
 }
 
+// Phase 5.11: resolving every point after an edit called findPoint once per point, and each call
+// scanned doc.points — O(points²) per commit on a dense drawing. An id → array-slot index makes it
+// a lookup. A hit is always checked against the live array (the slot must still hold that id), and
+// any miss rebuilds the index first, so the answer is exactly what `doc.points.find` gives even
+// while a commit is adding, removing or replacing points.
+const pointSlots = new WeakMap<Doc, { points: Point[]; slots: Map<PointId, number> }>();
+
+function indexPoints(points: Point[]): Map<PointId, number> {
+  const slots = new Map<PointId, number>();
+  points.forEach((p, i) => {
+    if (!slots.has(p.id)) slots.set(p.id, i);
+  });
+  return slots;
+}
+
 export function findPoint(doc: Doc, id: PointId): Point | undefined {
-  return doc.points.find((p) => p.id === id);
+  let rec = pointSlots.get(doc);
+  if (!rec || rec.points !== doc.points) {
+    rec = { points: doc.points, slots: indexPoints(doc.points) };
+    pointSlots.set(doc, rec);
+  }
+  const i = rec.slots.get(id);
+  if (i !== undefined && doc.points[i]?.id === id) return doc.points[i];
+  rec.slots = indexPoints(doc.points);
+  const j = rec.slots.get(id);
+  return j === undefined ? undefined : doc.points[j];
 }
 
 export function frameVertexCount(kind: Doc['frame']['kind']): number {

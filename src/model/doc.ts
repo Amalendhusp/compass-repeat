@@ -10,7 +10,7 @@ import { withSegmentMigration } from '../geometry/segmentstate.ts';
 import { defaultSegmentKind, deriveSegments, fairSegmentState, invalidateSegmentCaches, isParamTrimmed, unfairedSegmentState } from '../geometry/segments.ts';
 import { invalidateRegionCaches } from '../geometry/regions.ts';
 import { circleDivisionPositions, segmentDivisionPositions, type SegmentSpan } from '../geometry/divide.ts';
-import { isEditablePointKind } from '../geometry/usage.ts';
+import { invalidatePointFacts, isEditablePointKind } from '../geometry/usage.ts';
 import { color, fairPalette, stroke } from '../render/tokens.ts';
 
 /** §4.1 §Phase 1.1: the frame is drawn by the participant, not auto-placed — see interaction/drawframe.ts. */
@@ -547,6 +547,7 @@ export function invalidateGeometryCaches(doc: Doc): void {
   invalidateResolveCache(doc);
   invalidateSegmentCaches(doc);
   invalidateRegionCaches(doc);
+  invalidatePointFacts(doc);
 }
 
 export type EndpointRole = 'a' | 'b' | 'centre' | 'through';
