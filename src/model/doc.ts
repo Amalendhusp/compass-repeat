@@ -181,6 +181,15 @@ export function addFreePoint(doc: Doc, x: number, y: number): PointId {
   return id;
 }
 
+/** Phase 5.12b: a free point at a computed location — or the point already there, by the same
+ * merge rule every other point this module creates follows, so it never doubles an existing node
+ * (e.g. an incentre that falls exactly on the frame's centre). */
+export function addOrReuseFreePoint(doc: Doc, at: Vec2): PointId {
+  const id = mergeOrCreatePoint(doc, at, (pid) => ({ id: pid, kind: 'free', x: at.x, y: at.y }));
+  doc.updatedAt = Date.now();
+  return id;
+}
+
 export function addOnCurvePoint(doc: Doc, host: EntityId, param: number, at: Vec2): PointId {
   let id!: PointId;
   withSegmentMigration(doc, [host], () => {

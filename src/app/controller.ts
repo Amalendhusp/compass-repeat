@@ -3,10 +3,29 @@ import type { PointDependent } from '../model/doc.ts';
 import { cloneDoc } from '../model/doc.ts';
 import { invalidatePointFacts } from '../geometry/usage.ts';
 import type { PointRef } from '../interaction/pointref.ts';
+import type { Incircle } from '../geometry/incircle.ts';
 
 /** Phase 5.2 item 1: Polygon is no longer a creation tool (connected Lines make any polygon);
  * existing polygon groups stay fully supported as data and as Select targets. */
 export type ToolId = 'select' | 'circle' | 'line' | 'arc' | 'divide' | 'fair' | 'fill';
+
+/** Phase 5.12b: Circle's two ways of making a circle. */
+export type CircleVariant = 'centre-radius' | 'three-lines';
+
+/** Phase 5.12b: one line chosen for Circle → Between 3 Lines — the whole (infinite) line takes part
+ * in the geometry, but only the local piece that was tapped is highlighted. */
+export interface IncircleLine {
+  entityId: EntityId;
+  keys: SegmentKey[];
+}
+
+export interface IncircleState {
+  lines: IncircleLine[];
+  /** Set once three lines are chosen and they bound a triangle. */
+  result: Incircle | null;
+  /** Why three chosen lines give no circle, or a short note after a tap that chose nothing. */
+  problem: string | null;
+}
 
 /** Tools implemented in this pass; the rest render in the dock but are inert (§ "do not attempt the entire app in one pass"). */
 export const LIVE_TOOLS: ReadonlySet<ToolId> = new Set(['select', 'circle', 'line', 'arc', 'divide', 'fair', 'fill']);
@@ -224,7 +243,8 @@ type GestureTransientKey =
   | 'fillDiagnostic'
   | 'repeatDrag'
   | 'repeatContactFlash'
-  | 'repeatRotateDrag';
+  | 'repeatRotateDrag'
+  | 'incircle';
 export interface GestureSnapshot {
   doc: Doc;
   undo: Doc[];
@@ -301,6 +321,10 @@ export class AppController {
   recentPoints: { ids: Set<PointId> } | null = null;
   /** Phase 3C/3D: non-null while a Fair tap/trace gesture is in progress. */
   fairTrace: FairTraceState | null = null;
+  /** Phase 5.12b: which Circle mode is active (a session preference, like Line's mode). */
+  circleVariant: CircleVariant = 'centre-radius';
+  /** Phase 5.12b: the lines chosen so far in Circle → Between 3 Lines, and what they give. */
+  incircle: IncircleState | null = null;
   /** Phase 4 item 2/6: non-null while a Fill tap is held down on a resolvable region — a
    * translucent preview only, cleared on release either way (commit happens separately). */
   fillPreview: { sig: FaceSig; colour: string } | null = null;
@@ -424,6 +448,7 @@ export class AppController {
         repeatDrag: this.repeatDrag,
         repeatContactFlash: this.repeatContactFlash,
         repeatRotateDrag: this.repeatRotateDrag,
+        incircle: this.incircle,
       },
     };
   }
@@ -479,6 +504,8 @@ export class AppController {
     this.divide = null;
     this.dividePreview = null;
     this.lineChoice = null;
+    // Phase 5.12b: chosen lines may not exist in the other snapshot — choose again.
+    this.incircle = null;
     this.notify();
   }
 
@@ -521,6 +548,7 @@ export class AppController {
   setTool(tool: ToolId): void {
     if (!LIVE_TOOLS.has(tool)) return;
     this.lineChoice = null;
+    this.incircle = null;
     this.noPoint = null;
     this.cue = null;
     this.pressHighlight = null;

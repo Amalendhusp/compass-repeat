@@ -1193,6 +1193,66 @@ function drawPreview(ctx: CanvasRenderingContext2D, controller: AppController, v
  * Arc's chosen centre) stays strongly highlighted — independent of the live
  * preview — and survives pinch/pan untouched, since it reads straight from controller.pending
  * rather than any gesture-local state. */
+/** Phase 5.12b: Circle → Between 3 Lines. The chosen local pieces in Signal with their numbers,
+ * and — once three lines bound a triangle — the proposed circle in the same dashed style as every
+ * other circle preview, its centre, and the three tangency points. */
+function drawIncircle(ctx: CanvasRenderingContext2D, controller: AppController, view: ViewTransform): void {
+  const st = controller.incircle;
+  if (controller.tool !== 'circle' || controller.circleVariant !== 'three-lines' || !st) return;
+  const doc = controller.doc;
+  ctx.save();
+  st.lines.forEach((line, i) => {
+    let mid: Vec2 | null = null;
+    let normal: Vec2 = { x: 0, y: -1 };
+    for (const key of line.keys) {
+      const piece = keyPiece(doc, key);
+      if (!piece) continue;
+      segmentPath(ctx, doc, view, piece.entity, piece.seg.fromParam, piece.seg.toParam);
+      ctx.strokeStyle = color.signal;
+      ctx.lineWidth = 3.5;
+      ctx.lineCap = 'round';
+      ctx.setLineDash([]);
+      ctx.stroke();
+      if (!mid) {
+        const a = worldToScreen(view, resolvePoint(doc, piece.seg.from));
+        const b = worldToScreen(view, resolvePoint(doc, piece.seg.to));
+        const len = Math.hypot(b.x - a.x, b.y - a.y) || 1;
+        mid = { x: (a.x + b.x) / 2, y: (a.y + b.y) / 2 };
+        normal = { x: -(b.y - a.y) / len, y: (b.x - a.x) / len };
+      }
+    }
+    if (mid) drawNumberBadge(ctx, { x: mid.x + normal.x * 16, y: mid.y + normal.y * 16 }, i + 1, color.signal, false, 1);
+  });
+  const c = st.result;
+  if (c) {
+    const centre = worldToScreen(view, c.centre);
+    ctx.strokeStyle = color.signal;
+    ctx.lineWidth = 1.6;
+    ctx.lineCap = 'butt';
+    ctx.setLineDash(stroke.previewDash);
+    ctx.beginPath();
+    ctx.arc(centre.x, centre.y, c.radius * view.zoom, 0, Math.PI * 2);
+    ctx.stroke();
+    ctx.setLineDash([]);
+    ctx.beginPath();
+    ctx.arc(centre.x, centre.y, 5, 0, Math.PI * 2);
+    ctx.fillStyle = color.plaster;
+    ctx.fill();
+    ctx.stroke();
+    for (const f of c.feet) {
+      const s = worldToScreen(view, f);
+      ctx.beginPath();
+      ctx.arc(s.x, s.y, 4.5, 0, Math.PI * 2);
+      ctx.fillStyle = color.signal;
+      ctx.fill();
+      ctx.lineWidth = 1.5;
+      ctx.strokeStyle = color.paper;
+      ctx.stroke();
+    }
+  }
+  ctx.restore();
+}
+
 function drawPendingAnchor(ctx: CanvasRenderingContext2D, controller: AppController, view: ViewTransform): void {
   const pending = controller.pending;
   if (!pending) return;
@@ -1585,6 +1645,7 @@ export function render(ctx: CanvasRenderingContext2D, controller: AppController,
   }
   drawSelectionHighlights(ctx, controller.doc, view, controller.selection);
   drawPressHighlight(ctx, controller, view);
+  drawIncircle(ctx, controller, view);
   drawFairTracePreview(ctx, controller, view);
   drawArcMeasure(ctx, controller, view);
   drawPreview(ctx, controller, view);

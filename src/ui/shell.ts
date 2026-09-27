@@ -30,6 +30,7 @@ import { color, fairPalette } from '../render/tokens.ts';
 import { defaultLatticeVectors, isSixtyDegreeFamily, type LatticeFamily } from '../geometry/lattice.ts';
 import { rotationFractionLabel } from '../render/repeatRenderer.ts';
 import { CAPTURED_CUE_MS } from '../interaction/tools/arc.ts';
+import { cancelIncircle, createIncircle, incirclePrompt } from '../interaction/tools/circle.ts';
 import { syncSnapChooser } from './snapchooser.ts';
 import { deriveSelectableGroups } from '../geometry/segments.ts';
 import { deliverFile, exportVisibleView, fileShareSupport, type ExportSettings } from '../render/export.ts';
@@ -1391,6 +1392,29 @@ export function buildShell(
     const pending = controller.pending;
 
     if (tool === 'circle') {
+      // Phase 5.12b: Centre–Radius (the existing Set/Same radius circle) or Between 3 Lines.
+      modeToggle(
+        [
+          { id: 'centre-radius', label: 'Centre–Radius' },
+          { id: 'three-lines', label: 'Between 3 Lines' },
+        ],
+        controller.circleVariant,
+        (variant) => {
+          controller.cancelPending();
+          controller.circleVariant = variant;
+          controller.incircle = null;
+          controller.notify();
+        },
+      );
+      if (controller.circleVariant === 'three-lines') {
+        cue(incirclePrompt(controller));
+        if (controller.incircle?.result) {
+          const create = chip('Create', () => createIncircle(controller));
+          create.classList.add('primary');
+        }
+        if ((controller.incircle?.lines.length ?? 0) > 0) chip('Cancel', () => cancelIncircle(controller));
+        return;
+      }
       modeToggle(
         [
           { id: 'set', label: 'Set radius' },

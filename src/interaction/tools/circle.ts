@@ -3,11 +3,13 @@
 // remembered) and Same radius (the remembered radius, placed at each new centre). The remembered
 // radius is shared with Arc (doc.toolPrefs.lastRadius).
 
-import { addCircleEntity, addCircleWithRadius } from '../../model/doc.ts';
-import type { AppController, ViewTransform } from '../../app/controller.ts';
+import { addCircleEntity, addCircleWithRadius, addOnCurvePoint, addOrReuseFreePoint } from '../../model/doc.ts';
+import type { AppController, IncircleLine, ViewTransform } from '../../app/controller.ts';
 import { screenToWorld } from '../../app/controller.ts';
 import { dist } from '../../geometry/vec.ts';
-import { isNearAnyCurve } from '../hittest.ts';
+import { curveCandidatesAt, isNearAnyCurve } from '../hittest.ts';
+import { deriveSelectableGroups, groupContainingParam } from '../../geometry/segments.ts';
+import { incircleOfLines, type InfiniteLine } from '../../geometry/incircle.ts';
 import { buildNodeInset } from '../nodeinset.ts';
 import { confirmSnap, noPointGesture, PointHold, resolveTap, showNoPoint, SnapTracker } from '../snap.ts';
 import { materializeRef, refAt, refFromHit, refLocation, type PointRef } from '../pointref.ts';
@@ -95,12 +97,14 @@ function sameRadiusGesture(controller: AppController, view: ViewTransform, scree
 export const circleTool: ToolModule = {
   id: 'circle',
   hint(controller) {
+    if (controller.circleVariant === 'three-lines') return incirclePrompt(controller);
     if (controller.pending?.kind === 'circle') {
       return controller.pointLockHint ? 'Point Targets · choose an existing point' : 'Drag to set the radius, or tap a point';
     }
     return 'Tap a point or a curve';
   },
   beginGesture(controller, view, screenPos): Gesture | null {
+    if (controller.circleVariant === 'three-lines') return threeLinesGesture(controller, view);
     const doc = controller.doc;
     const remembered = doc.toolPrefs.lastRadius;
     if (doc.toolPrefs.circleMode === 'same' && remembered) return sameRadiusGesture(controller, view, screenPos, remembered);
@@ -245,3 +249,131 @@ export const circleTool: ToolModule = {
     };
   },
 };
+
+// ---- Phase 5.12b: Between 3 Lines — the circle inscribed in the triangle three lines form ----
+//
+// Each tap chooses one line: the whole infinite line takes part in the geometry, but only the
+// local piece that was tapped is highlighted (Phase 5.10 — a tap never lights up a whole line).
+// Tapping a chosen piece again removes it; with three chosen, a new line replaces the most recent
+// choice, so an invalid set can be corrected without starting over. The geometry always uses the
+// lines in a fixed order, so the order they were chosen in never changes the circle.
+
+const TRIANGLE_PROBLEM = 'These three lines do not form a triangle';
+const MIN_RADIUS_EPS = 20;
+const ORDINALS = ['first', 'second', 'third'];
+
+function emptyIncircle(): NonNullable<AppController['incircle']> {
+  return { lines: [], result: null, problem: null };
+}
+
+/** The chosen lines in a fixed order (by entity id), independent of the order they were tapped. */
+function canonicalLines(lines: IncircleLine[]): IncircleLine[] {
+  return [...lines].sort((p, q) => (p.entityId < q.entityId ? -1 : p.entityId > q.entityId ? 1 : 0));
+}
+
+function infiniteLine(doc: Doc, entityId: string): InfiniteLine | null {
+  const e = doc.entities.find((x) => x.id === entityId);
+  if (!e || e.kind !== 'line') return null;
+  const g = resolveEntityGeom(doc, e);
+  return g.kind === 'line' ? { a: g.a, b: g.b } : null;
+}
+
+/** Recomputes the circle for the lines chosen so far (only three give one). */
+export function recomputeIncircle(controller: AppController): void {
+  const st = controller.incircle;
+  if (!st) return;
+  st.result = null;
+  st.problem = null;
+  if (st.lines.length < 3) return;
+  const lines = canonicalLines(st.lines).map((l) => infiniteLine(controller.doc, l.entityId));
+  if (lines.some((l) => !l)) {
+    st.problem = TRIANGLE_PROBLEM;
+    return;
+  }
+  // Smaller than this and its centre and tangency points would merge into each other (the model
+  // merges points closer than epsilon), so it could not be built as a true tangent circle.
+  const r = incircleOfLines(lines as [InfiniteLine, InfiniteLine, InfiniteLine], epsilon(controller.doc) * MIN_RADIUS_EPS);
+  if (r.ok) st.result = r.circle;
+  else st.problem = r.reason === 'same-line' ? 'Two of these are the same line' : TRIANGLE_PROBLEM;
+}
+
+export function incirclePrompt(controller: AppController): string {
+  const st = controller.incircle;
+  const n = st?.lines.length ?? 0;
+  if (st?.problem) return n === 3 ? `${st.problem} · tap a chosen line to swap it` : st.problem;
+  if (n === 0) return 'Select first line';
+  if (n < 3) return `${n} of 3 · Select ${ORDINALS[n]} line`;
+  return '3 of 3';
+}
+
+function sameKeys(a: string[], b: string[]): boolean {
+  return a.length === b.length && a.every((k, i) => k === b[i]);
+}
+
+/** A tap chooses (or un-chooses) the line under the finger; a drag does nothing. */
+function threeLinesGesture(controller: AppController, view: ViewTransform): Gesture {
+  return {
+    onMove() {},
+    onUp(sp, wasDrag) {
+      if (wasDrag) return;
+      const doc = controller.doc;
+      const prev = controller.incircle ?? emptyIncircle();
+      const near = curveCandidatesAt(doc, view, sp);
+      const hit = near.find((h) => h.entity.kind === 'line');
+      if (!hit) {
+        // With three lines already chosen, a stray tap changes nothing; before that, say what's wanted.
+        if (prev.lines.length === 3) return;
+        controller.incircle = { lines: prev.lines, result: null, problem: near.length > 0 ? 'Choose a straight line' : 'Tap a line' };
+        controller.notify();
+        return;
+      }
+      const group = groupContainingParam(deriveSelectableGroups(doc, hit.entity), hit.param, false);
+      const pick: IncircleLine = { entityId: hit.entity.id, keys: group ? group.segments.map((s) => s.key) : [] };
+      const lines = [...prev.lines];
+      const i = lines.findIndex((l) => l.entityId === pick.entityId);
+      if (i >= 0) {
+        // The same line again: tapping its chosen piece removes it; another piece just moves the mark.
+        if (sameKeys(lines[i]!.keys, pick.keys)) lines.splice(i, 1);
+        else lines[i] = pick;
+      } else if (lines.length < 3) lines.push(pick);
+      else lines[2] = pick;
+      controller.incircle = { lines, result: null, problem: null };
+      recomputeIncircle(controller);
+      controller.notify();
+    },
+    onCancel() {},
+  };
+}
+
+/** Commits the previewed circle as one undoable step: its centre (an existing point if one is
+ * already there) and a through-point at the exact tangency on the first line (in fixed order);
+ * the other two tangencies are materialized like any other crossing. */
+export function createIncircle(controller: AppController): void {
+  const st = controller.incircle;
+  const c = st?.result;
+  if (!st || !c) return;
+  const doc = controller.doc;
+  const tol = epsilon(doc) * 100;
+  const exists = doc.entities.some((e) => {
+    if (e.kind !== 'circle') return false;
+    const g = resolveEntityGeom(doc, e);
+    return g.kind === 'circle' && dist(g.centre, c.centre) < tol && Math.abs(g.radius - c.radius) < tol;
+  });
+  if (exists) {
+    showToast('Already drawn');
+    return;
+  }
+  const first = canonicalLines(st.lines)[0]!;
+  controller.commit((d) => {
+    const centre = addOrReuseFreePoint(d, c.centre);
+    const through = addOnCurvePoint(d, first.entityId, c.params[0], c.feet[0]);
+    addCircleEntity(d, centre, through);
+  });
+  controller.incircle = emptyIncircle();
+  controller.notify();
+}
+
+export function cancelIncircle(controller: AppController): void {
+  controller.incircle = emptyIncircle();
+  controller.notify();
+}
