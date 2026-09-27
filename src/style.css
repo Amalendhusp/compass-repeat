@@ -1083,3 +1083,342 @@ canvas.stage {
   margin: 0;
   flex: 1 1 auto;
 }
+
+/* ---- Phase 5.7: Beginner Guide overlay ---- */
+
+.guide-layer {
+  position: fixed;
+  inset: 0;
+  z-index: 60;
+  touch-action: none;
+}
+.guide-dim {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  pointer-events: none;
+}
+.guide-halo {
+  position: fixed;
+  border-radius: 14px;
+  box-shadow: 0 0 0 2px rgba(251, 249, 245, 0.95), 0 0 0 6px rgba(47, 91, 234, 0.35), 0 0 22px 6px rgba(47, 91, 234, 0.35);
+  pointer-events: none;
+  animation: guide-breathe 1.6s ease-in-out infinite;
+}
+@keyframes guide-breathe {
+  50% {
+    box-shadow: 0 0 0 2px rgba(251, 249, 245, 0.95), 0 0 0 8px rgba(47, 91, 234, 0.22), 0 0 30px 10px rgba(47, 91, 234, 0.28);
+  }
+}
+.guide-finger {
+  position: fixed;
+  left: -17px;
+  top: -17px;
+  width: 34px;
+  height: 34px;
+  border-radius: 50%;
+  background: radial-gradient(circle at 42% 38%, rgba(255, 255, 255, 0.9), rgba(255, 255, 255, 0.55) 55%, rgba(30, 42, 54, 0.25));
+  border: 2px solid rgba(30, 42, 54, 0.55);
+  box-shadow: 0 4px 12px rgba(30, 42, 54, 0.3);
+  pointer-events: none;
+  opacity: 0;
+  transition: opacity 0.2s, scale 0.12s;
+  will-change: transform;
+}
+.guide-finger.show {
+  opacity: 1;
+}
+.guide-finger.down {
+  scale: 0.82;
+}
+.guide-ring {
+  position: fixed;
+  width: 18px;
+  height: 18px;
+  margin: -9px 0 0 -9px;
+  border-radius: 50%;
+  border: 2.5px solid rgba(47, 91, 234, 0.85);
+  pointer-events: none;
+  animation: guide-ring 0.65s ease-out forwards;
+}
+@keyframes guide-ring {
+  to {
+    transform: scale(3.4);
+    opacity: 0;
+  }
+}
+.guide-trail {
+  position: fixed;
+  width: 10px;
+  height: 10px;
+  margin: -5px 0 0 -5px;
+  border-radius: 50%;
+  background: rgba(47, 91, 234, 0.45);
+  pointer-events: none;
+  animation: guide-trail 0.45s ease-out forwards;
+}
+@keyframes guide-trail {
+  to {
+    transform: scale(0.3);
+    opacity: 0;
+  }
+}
+.guide-card {
+  position: fixed;
+  left: 12px;
+  right: 12px;
+  max-width: 420px;
+  margin: 0 auto;
+  background: var(--paper);
+  color: var(--ink);
+  border-radius: 18px;
+  box-shadow: 0 12px 34px rgba(20, 28, 36, 0.28);
+  padding: 12px 14px 12px;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  -webkit-user-select: none;
+  user-select: none;
+}
+.guide-card.at-top {
+  top: calc(env(safe-area-inset-top, 0px) + 54px);
+}
+.guide-card.at-bottom {
+  bottom: calc(env(safe-area-inset-bottom, 0px) + 14px);
+}
+.guide-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+}
+.guide-progress {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  font-size: 11.5px;
+  font-weight: 600;
+  letter-spacing: 0.02em;
+  color: var(--muted);
+}
+.guide-dots {
+  display: flex;
+  gap: 4px;
+}
+.guide-dots i {
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: var(--hairline);
+}
+.guide-dots i.done {
+  background: var(--muted);
+}
+.guide-dots i.on {
+  background: var(--signal, #2f5bea);
+  width: 14px;
+  border-radius: 3px;
+}
+.guide-close {
+  width: 30px;
+  height: 30px;
+  border: none;
+  border-radius: 50%;
+  background: var(--well);
+  color: var(--ink);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  cursor: pointer;
+}
+.guide-card h3 {
+  margin: 0;
+  font-family: var(--font-title);
+  font-size: 18px;
+  font-weight: 500;
+}
+.guide-card p {
+  margin: 0;
+  font-size: 13.5px;
+  line-height: 1.4;
+}
+.guide-micro {
+  margin: 0;
+  padding: 0;
+  list-style: none;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+.guide-micro li {
+  font-size: 12px;
+  color: var(--muted);
+  opacity: 0.35;
+  transition: opacity 0.3s, color 0.3s;
+}
+.guide-micro li.on {
+  opacity: 1;
+  color: var(--ink);
+}
+.guide-actions {
+  display: flex;
+  gap: 8px;
+  justify-content: flex-end;
+  margin-top: 2px;
+}
+.guide-btn {
+  height: 38px;
+  padding: 0 16px;
+  border: none;
+  border-radius: 12px;
+  background: var(--well);
+  color: var(--ink);
+  font-size: 14px;
+  font-weight: 500;
+  cursor: pointer;
+}
+.guide-btn.primary {
+  background: var(--ink);
+  color: var(--paper);
+  font-weight: 600;
+}
+.guide-btn:disabled {
+  opacity: 0.4;
+  cursor: default;
+}
+@media (prefers-reduced-motion: reduce) {
+  .guide-halo,
+  .guide-ring,
+  .guide-trail {
+    animation: none;
+  }
+}
+
+/* ---- Smart Snap: "Which point?" chooser ---- */
+.snap-chooser {
+  position: fixed;
+  z-index: 30;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  padding: 8px;
+  min-width: 150px;
+  background: var(--paper);
+  border: 1px solid var(--hairline);
+  border-radius: 14px;
+  box-shadow: 0 10px 28px rgba(30, 42, 54, 0.2);
+}
+.snap-chooser-title {
+  font-size: 11.5px;
+  font-weight: 600;
+  color: var(--muted);
+  padding: 0 4px 2px;
+}
+.snap-chooser-option {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  height: 40px;
+  padding: 0 10px;
+  border: none;
+  border-radius: 10px;
+  background: var(--well);
+  color: var(--ink);
+  font-size: 14px;
+  font-weight: 500;
+  text-align: left;
+  cursor: pointer;
+}
+.snap-chooser-num {
+  flex: none;
+  width: 24px;
+  height: 24px;
+  border-radius: 50%;
+  background: var(--paper);
+  color: var(--signal);
+  border: 2px solid var(--signal);
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 12px;
+  font-weight: 700;
+}
+/* Phase 5.8: pressing an option lights it (and its marker on the canvas) before it is chosen */
+.snap-chooser-option.focus {
+  background: var(--signal-light);
+}
+.snap-chooser-text {
+  display: flex;
+  flex-direction: column;
+  line-height: 1.15;
+  font-size: 13.5px;
+}
+.snap-chooser-detail {
+  font-size: 11px;
+  color: var(--muted);
+  font-weight: 500;
+}
+.snap-chooser {
+  max-width: min(240px, calc(100vw - 16px));
+}
+.snap-chooser .snap-chooser-option {
+  min-height: 44px;
+  height: auto;
+  padding: 4px 10px;
+}
+.snap-chooser.two-col {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  max-width: min(360px, calc(100vw - 16px));
+}
+.snap-chooser.two-col .snap-chooser-title {
+  grid-column: 1 / -1;
+}
+
+/* Phase 5.8: "No point here yet" — a small, non-modal note beside the tap */
+.no-point-hint {
+  position: fixed;
+  z-index: 29;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 6px 6px 6px 12px;
+  background: var(--paper);
+  border: 1px solid var(--hairline);
+  border-radius: 12px;
+  box-shadow: 0 6px 18px rgba(30, 42, 54, 0.16);
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--ink);
+  white-space: nowrap;
+}
+.no-point-hint > span:only-child {
+  padding-right: 6px;
+}
+.no-point-divide {
+  min-height: 36px;
+  padding: 0 12px;
+  border: none;
+  border-radius: 9px;
+  background: var(--signal);
+  color: var(--paper);
+  font-size: 13px;
+  font-weight: 600;
+  cursor: pointer;
+}
+
+/* dev-only render diagnostics (see ui/diagnostics.ts) */
+.diag-overlay {
+  position: fixed;
+  top: 56px;
+  right: 6px;
+  z-index: 40;
+  margin: 0;
+  padding: 6px 8px;
+  border-radius: 8px;
+  background: rgba(20, 28, 36, 0.78);
+  color: #d8f3dc;
+  font: 10px/1.35 ui-monospace, 'JetBrains Mono', monospace;
+  pointer-events: none;
+  white-space: pre;
+}

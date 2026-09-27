@@ -73,6 +73,12 @@ export class PointerManager {
     return { x: e.clientX - rect.left, y: e.clientY - rect.top };
   }
 
+  /** Focus construction follows the working finger (kept in world space, so it stays put under pan). */
+  private noteFocus(x: number, y: number): void {
+    const v = this.getView();
+    this.controller.focusWorld = { x: (x - v.w / 2) / v.zoom - v.pan.x, y: (y - v.h / 2) / v.zoom - v.pan.y };
+  }
+
   private centroid(): Vec2 {
     let x = 0;
     let y = 0;
@@ -108,6 +114,7 @@ export class PointerManager {
       this.active.clear();
       this.mode = 'idle';
       this.session = null;
+      this.controller.viewGesture = false;
     }
     this.active.set(e.pointerId, { x, y, startX: x, startY: y, maxTravel: 0 });
     // Phase 5.4: transient Fill diagnostics last only until the next interaction.
@@ -119,6 +126,7 @@ export class PointerManager {
       // Item 7: the "near finger" reveal radius follows the actual touch point, independent
       // of whichever tool is active.
       this.controller.pointerScreenPos = { x, y };
+      this.noteFocus(x, y);
       const tool = this.getTool();
       this.gesture = tool ? tool.beginGesture(this.controller, this.getView(), { x, y }) : null;
       this.controller.notifyView();
@@ -128,6 +136,7 @@ export class PointerManager {
         this.gesture = null;
       }
       this.mode = 'multi';
+      this.controller.viewGesture = true;
       this.controller.pointerScreenPos = null;
       if (this.session) this.session.maxConcurrent = Math.max(this.session.maxConcurrent, this.active.size);
       this.lastCentroid = this.centroid();
@@ -147,6 +156,7 @@ export class PointerManager {
 
     if (this.mode === 'single') {
       this.controller.pointerScreenPos = { x, y };
+      this.noteFocus(x, y);
       this.gesture?.onMove({ x, y });
       this.controller.notifyView();
     } else if (this.mode === 'multi') {
@@ -211,6 +221,8 @@ export class PointerManager {
     }
 
     if (this.mode === 'multi' && this.active.size === 0) {
+      this.controller.viewGesture = false;
+      this.controller.notifyView(); // back to full quality
       const s = this.session;
       if (s && s.maxTravel <= MULTI_TAP_MAX_TRAVEL && performance.now() - s.startTime <= MULTI_TAP_MAX_MS) {
         if (s.maxConcurrent === 2) this.controller.undo();

@@ -1,5 +1,5 @@
 import './style.css';
-import { clearDrawing, createDoc, defaultRepeatDisplay, placeFrame } from './model/doc.ts';
+import { clearDrawing, cloneDoc, createDoc, defaultRepeatDisplay, placeFrame } from './model/doc.ts';
 import { AppController, type ViewTransform } from './app/controller.ts';
 import { PointerManager } from './interaction/pointer.ts';
 import { selectTool } from './interaction/tools/select.ts';
@@ -12,7 +12,9 @@ import { fillTool } from './interaction/tools/fill.ts';
 import { repeatTool } from './interaction/tools/repeatTool.ts';
 import { render } from './render/renderer.ts';
 import { renderRepeat } from './render/repeatRenderer.ts';
-import { buildShell } from './ui/shell.ts';
+import { buildShell, closeAnyPopover } from './ui/shell.ts';
+import { openGuide, type GuideHost, type GuideState } from './tutorial/engine.ts';
+import { squareGuide } from './tutorial/guides/square.ts';
 import { openFramePicker } from './ui/framepicker.ts';
 import { openConfirmSheet } from './ui/confirmsheet.ts';
 import { buildDrawFrameHud } from './ui/drawframehud.ts';
@@ -27,6 +29,7 @@ import { openArtworksSheet, openNameSheet } from './ui/artworks.ts';
 import { showToast } from './ui/toast.ts';
 import { genId } from './model/id.ts';
 import { setupCanvasDPR } from './render/canvasSetup.ts';
+import { attachDiagnostics } from './ui/diagnostics.ts';
 import { computeVisibleBounds } from './geometry/bounds.ts';
 import { ensureRepeatDefaults, fitBounds as repeatFitBounds, firstEntryBounds } from './geometry/lattice.ts';
 import { preventSafariPageZoom } from './interaction/preventPageZoom.ts';
@@ -41,12 +44,23 @@ const tools = { select: selectTool, circle: circleTool, line: lineTool, arc: arc
 
 /** Phase 5.5: the artwork currently open. Tearing it down stops its render loop, resize observer
  * and autosave, so switching artworks never leaves an old one drawing or saving in the background. */
-let session: { controller: AppController; autosave: AutosaveHandle; teardown: () => void } | null = null;
+let session: { controller: AppController; autosave: AutosaveHandle; getView: () => ViewTransform; teardown: () => void } | null = null;
+
+/** Phase 5.7: the draw-frame gesture's own listeners and render loop, while it's armed. */
+let detachFrameDrawing: (() => void) | null = null;
 
 function endSession(): void {
   session?.teardown();
   session = null;
+  detachFrameDrawing?.();
+  detachFrameDrawing = null;
 }
+
+/** Phase 5.7: while a Beginner Guide runs, every artwork shown is a throwaway demonstration —
+ * never autosaved, never listed, never the "last open" artwork. What was open before is saved as
+ * it stands on entry and reopened, untouched, when the guide closes. */
+let guideReturn: { artworkId: string | null } | null = null;
+const inertAutosave: AutosaveHandle = { detach: () => {}, flush: () => {} };
 
 const FIT_PADDING = 0.86; // consistent margin around the fitted geometry, both axes
 
@@ -134,6 +148,7 @@ function boot(doc: Doc, opts: { fitToScreen: boolean; history?: { undo: Doc[]; r
       openFramePicker(root!, { dismissible: true, onChoose: (k) => armDrawFrame(k), onMyArtworks: () => void showMyArtworks() });
     },
     onMyArtworks: () => void showMyArtworks(),
+    onBeginnerGuide: () => startGuide(),
     onSave: () => saveArtwork(),
     onSaveAsNew: () => saveAsNewArtwork(),
     onClearDrawing: () => {
@@ -185,7 +200,7 @@ function boot(doc: Doc, opts: { fitToScreen: boolean; history?: { undo: Doc[]; r
     () => (controller.doc.view.workspace === 'repeat' ? repeatTool : (tools[controller.tool] ?? null)),
     () => (controller.doc.view.workspace === 'repeat' ? controller.doc.repeatView : controller.doc.view),
   );
-  const autosave = attachAutosave(controller);
+  const autosave = guideReturn ? inertAutosave : attachAutosave(controller);
 
   if (import.meta.env.DEV) {
     (window as unknown as { __app: unknown }).__app = {
@@ -197,37 +212,53 @@ function boot(doc: Doc, opts: { fitToScreen: boolean; history?: { undo: Doc[]; r
     };
   }
 
+  // Mobile performance: frames are drawn only when something changed — an idle drawing costs no
+  // CPU at all — and never while the page is hidden (a backgrounded tab, a locked phone).
+  let running = true;
   let dirty = true;
+  let scheduled = false;
+  const diagnostics = attachDiagnostics(controller, canvas);
+  function frame(): void {
+    scheduled = false;
+    if (!running || !dirty || document.hidden) return;
+    dirty = false;
+    const t0 = performance.now();
+    let copies: number | null = null;
+    if (controller.doc.view.workspace === 'repeat') copies = renderRepeat(ctx!, controller, getView());
+    else render(ctx!, controller, getView());
+    diagnostics?.record(performance.now() - t0, copies);
+  }
   const requestDraw = () => {
     dirty = true;
+    if (!scheduled && running && !document.hidden) {
+      scheduled = true;
+      requestAnimationFrame(frame);
+    }
   };
   // subscribeView: catches both view-only changes (pinch/pan) and full state changes, so the
   // canvas redraws for either — but this loop never touches the DOM itself either way.
   controller.subscribeView(requestDraw);
-
-  const stopResizing = setupCanvasDPR(canvas, ctx, () => {
-    dirty = true;
-  });
-  if (opts.fitToScreen) fitView(controller, canvas, overlay);
-
-  let running = true;
-  function loop(): void {
-    if (!running) return;
-    if (dirty) {
-      dirty = false;
-      if (controller.doc.view.workspace === 'repeat') renderRepeat(ctx!, controller, getView());
-      else render(ctx!, controller, getView());
+  const onVisibility = () => {
+    if (!document.hidden && dirty && !scheduled && running) {
+      scheduled = true;
+      requestAnimationFrame(frame);
     }
-    requestAnimationFrame(loop);
-  }
-  requestAnimationFrame(loop);
+  };
+  document.addEventListener('visibilitychange', onVisibility);
+
+  const stopResizing = setupCanvasDPR(canvas, ctx, requestDraw);
+  if (opts.fitToScreen) fitView(controller, canvas, overlay);
+  requestDraw();
 
   session = {
     controller,
     autosave,
+    getView,
     teardown: () => {
       running = false;
       stopResizing();
+      document.removeEventListener('visibilitychange', onVisibility);
+      diagnostics?.detach();
       autosave.detach();
     },
   };
@@ -309,7 +340,7 @@ async function removeArtwork(id: string): Promise<void> {
   const remaining = await listArtworks();
   for (const next of remaining) if (await openArtwork(next.id)) return;
   root!.innerHTML = '';
-  openFramePicker(root!, { dismissible: false, onChoose: (k) => armDrawFrame(k), onMyArtworks: () => void showMyArtworks() });
+  openFramePicker(root!, { dismissible: false, onChoose: (k) => armDrawFrame(k), onMyArtworks: () => void showMyArtworks(), onGuide: () => startGuide() });
 }
 
 /** Loads one saved artwork — its whole editable state, history included — and opens it. */
@@ -336,7 +367,7 @@ function armDrawFrame(kind: FrameKind): void {
   const hud = buildDrawFrameHud(root!, kind, () => {
     openFramePicker(root!, { dismissible: false, onChoose: (k) => armDrawFrame(k), onMyArtworks: () => void showMyArtworks() });
   });
-  attachDrawFrame(
+  detachFrameDrawing = attachDrawFrame(
     hud.canvas,
     kind,
     (result) => {
@@ -347,6 +378,56 @@ function armDrawFrame(kind: FrameKind): void {
     },
     hud.setHint,
   );
+}
+
+// ---- Phase 5.7: Beginner Guide host — the only door the guide engine has into the app ----
+
+const guideHost: GuideHost = {
+  root: root!,
+  enter() {
+    session?.autosave.flush({ thumbnail: true });
+    guideReturn = { artworkId: session?.controller.doc.id ?? null };
+  },
+  async exit({ tryItYourself }) {
+    const back = guideReturn;
+    guideReturn = null;
+    closeAnyPopover();
+    endSession();
+    root!.innerHTML = '';
+    const reopened = back?.artworkId ? await openArtwork(back.artworkId) : false;
+    if (!reopened) {
+      openFramePicker(root!, { dismissible: false, onChoose: (k) => armDrawFrame(k), onMyArtworks: () => void showMyArtworks(), onGuide: () => startGuide() });
+      return;
+    }
+    if (tryItYourself) openFramePicker(root!, { dismissible: true, onChoose: (k) => armDrawFrame(k), onMyArtworks: () => void showMyArtworks() });
+  },
+  capture(): GuideState {
+    if (!session) return { kind: 'picker' };
+    const c = session.controller;
+    return { kind: 'artwork', doc: cloneDoc(c.doc), tool: c.tool, lineMode: c.lineMode, pointVisibility: c.pointVisibility };
+  },
+  restore(state) {
+    closeAnyPopover();
+    if (state.kind === 'picker') {
+      endSession();
+      root!.innerHTML = '';
+      openFramePicker(root!, { dismissible: false, onChoose: (k) => armDrawFrame(k) });
+      return;
+    }
+    boot(cloneDoc(state.doc), { fitToScreen: false });
+    const c = session!.controller;
+    c.tool = state.tool;
+    c.lineMode = state.lineMode;
+    c.pointVisibility = state.pointVisibility;
+    c.notify();
+  },
+  controller: () => session?.controller ?? null,
+  view: () => session?.getView() ?? null,
+};
+
+function startGuide(): void {
+  if (guideReturn) return;
+  openGuide(squareGuide, guideHost);
 }
 
 /** Brings a snapshot saved by any earlier version up to the current document shape. */
@@ -398,6 +479,7 @@ async function launch(): Promise<void> {
     dismissible: false,
     onChoose: (kind) => armDrawFrame(kind),
     onMyArtworks: () => void showMyArtworks(),
+    onGuide: () => startGuide(),
   });
 }
 

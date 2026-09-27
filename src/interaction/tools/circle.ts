@@ -7,8 +7,9 @@ import { addCircleEntity, addCircleWithRadius } from '../../model/doc.ts';
 import type { AppController, ViewTransform } from '../../app/controller.ts';
 import { screenToWorld } from '../../app/controller.ts';
 import { dist } from '../../geometry/vec.ts';
-import { isNearAnyCurve, pickPointTarget } from '../hittest.ts';
+import { isNearAnyCurve } from '../hittest.ts';
 import { buildNodeInset } from '../nodeinset.ts';
+import { confirmSnap, noPointGesture, PointHold, resolveTap, showNoPoint, SnapTracker } from '../snap.ts';
 import { materializeRef, refAt, refFromHit, refLocation, type PointRef } from '../pointref.ts';
 import { showToast } from '../../ui/toast.ts';
 import type { Doc } from '../../model/types.ts';
@@ -35,20 +36,31 @@ function sameExisting(a: PointRef, b: PointRef): boolean {
  * place it. Nothing under the finger at release means nothing is created. */
 function sameRadiusGesture(controller: AppController, view: ViewTransform, screenPos: { x: number; y: number }, radius: number): Gesture | null {
   const doc = controller.doc;
-  let centre = pickPointTarget(doc, view, screenPos);
-  if (!centre) return null;
+  const tracker = new SnapTracker(doc);
+  let centre = tracker.pick(view, screenPos);
+  if (!centre) return tracker.noPoint ? noPointGesture(controller, tracker.noPoint) : null;
   const show = () => {
     controller.preview = centre ? { kind: 'circle', centre: centre.at, through: { x: centre.at.x + radius, y: centre.at.y } } : null;
     controller.notifyView();
   };
   show();
+  const hold = new PointHold(controller, view, tracker, screenPos);
   return {
     onMove(sp) {
-      centre = pickPointTarget(doc, view, sp);
-      controller.nodeInset = centre ? buildNodeInset(doc, view, sp, centre.at) : null;
+      const held = hold.move(sp);
+      if (held !== undefined) {
+        centre = held;
+        show();
+        return;
+      }
+      if (hold.open) return;
+      centre = tracker.pick(view, sp);
+      controller.nodeInset = centre ? buildNodeInset(doc, view, sp, centre.at, tracker) : null;
       show();
     },
-    onUp() {
+    onUp(_sp, wasDrag) {
+      const held = hold.release();
+      if (held) centre = held;
       const hit = centre;
       controller.preview = null;
       controller.nodeInset = null;
@@ -56,16 +68,23 @@ function sameRadiusGesture(controller: AppController, view: ViewTransform, scree
         controller.notify();
         return;
       }
-      if (circleExists(doc, refFromHit(hit), radius)) {
-        showToast('Already drawn');
-        controller.notify();
-        return;
-      }
-      controller.commit((d) => {
-        addCircleWithRadius(d, materializeRef(d, refFromHit(hit)), radius);
-      });
+      const place = (h: NonNullable<typeof hit>) => {
+        if (circleExists(doc, refFromHit(h), radius)) {
+          showToast('Already drawn');
+          controller.notify();
+          return;
+        }
+        controller.commit((d) => {
+          addCircleWithRadius(d, materializeRef(d, refFromHit(h)), radius);
+        });
+      };
+      if (wasDrag || held) {
+        confirmSnap(controller, hit);
+        place(hit);
+      } else resolveTap(controller, tracker, hit, place);
     },
     onCancel() {
+      hold.cancel();
       controller.preview = null;
       controller.nodeInset = null;
       controller.notify();
@@ -86,6 +105,8 @@ export const circleTool: ToolModule = {
     const remembered = doc.toolPrefs.lastRadius;
     if (doc.toolPrefs.circleMode === 'same' && remembered) return sameRadiusGesture(controller, view, screenPos, remembered);
 
+    const tracker = new SnapTracker(doc);
+    let centreHit: ReturnType<SnapTracker['pick']> = null;
     let centreRef: PointRef;
     // True only while THIS gesture is the one still choosing the centre (down → first move/up).
     // Used solely to decide what a plain tap-without-drag means in onUp below. It must never
@@ -96,16 +117,20 @@ export const circleTool: ToolModule = {
     if (controller.pending?.kind === 'circle') {
       centreRef = controller.pending.centre;
     } else {
-      const hit = pickPointTarget(doc, view, screenPos);
-      if (!hit) return null;
+      const hit = tracker.pick(view, screenPos);
+      if (!hit) return tracker.noPoint ? noPointGesture(controller, tracker.noPoint) : null;
+      centreHit = hit;
       centreRef = refFromHit(hit);
       controller.pending = { kind: 'circle', centre: centreRef };
       justSetCentre = true;
     }
 
-    const centreAt = refLocation(doc, centreRef);
+    let centreAt = refLocation(doc, centreRef);
     controller.preview = { kind: 'circle', centre: centreAt, through: centreAt };
     controller.notify();
+    // Phase 5.9: holding still on a crowded spot opens the precision loupe (centre or radius point).
+    if (!justSetCentre) tracker.pick(view, screenPos);
+    const hold = new PointHold(controller, view, tracker, screenPos);
 
     const finish = (throughRef: PointRef) => {
       if (circleExists(doc, centreRef, dist(refLocation(doc, centreRef), refLocation(doc, throughRef)))) {
@@ -138,10 +163,22 @@ export const circleTool: ToolModule = {
 
     return {
       onMove(sp) {
-        const hit = pickPointTarget(doc, view, sp);
+        const held = hold.move(sp);
+        if (held !== undefined) {
+          if (justSetCentre) {
+            centreRef = refFromHit(held);
+            centreAt = held.at;
+            controller.pending = { kind: 'circle', centre: centreRef };
+            controller.preview = null;
+          } else controller.preview = { kind: 'circle', centre: centreAt, through: held.at };
+          controller.notifyView();
+          return;
+        }
+        if (hold.open) return;
+        const hit = tracker.pick(view, sp);
         const through = hit ? hit.at : screenToWorld(view, sp);
         controller.preview = { kind: 'circle', centre: centreAt, through };
-        controller.nodeInset = hit ? buildNodeInset(doc, view, sp, hit.at) : null;
+        controller.nodeInset = hit ? buildNodeInset(doc, view, sp, hit.at, tracker) : null;
         const lockedOut = !doc.pointTargets.free && !hit && isNearAnyCurve(doc, view, sp);
         const transitioned = lockedOut !== controller.pointLockHint;
         controller.pointLockHint = lockedOut;
@@ -150,21 +187,42 @@ export const circleTool: ToolModule = {
         else controller.notifyView();
       },
       onUp(sp, wasDrag) {
+        const held = hold.release();
+        if (held) {
+          confirmSnap(controller, held);
+          if (justSetCentre) {
+            centreRef = refFromHit(held);
+            controller.pending = { kind: 'circle', centre: centreRef };
+            controller.preview = null;
+            controller.nodeInset = null;
+            controller.notify();
+          } else finish(refFromHit(held));
+          return;
+        }
         if (!wasDrag && justSetCentre) {
           // First tap only planted the centre; wait for the next tap or drag.
           controller.preview = null;
           controller.nodeInset = null;
+          resolveTap(controller, tracker, centreHit, (h) => {
+            centreRef = refFromHit(h);
+            centreAt = refLocation(doc, centreRef);
+            controller.pending = { kind: 'circle', centre: centreRef };
+          });
           controller.notify();
           return;
         }
-        const hit = pickPointTarget(doc, view, sp);
+        const hit = tracker.pick(view, sp);
         if (hit) {
-          finish(refFromHit(hit));
+          if (wasDrag) {
+            confirmSnap(controller, hit);
+            finish(refFromHit(hit));
+          } else resolveTap(controller, tracker, hit, (h) => finish(refFromHit(h)));
           return;
         }
         if (!doc.pointTargets.free && isNearAnyCurve(doc, view, sp)) {
           // Touched a curve with no eligible point there — no point is planted, and the centre
           // stays armed for a fresh attempt.
+          if (tracker.noPoint && !wasDrag) showNoPoint(controller, tracker.noPoint);
           controller.preview = { kind: 'circle', centre: centreAt, through: centreAt };
           controller.nodeInset = null;
           controller.pointLockHint = true;
@@ -181,6 +239,7 @@ export const circleTool: ToolModule = {
       },
       onCancel() {
         // Phase 3.2 item 4: a second finger (pinch/pan) cancels the pending centre; the tool stays.
+        hold.cancel();
         controller.cancelPending();
       },
     };

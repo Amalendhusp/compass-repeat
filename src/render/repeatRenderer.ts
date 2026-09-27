@@ -5,15 +5,17 @@
 // Phase 5.1: everything Appearance and Grid/Guides control is applied here at draw time only —
 // nothing in doc.repeatDisplay ever writes back into Fair/fill state.
 
-import type { Doc, Entity, RepeatSystem, SegmentState, Vec2 } from '../model/types.ts';
+import type { Doc, Entity, RepeatDisplay, RepeatSystem, SegmentState, Vec2 } from '../model/types.ts';
 import type { AppController, ViewTransform } from '../app/controller.ts';
 import { screenToWorld, worldToScreen } from '../app/controller.ts';
 import { computeSpaces, spaceTranslations } from '../geometry/spaces.ts';
 import { resolveEntityGeom } from '../geometry/kernel.ts';
 import { defaultSegmentKind, deriveSegments, type DerivedSegment } from '../geometry/segments.ts';
-import { computeDirectHoles, computeFairRegions } from '../geometry/regions.ts';
+import { computeDirectHoles, computeFairRegions, type FairRegion } from '../geometry/regions.ts';
+import { effectiveDpr } from './canvasSetup.ts';
 import {
   instancePose,
+  motifExtent,
   motifRadius,
   poseArcAngle,
   transformPoint,
@@ -354,10 +356,113 @@ function gcd(a: number, b: number): number {
   return b === 0 ? a : gcd(b, a % b);
 }
 
+// ---- Mobile performance: the motif flattened once per document, and drawn as a cached bitmap ----
+
+interface FlatMotif {
+  strokes: FairStroke[];
+  regions: FairRegion[];
+  holesOf: Map<string, FairRegion[]> | null;
+  maxStroke: number;
+}
+const flatCache = new WeakMap<Doc, FlatMotif>();
+
+/** Everything a copy draws, gathered once per document (a new Doc on every edit) rather than
+ * re-derived every frame. */
+function flatMotif(doc: Doc): FlatMotif {
+  let f = flatCache.get(doc);
+  if (!f) {
+    const strokes = collectFairStrokes(doc);
+    const regions = computeFairRegions(doc);
+    const filled = doc.fills.get(doc.activeColourway);
+    f = {
+      strokes,
+      regions,
+      holesOf: filled && filled.size > 0 ? computeDirectHoles(regions) : null,
+      maxStroke: strokes.reduce((m, st) => Math.max(m, st.state.stroke?.width ?? stroke.fairDefault), 0),
+    };
+    flatCache.set(doc, f);
+  }
+  return f;
+}
+
+const IDENTITY: InstancePose = { i: 0, j: 0, translate: { x: 0, y: 0 }, rotation: 0, mirror: false };
+
+/** One copy's fills and Fair strokes, exactly as the vector path draws them. `lineScale` converts
+ * the on-screen stroke widths into this target's pixels (1 on screen; DPR × detail in a sprite). */
+function drawCopy(ctx: CanvasRenderingContext2D, doc: Doc, view: ViewTransform, pose: InstancePose, flat: FlatMotif, display: RepeatDisplay, showFills: boolean, showStrokes: boolean, lineScale: number, beforeStrokes?: () => void): void {
+  const pivot = doc.frame.origin;
+  const filledMap = doc.fills.get(doc.activeColourway);
+  if (showFills && flat.holesOf && filledMap) {
+    // Effective fill opacity = the region's own alpha (in its colour) × Repeat's Fill opacity.
+    ctx.globalAlpha = display.fillOpacity;
+    for (const region of flat.regions) {
+      const colour = filledMap.get(region.sig);
+      if (!colour) continue;
+      const path = makePath(ctx);
+      appendTransformedLoop(path, view, pivot, pose, region.samplePoints);
+      for (const hole of flat.holesOf.get(region.sig) ?? []) appendTransformedLoop(path, view, pivot, pose, hole.samplePoints);
+      ctx.fillStyle = colour;
+      ctx.fill(path, 'evenodd');
+    }
+    ctx.globalAlpha = 1;
+  }
+  beforeStrokes?.();
+  if (!showStrokes) return;
+  for (const { entity, seg, state } of flat.strokes) {
+    ctx.strokeStyle = state.stroke?.colour ?? color.ink;
+    ctx.lineWidth = (state.stroke?.width ?? stroke.fairDefault) * lineScale;
+    ctx.lineCap = 'round';
+    ctx.lineJoin = 'round';
+    pathTransformedPiece(ctx, view, pivot, pose, doc, entity, seg.fromParam, seg.toParam);
+    ctx.stroke();
+  }
+}
+
+interface Sprite {
+  canvas: HTMLCanvasElement;
+  doc: Doc;
+  key: string;
+  zoom: number; // the view zoom it was drawn for
+  cssSize: number; // its size on screen at that zoom, in CSS px
+}
+let sprite: Sprite | null = null;
+const MAX_SPRITE_PX = 2048;
+/** Level of detail: with this many copies on screen, the shared bitmap is drawn at half resolution. */
+const LOD_COPIES = 150;
+
+/**
+ * The motif as a bitmap for the current zoom — drawn once, then stamped for every copy (rotated or
+ * mirrored per copy as its pose says). While fingers are pinching/panning, the last bitmap is simply
+ * scaled (`allowStale`) and redrawn sharp on release. Null when it would be too large to be worth it.
+ */
+function motifSprite(doc: Doc, display: RepeatDisplay, zoom: number, detail: number, allowStale: boolean, showFills: boolean, showStrokes: boolean): Sprite | null {
+  const key = `${display.artwork}|${display.fillOpacity}|${detail}`;
+  if (sprite && sprite.doc === doc && (allowStale || (sprite.key === key && Math.abs(sprite.zoom / zoom - 1) < 0.005))) return sprite;
+  const flat = flatMotif(doc);
+  const half = motifExtent(doc) * zoom + flat.maxStroke + 2; // CSS px
+  const scale = effectiveDpr() * detail;
+  const px = Math.ceil(half * 2 * scale);
+  if (px > MAX_SPRITE_PX || px < 4) return null;
+  const canvas = sprite?.canvas ?? document.createElement('canvas');
+  canvas.width = px;
+  canvas.height = px;
+  const sctx = canvas.getContext('2d');
+  if (!sctx) return null;
+  sctx.setTransform(1, 0, 0, 1, 0, 0);
+  sctx.clearRect(0, 0, px, px);
+  const pivot = doc.frame.origin;
+  const local: ViewTransform = { zoom: zoom * scale, pan: { x: -pivot.x, y: -pivot.y }, w: px, h: px };
+  drawCopy(sctx, doc, local, IDENTITY, flat, display, showFills, showStrokes, scale);
+  sprite = { canvas, doc, key, zoom, cssSize: px / scale };
+  return sprite;
+}
+
 /** On screen, `exp` is absent. With `exp` (Phase 5.3 export): the same field at the same zoom/pan,
  * in the current Artwork mode and effective fill opacity, background and construction overlay as
- * requested, the lattice guides only if asked — and never the handles or rotation ring. */
-export function renderRepeat(ctx: CanvasRenderingContext2D, controller: AppController, view: ViewTransform, exp?: ArtworkExport): void {
+ * requested, the lattice guides only if asked — and never the handles or rotation ring. Exports are
+ * always drawn as exact vectors; the screen stamps a cached bitmap per copy. Returns how many copies
+ * were drawn (for the diagnostics overlay). */
+export function renderRepeat(ctx: CanvasRenderingContext2D, controller: AppController, view: ViewTransform, exp?: ArtworkExport): number {
   const doc = controller.doc;
   const display = doc.repeatDisplay;
   ctx.save();
@@ -383,39 +488,29 @@ export function renderRepeat(ctx: CanvasRenderingContext2D, controller: AppContr
   const showFills = display.artwork !== 'stroke';
   const showStrokes = display.artwork !== 'fill';
   const showConstruction = exp ? exp.construction : display.constructionOverlay;
-  const strokes = showStrokes ? collectFairStrokes(doc) : [];
-  const regions = showFills ? computeFairRegions(doc) : [];
-  const filledMap = doc.fills.get(doc.activeColourway);
-  const holesOf = showFills && filledMap && filledMap.size > 0 ? computeDirectHoles(regions) : null;
+  const flat = flatMotif(doc);
 
   // Spaces sit on the background, under every motif. While a handle or the ring is being dragged
   // the arrangement is still changing, so they wait for release rather than show a stale shape.
   if (showFills && !drag && !rotating) drawSpaces(ctx, doc, view);
 
+  const detail = instances.length > LOD_COPIES ? 0.5 : 1;
+  const bitmap = exp ? null : motifSprite(doc, display, view.zoom, detail, controller.viewGesture, showFills, showStrokes);
+
   for (const pose of instances) {
-    if (holesOf) {
-      // Effective fill opacity = the region's own alpha (in its colour) × Repeat's Fill opacity.
-      ctx.globalAlpha = display.fillOpacity;
-      for (const region of regions) {
-        const colour = filledMap!.get(region.sig);
-        if (!colour) continue;
-        const path = makePath(ctx);
-        appendTransformedLoop(path, view, pivot, pose, region.samplePoints);
-        for (const hole of holesOf.get(region.sig) ?? []) appendTransformedLoop(path, view, pivot, pose, hole.samplePoints);
-        ctx.fillStyle = colour;
-        ctx.fill(path, 'evenodd');
-      }
-      ctx.globalAlpha = 1;
-    }
     const isReference = pose.i === 0 && pose.j === 0;
-    if (isReference && showConstruction) drawConstructionOverlay(ctx, view, pivot, pose, doc);
-    for (const { entity, seg, state } of strokes) {
-      ctx.strokeStyle = state.stroke?.colour ?? color.ink;
-      ctx.lineWidth = state.stroke?.width ?? stroke.fairDefault;
-      ctx.lineCap = 'round';
-      ctx.lineJoin = 'round';
-      pathTransformedPiece(ctx, view, pivot, pose, doc, entity, seg.fromParam, seg.toParam);
-      ctx.stroke();
+    const overlay = isReference && showConstruction ? () => drawConstructionOverlay(ctx, view, pivot, pose, doc) : undefined;
+    if (bitmap && !overlay) {
+      const at = worldToScreen(view, { x: pivot.x + pose.translate.x, y: pivot.y + pose.translate.y });
+      const size = bitmap.cssSize * (view.zoom / bitmap.zoom);
+      ctx.save();
+      ctx.translate(at.x, at.y);
+      if (pose.rotation) ctx.rotate(pose.rotation);
+      if (pose.mirror) ctx.scale(1, -1);
+      ctx.drawImage(bitmap.canvas, -size / 2, -size / 2, size, size);
+      ctx.restore();
+    } else {
+      drawCopy(ctx, doc, view, pose, flat, display, showFills, showStrokes, 1, overlay);
     }
   }
 
@@ -434,6 +529,7 @@ export function renderRepeat(ctx: CanvasRenderingContext2D, controller: AppContr
   }
 
   ctx.restore();
+  return instances.length;
 }
 
 export { motifRadius };

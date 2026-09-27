@@ -20,6 +20,7 @@ import { dist } from '../../geometry/vec.ts';
 import { addArc } from '../../model/doc.ts';
 import { pickPointTarget, type PointHit } from '../hittest.ts';
 import { buildNodeInset } from '../nodeinset.ts';
+import { confirmSnap, PointHold, resolveTap, showNoPoint, SnapTracker } from '../snap.ts';
 import { materializeRef, refFromHit, refLocation, type PointRef } from '../pointref.ts';
 import type { Gesture, ToolModule } from './types.ts';
 
@@ -84,23 +85,47 @@ function nearestSnap(angles: number[], angle: number, radiusPx: number): number 
  * Releasing over nothing clears the whole pending compass (a tap in empty space). */
 function pickStep(controller: AppController, view: ViewTransform, screenPos: Vec2, preview: (at: Vec2 | null) => void, onPicked: (hit: PointHit) => void): Gesture {
   const doc = controller.doc;
-  let hit = pickPointTarget(doc, view, screenPos);
+  const tracker = new SnapTracker(doc);
+  let hit = tracker.pick(view, screenPos);
   preview(hit?.at ?? null);
   controller.notifyView();
+  const hold = new PointHold(controller, view, tracker, screenPos);
   return {
     onMove(sp) {
-      hit = pickPointTarget(doc, view, sp);
-      controller.nodeInset = hit ? buildNodeInset(doc, view, sp, hit.at) : null;
+      const held = hold.move(sp);
+      if (held !== undefined) {
+        hit = held;
+        preview(held.at);
+        controller.notifyView();
+        return;
+      }
+      if (hold.open) return;
+      hit = tracker.pick(view, sp);
+      controller.nodeInset = hit ? buildNodeInset(doc, view, sp, hit.at, tracker) : null;
       preview(hit ? hit.at : screenToWorld(view, sp));
       controller.notifyView();
     },
-    onUp() {
+    onUp(_sp, wasDrag) {
       controller.nodeInset = null;
-      if (hit) onPicked(hit);
-      else controller.cancelPending();
+      const held = hold.release();
+      if (held) {
+        confirmSnap(controller, held);
+        onPicked(held);
+        controller.notify();
+        return;
+      }
+      if (!hit) {
+        // Phase 5.8: a tap on a bare curve says so, and the compass stays as it was.
+        if (tracker.noPoint && !wasDrag) showNoPoint(controller, tracker.noPoint);
+        else controller.cancelPending();
+      } else if (wasDrag) {
+        confirmSnap(controller, hit);
+        onPicked(hit);
+      } else resolveTap(controller, tracker, hit, onPicked);
       controller.notify();
     },
     onCancel() {
+      hold.cancel();
       controller.cancelPending();
     },
   };

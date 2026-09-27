@@ -44,31 +44,10 @@ function curveProjection(doc: Doc, entity: Entity, worldPos: Vec2): { point: Vec
   return result;
 }
 
-/**
- * Phase 3.4 items 5–7: the three Point Target categories, and which point kinds fall into each.
- * `free`-kind (hand-placed) points sit outside this scheme entirely — they're not a "geometric"
- * category the way intersections/midpoints are, so they stay unconditionally eligible, same as
- * before Point Targets existed. `on-curve` points (existing ones already materialized by a prior
- * Free-on-curve action, not just future ones) are governed by `free` too, since that toggle's name
- * — "Free on curve" — is about the point KIND, not only the act of creating a new one.
- */
-function pointTargetRank(p: Point): 0 | 1 | 2 {
-  if (p.kind === 'on-curve' && p.arcEnd) return 0; // Phase 5.2: an Arc's ends are real nodes
-  switch (p.kind) {
-    case 'intersection':
-    case 'centre':
-    case 'frame-vertex':
-    case 'free':
-      return 0; // Primary (plus hand-placed points, always eligible, ranked alongside it)
-    case 'midpoint':
-    case 'division':
-      return 1; // Derived
-    case 'on-curve':
-      return 2; // Free on curve
-  }
-}
-
-function isPointTargetEligible(targets: Doc['pointTargets'], p: Point): boolean {
+/** Phase 3.4 items 5–7: which point kinds each Point Target category governs. `free`-kind
+ * (hand-placed) points sit outside the scheme and stay eligible; existing `on-curve` points follow
+ * "Free on curve" (except an Arc's own ends, which are real nodes — Phase 5.2). */
+export function isPointTargetEligible(targets: Doc['pointTargets'], p: Point): boolean {
   if (p.kind === 'on-curve' && p.arcEnd) return targets.primary;
   switch (p.kind) {
     case 'intersection':
@@ -89,9 +68,12 @@ function isPointTargetEligible(targets: Doc['pointTargets'], p: Point): boolean 
  * Finds the best point target for a point-taking tool (Circle/Line/Polygon). Explicit points
  * always outrank implicit curve projections (§5.3). Phase 3.4 items 5–7 replace the old binary
  * Point Lock: only point kinds whose category is enabled in `doc.pointTargets` compete at all
- * (a disabled category is never silently chosen, no matter how close), ranked Primary > Derived >
- * Free-on-curve first and by distance within a tier second; an implicit new on-curve projection
- * is offered only when nothing eligible already exists there AND Free-on-curve is enabled.
+ * (a disabled category is never silently chosen, no matter how close). Smart Snap: among those,
+ * the NEAREST ON SCREEN wins — category no longer outranks distance, so a Division point under
+ * the finger is never silently replaced by a Centre a little further off (see interaction/snap.ts
+ * for the gesture-level hysteresis and ambiguity handling built on top of this). An implicit new
+ * on-curve projection is offered only when nothing eligible already exists there AND Free-on-curve
+ * is enabled.
  */
 export function pickPointTarget(
   doc: Doc,
@@ -100,7 +82,6 @@ export function pickPointTarget(
   opts: { explicitOnly?: boolean; exclude?: ReadonlySet<PointId> } = {},
 ): PointHit | null {
   let best: PointHit | null = null;
-  let bestRank = Infinity;
   for (const p of doc.points) {
     if (p.kind === 'free' && p.hidden) continue;
     if (opts.exclude?.has(p.id)) continue;
@@ -109,11 +90,7 @@ export function pickPointTarget(
     const at = resolvePoint(doc, p.id);
     const d = dist(worldToScreen(view, at), screenPos);
     if (d > POINT_HIT_RADIUS) continue;
-    const rank = pointTargetRank(p);
-    if (rank < bestRank || (rank === bestRank && d < (best?.screenD ?? Infinity))) {
-      best = { id: p.id, at, screenD: d };
-      bestRank = rank;
-    }
+    if (d < (best?.screenD ?? Infinity)) best = { id: p.id, at, screenD: d };
   }
   if (best || opts.explicitOnly || !doc.pointTargets.free) return best;
 
@@ -164,16 +141,28 @@ export function segmentContainingParam(segs: DerivedSegment[], param: number, is
 
 /** The nearest entity+param under `screenPos`, within the curve hit band — the same curve-ranking
  * `pickSelectCandidates` uses for its segment/entity tiers, exposed standalone for tools (Fair)
- * that need the raw hit before deciding how to interpret it. */
-export function pickCurveHit(doc: Doc, view: ViewTransform, screenPos: Vec2): { entity: Entity; param: number } | null {
+ * that need the raw hit before deciding how to interpret it. `d` is the screen distance. */
+export function pickCurveHit(doc: Doc, view: ViewTransform, screenPos: Vec2): { entity: Entity; param: number; d: number } | null {
+  return curveCandidatesAt(doc, view, screenPos)[0] ?? null;
+}
+
+/** Phase 5.8: every curve within the hit band under `screenPos`, nearest first — Fair's "Which
+ * line?" and Smart Snap's "No point here yet" both need more than the single nearest curve. */
+export function curveCandidatesAt(doc: Doc, view: ViewTransform, screenPos: Vec2, radius = CURVE_HIT_RADIUS): { entity: Entity; param: number; d: number }[] {
   const worldPos = { x: (screenPos.x - view.w / 2) / view.zoom - view.pan.x, y: (screenPos.y - view.h / 2) / view.zoom - view.pan.y };
-  let best: { entity: Entity; param: number; d: number } | null = null;
+  const out: { entity: Entity; param: number; d: number }[] = [];
   for (const e of doc.entities) {
     const proj = curveProjection(doc, e, worldPos);
     const d = proj.d * view.zoom;
-    if (d <= CURVE_HIT_RADIUS && (!best || d < best.d)) best = { entity: e, param: proj.param, d };
+    if (d <= radius) out.push({ entity: e, param: proj.param, d });
   }
-  return best ? { entity: best.entity, param: best.param } : null;
+  return out.sort((a, b) => a.d - b.d);
+}
+
+/** Phase 5.8: where `screenPos` projects onto one particular curve, and how far off it is (screen px). */
+export function curveDistanceAt(doc: Doc, view: ViewTransform, entity: Entity, screenPos: Vec2): { param: number; d: number; point: Vec2 } {
+  const proj = curveProjection(doc, entity, screenToWorld(view, screenPos));
+  return { param: proj.param, d: proj.d * view.zoom, point: proj.point };
 }
 
 /** A run of granular keys reads as "Fair" only when EVERY key in it is Fair — anything else

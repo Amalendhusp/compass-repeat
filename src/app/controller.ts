@@ -29,7 +29,9 @@ export type PendingStep =
  * can apply itself to all of them atomically while segment STATE STORAGE stays keyed granularly. */
 export type SelectCandidate =
   | { kind: 'point'; id: PointId }
-  | { kind: 'segment'; entityId: EntityId; from: PointId; to: PointId; fromParam: number; toParam: number; keys: SegmentKey[] }
+  // Phase 5.10: `scope` says what a tap chose — one 'segment' (between the split points around the
+  // tap) or its visually continuous 'run'. Absent for older/other sources (sweeps treat it as segment).
+  | { kind: 'segment'; entityId: EntityId; from: PointId; to: PointId; fromParam: number; toParam: number; keys: SegmentKey[]; scope?: 'segment' | 'run' }
   | { kind: 'entity'; entityId: EntityId }
   | { kind: 'group'; groupId: string; entityIds: EntityId[] }
   // Phase 5.2 items 9–11: a closed region picked by tapping inside it — stands for its whole
@@ -53,6 +55,8 @@ export type Preview =
 export interface PrecisionCandidate {
   ref: PointRef;
   at: Vec2; // world position
+  /** Phase 5.9: what the location is (merged, e.g. "Centre · 2 intersections"), shown for the active one. */
+  label?: string;
 }
 export interface PrecisionSession {
   candidates: PrecisionCandidate[];
@@ -61,6 +65,13 @@ export interface PrecisionSession {
   anchorScreen: Vec2; // the finger position precision mode opened at, for loupe placement + delta tracking
   reticleWorld: Vec2; // world-space reticle position; starts at anchorWorld, drifts at 1/4 finger speed
   lastFingerScreen: Vec2; // updated every move, to compute this sample's incremental delta
+  /** Phase 5.9: the loupe (screen), its magnification and the screen point it magnifies. */
+  loupe: { x: number; y: number; r: number; mag: number; centreScreen: Vec2 };
+  /** One spread marker per candidate (screen, inside the loupe), and the finger's cursor there. */
+  markers: Vec2[];
+  cursor: Vec2;
+  holdStart: Vec2;
+  cursorStart: Vec2;
 }
 
 export interface ExtendChip {
@@ -115,6 +126,8 @@ export interface FairTraceState {
   draft: Map<SegmentKey, SegmentState | null>;
   preview: { leaderKey: SegmentKey; runnerUpKey: SegmentKey | null } | null;
   relevantPoints: Set<PointId>;
+  /** Phase 5.9: an untouched circle a tap would Fair whole (it has no pieces to draft yet). */
+  whole?: EntityId | null;
 }
 
 /** Phase 5.2 items 13–15: Select's point editing. `move` drags a hand-placed point freely;
@@ -142,6 +155,43 @@ export interface NodeInsetState {
   anchorScreen: Vec2; // finger position, for loupe placement away from it
   activeAt: Vec2; // world position of the chosen candidate — the magnification centre
   candidates: Vec2[]; // other nearby points, world space, excluding activeAt
+  /** Smart Snap: what each point in the loupe is (Centre, Division point…) — the chosen one, and
+   * whether the choice is currently too close to call. */
+  labels?: { at: Vec2; label: string; active: boolean }[];
+  ambiguous?: boolean;
+}
+
+/** Phase 5.8: a tap that landed on a curve where no point exists yet — said plainly instead of
+ * quietly snapping to a neighbouring point. `divide` is set when the tap sat near the middle of a
+ * segment: an optional shortcut to the ordinary Divide ÷2 of that segment. */
+export interface NoPointHint {
+  anchorScreen: Vec2;
+  at: Vec2;
+  divide: { label: 'Segment'; scope: 'segment'; entityId: EntityId; kind: 'segment'; from: PointId; to: PointId; fromParam: number; toParam: number } | null;
+  midAt: Vec2 | null;
+  until: number;
+}
+
+/** Phase 5.8: one complete Fair run a tap could mean — what "Which line?" offers, and what a
+ * Fair preview shows before it is confirmed. `whole` marks an untouched circle (no pieces yet). */
+export interface FairRun {
+  label: string;
+  detail: string;
+  keys: SegmentKey[];
+  draft: Map<SegmentKey, SegmentState | null>;
+  fairing: boolean;
+  whole: EntityId | null;
+  /** World positions of the run's open ends (none for a closed loop). */
+  ends: Vec2[];
+  /** A world point on the run, near the tap, where its number badge is anchored. */
+  badgeAt: Vec2;
+}
+
+export interface LineChoice {
+  anchorScreen: Vec2;
+  candidates: FairRun[];
+  focus: number | null;
+  resolve: (index: number | null) => void;
 }
 
 type Listener = () => void;
@@ -160,6 +210,16 @@ export class AppController {
    * and its local geometry, away from the fingertip that's occluding it. Set by the active
    * tool's onMove, null when nothing is snapped. */
   nodeInset: NodeInsetState | null = null;
+  /** Smart Snap: the brief label shown on the point just used (Phase 5.9: with an optional hint
+   * line, e.g. after a tap in a crowded spot). */
+  snapConfirm: { at: Vec2; label: string; hint?: string; until: number } | null = null;
+  /** Phase 5.8/5.9: "No point here yet" feedback; the advanced "Which line?" chooser (Fair
+   * long-press only); a brief canvas cue such as "Trace the line you want". Never history. */
+  noPoint: NoPointHint | null = null;
+  /** Phase 5.10: the segment under a finger that is still down (Select) — emphasised before release. */
+  pressHighlight: SegmentKey[] | null = null;
+  lineChoice: LineChoice | null = null;
+  cue: { at: Vec2; text: string; until: number } | null = null;
   /** Phase 3.4 item 2: Line's own creation mode — every new line commits as either a finite
    * Construction line or a through-both-points Extension line (spec's extension-line logic,
    * dashed/subdued). Sticky across gestures, like Fair's old stroke default was. */
@@ -167,6 +227,19 @@ export class AppController {
   /** Phase 5.6 item 19: Repeat's Space action — while on, a one-finger tap colours negative-space
    * classes instead of reaching the lattice handles. Session state, never saved. */
   spaceMode = false;
+  /** Mobile performance: true while two fingers pan/zoom — renderers may draw a lighter version and
+   * restore full quality on release. Session state only. */
+  viewGesture = false;
+  /** Focus construction: the beginner display mode (fade construction far from the current work),
+   * and where the work is — updated from the finger and the pending anchor. */
+  focusConstruction = (() => {
+    try {
+      return localStorage.getItem('cr.focusConstruction') === '1';
+    } catch {
+      return false;
+    }
+  })();
+  focusWorld: Vec2 | null = null;
   pointVisibility: PointVisibility = 'near-finger';
   /** Screen position of the single active pointer, for "near finger" reveal; null when no
    * pointer is down. Updated by PointerManager, read by the renderer only. */
@@ -315,6 +388,7 @@ export class AppController {
     this.pointEdit = null;
     this.divide = null;
     this.dividePreview = null;
+    this.lineChoice = null;
     this.notify();
   }
 
@@ -356,6 +430,10 @@ export class AppController {
   /** §1.3: tapping the lit tool, or Select, returns to Select. */
   setTool(tool: ToolId): void {
     if (!LIVE_TOOLS.has(tool)) return;
+    this.lineChoice = null;
+    this.noPoint = null;
+    this.cue = null;
+    this.pressHighlight = null;
     this.pending = null;
     this.preview = null;
     this.nodeInset = null;
