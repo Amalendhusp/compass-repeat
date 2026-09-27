@@ -6,7 +6,7 @@ import type { Doc, Entity, EntityId, Point, PointId, SegmentKey, Vec2 } from '..
 import { projectOntoEntity, resolveEntityGeom, resolvePoint } from '../geometry/kernel.ts';
 import { deriveSelectableGroups, groupContainingParam, isParamTrimmed, type DerivedSegment } from '../geometry/segments.ts';
 import { computeConstructionRegions, computeFairRegions, findRegionAt } from '../geometry/regions.ts';
-import { isPointOrphanedByTrim } from '../geometry/usage.ts';
+import { isCrossingPoint, isPointOrphanedByTrim } from '../geometry/usage.ts';
 import { dist, sub } from '../geometry/vec.ts';
 import { screenToWorld, type SelectCandidate, type ViewTransform, worldToScreen } from '../app/controller.ts';
 
@@ -65,6 +65,17 @@ export function isPointTargetEligible(targets: Doc['pointTargets'], p: Point): b
 }
 
 /**
+ * Phase 5.12f: eligibility in a document — by kind (above), and also for ANY point where two or
+ * more drawn curves cross or touch: a crossing is a Primary target however its point was first
+ * created (an on-curve point a line was later drawn from, the incircle's own radius point at a
+ * tangency, a division point another curve passes through…). Primary off still means off.
+ */
+export function isPointTargetEligibleIn(doc: Doc, p: Point): boolean {
+  if (isPointTargetEligible(doc.pointTargets, p)) return true;
+  return doc.pointTargets.primary && isCrossingPoint(doc, p.id);
+}
+
+/**
  * Finds the best point target for a point-taking tool (Circle/Line/Polygon). Explicit points
  * always outrank implicit curve projections (§5.3). Phase 3.4 items 5–7 replace the old binary
  * Point Lock: only point kinds whose category is enabled in `doc.pointTargets` compete at all
@@ -86,7 +97,7 @@ export function pickPointTarget(
     if (p.kind === 'free' && p.hidden) continue;
     if (opts.exclude?.has(p.id)) continue;
     if (isPointOrphanedByTrim(doc, p.id)) continue;
-    if (!isPointTargetEligible(doc.pointTargets, p)) continue;
+    if (!isPointTargetEligibleIn(doc, p)) continue;
     const at = resolvePoint(doc, p.id);
     const d = dist(worldToScreen(view, at), screenPos);
     if (d > POINT_HIT_RADIUS) continue;

@@ -1,7 +1,7 @@
 // Point-usage queries for the point-visibility model (Phase 1.2 item 7) and Select.
 
 import type { Doc, Entity, EntityId, Point, PointId } from '../model/types.ts';
-import { deriveSegments } from './segments.ts';
+import { deriveSegments, lonePointOn } from './segments.ts';
 
 /** Phase 3.7 item 7: the point kinds a participant can directly act on (Delete/Merge) — every
  * other kind is mathematically derived and stays protected. Free (hand-placed) and on-curve
@@ -30,6 +30,8 @@ interface PointFacts {
   byId: Map<PointId, Point>;
   used: Set<PointId>;
   orphaned: Set<PointId>;
+  /** How many different curves are really drawn through each point (see isCrossingPoint). */
+  support: Map<PointId, number>;
 }
 
 const perDocPointFacts = new WeakMap<Doc, PointFacts>();
@@ -72,24 +74,33 @@ function computePointFacts(doc: Doc): PointFacts {
     }
   }
 
-  // Per entity: every point that bounds one of its derived segments, and whether any of those
-  // segments is still live (not trimmed).
-  const liveBoundary = new Map<EntityId, Map<PointId, boolean>>();
+  // Phase 5.12f: per point, how many different curves are really drawn through it — an end of one
+  // of the curve's live (untrimmed) segments, or the single point on a whole circle that has no
+  // segments yet. Geometry, not provenance: one point stands for everything that meets at its
+  // place (mergeOrCreatePoint reuses whatever point is already there), so what it was first
+  // created as — an on-curve point, a division, the crossing of two lines since trimmed away —
+  // says nothing about which curves still pass through it.
+  const support = new Map<PointId, number>();
   for (const entity of entityById.values()) {
-    const ends = new Map<PointId, boolean>();
-    for (const s of deriveSegments(doc, entity)) {
-      const live = (doc.segmentStates.get(s.key)?.state ?? 'construction') !== 'trimmed';
-      ends.set(s.from, (ends.get(s.from) ?? false) || live);
-      ends.set(s.to, (ends.get(s.to) ?? false) || live);
+    const live = new Set<PointId>();
+    const segs = deriveSegments(doc, entity);
+    for (const s of segs) {
+      if ((doc.segmentStates.get(s.key)?.state ?? 'construction') === 'trimmed') continue;
+      live.add(s.from);
+      live.add(s.to);
     }
-    liveBoundary.set(entity.id, ends);
+    if (segs.length === 0) {
+      const lone = lonePointOn(doc, entity);
+      if (lone) live.add(lone);
+    }
+    for (const id of live) support.set(id, (support.get(id) ?? 0) + 1);
   }
 
+  // A derived point is orphaned once no drawn curve passes through it any more.
   const orphaned = new Set<PointId>();
   for (const p of byId.values()) {
-    const hosts: string[] = p.kind === 'on-curve' || p.kind === 'division' ? [p.host] : p.kind === 'intersection' ? p.entities : [];
-    if (hosts.length === 0) continue;
-    if (!hosts.some((eid) => liveBoundary.get(eid)?.get(p.id) === true)) orphaned.add(p.id);
+    if (p.kind !== 'on-curve' && p.kind !== 'division' && p.kind !== 'intersection') continue;
+    if (!support.has(p.id)) orphaned.add(p.id);
   }
 
   return {
@@ -100,6 +111,7 @@ function computePointFacts(doc: Doc): PointFacts {
     byId,
     used,
     orphaned,
+    support,
   };
 }
 
@@ -120,14 +132,23 @@ export function isFramePoint(doc: Doc, pointId: PointId): boolean {
 }
 
 /**
- * Phase 2.1 item 4: true once every entity this point depends on (its on-curve/division host, or
- * an intersection's two entities) can only still reach it through a trimmed segment — i.e. Trim
- * removed the only geometric support the point had. A derived check, not stored state: Undo (a
+ * Phase 2.1 item 4: true once Trim has removed every piece of curve that passed through this
+ * derived (on-curve / division / intersection) point. A derived check, not stored state: Undo (a
  * whole-Doc snapshot) and any future un-trim both un-orphan a point automatically, with no extra
  * bookkeeping. Free/centre/frame-vertex/midpoint points never depend on a segment this way and
- * are never orphaned. (A host that no longer exists, or that has no segment ending at the point,
- * gives it no support.)
+ * are never orphaned. Phase 5.12f: ANY drawn curve through the point supports it — not only the
+ * ones it was first created from — so a place where a circle and a line still visibly cross is
+ * never hidden because the two lines it was first made from have been trimmed there.
  */
 export function isPointOrphanedByTrim(doc: Doc, pointId: PointId): boolean {
   return pointFacts(doc).orphaned.has(pointId);
+}
+
+/**
+ * Phase 5.12f: at least two different curves are really drawn through this point — a genuine
+ * crossing (or touching) of visible construction geometry, whatever kind of point happens to
+ * stand for that place. Such a point is always a Primary target (hittest.ts isPointTargetEligibleIn).
+ */
+export function isCrossingPoint(doc: Doc, pointId: PointId): boolean {
+  return (pointFacts(doc).support.get(pointId) ?? 0) >= 2;
 }

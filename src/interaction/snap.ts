@@ -23,10 +23,10 @@ import type { AppController, NoPointHint, ViewTransform } from '../app/controlle
 import { worldToScreen } from '../app/controller.ts';
 import { resolveEntityGeom, resolvePoint } from '../geometry/kernel.ts';
 import { deriveSelectableGroups, groupContainingParam } from '../geometry/segments.ts';
-import { isPointOrphanedByTrim } from '../geometry/usage.ts';
+import { isCrossingPoint, isPointOrphanedByTrim } from '../geometry/usage.ts';
 import { dist } from '../geometry/vec.ts';
 import type { Gesture } from './tools/types.ts';
-import { curveCandidatesAt, isPointTargetEligible, pickPointTarget, POINT_HIT_RADIUS, type PointHit } from './hittest.ts';
+import { curveCandidatesAt, isPointTargetEligibleIn, pickPointTarget, POINT_HIT_RADIUS, type PointHit } from './hittest.ts';
 import { closePrecision, movePrecision, openPrecision } from './precision.ts';
 
 export const SWITCH_PX = 6;
@@ -111,22 +111,26 @@ export interface SnapCandidate {
 
 /** Every eligible existing point within reach of the finger, merged by location, nearest first. */
 export function snapCandidates(doc: Doc, view: ViewTransform, screenPos: Vec2, exclude?: ReadonlySet<PointId>): SnapCandidate[] {
-  const raw: { p: Point; at: Vec2; screen: Vec2; d: number }[] = [];
+  const raw: { p: Point; at: Vec2; screen: Vec2; d: number; label?: string }[] = [];
   for (const p of doc.points) {
     if (p.kind === 'free' && p.hidden) continue;
     if (exclude?.has(p.id)) continue;
-    if (!isPointTargetEligible(doc.pointTargets, p)) continue;
+    if (!isPointTargetEligibleIn(doc, p)) continue;
     if (isPointOrphanedByTrim(doc, p.id)) continue;
     const at = resolvePoint(doc, p.id);
     const screen = worldToScreen(view, at);
     const d = dist(screen, screenPos);
-    if (d <= POINT_HIT_RADIUS) raw.push({ p, at, screen, d });
+    if (d > POINT_HIT_RADIUS) continue;
+    // Phase 5.12f: a plain point on a curve that other geometry now crosses is, to the participant,
+    // an intersection.
+    const crossing = p.kind === 'on-curve' && !p.arcEnd && isCrossingPoint(doc, p.id);
+    raw.push({ p, at, screen, d, ...(crossing ? { label: 'Intersection' } : {}) });
   }
   return clusterByLocation(raw);
 }
 
 /** Phase 5.8: merges points within COINCIDENT_PX of each other on screen into one location. */
-export function clusterByLocation(raw: { p: Point; at: Vec2; screen: Vec2; d: number }[]): SnapCandidate[] {
+export function clusterByLocation(raw: { p: Point; at: Vec2; screen: Vec2; d: number; label?: string }[]): SnapCandidate[] {
   raw.sort((a, b) => a.d - b.d);
   const groups: { items: typeof raw; screen: Vec2 }[] = [];
   for (const r of raw) {
@@ -137,7 +141,7 @@ export function clusterByLocation(raw: { p: Point; at: Vec2; screen: Vec2; d: nu
   return groups.map(({ items }) => {
     const ordered = [...items].sort((a, b) => kindRank(a.p) - kindRank(b.p) || a.d - b.d);
     const rep = ordered[0]!;
-    const members = ordered.map((x) => ({ id: x.p.id, label: snapLabel(x.p) }));
+    const members = ordered.map((x) => ({ id: x.p.id, label: x.label ?? snapLabel(x.p) }));
     return { id: rep.p.id, at: rep.at, screen: rep.screen, screenD: Math.min(...items.map((x) => x.d)), label: mergedLabel(members.map((m) => m.label)), members };
   });
 }

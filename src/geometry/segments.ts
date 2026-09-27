@@ -4,6 +4,7 @@
 
 import type { Doc, Entity, EntityId, PointId, SegmentState, Vec2 } from '../model/types.ts';
 import { epsilon, projectOntoEntity, resolvePoint } from './kernel.ts';
+import { isCrossingPoint } from './usage.ts';
 
 export interface DerivedSegment {
   key: string; // `${entityId}:${fromId}:${toId}`
@@ -94,9 +95,9 @@ function pointsOnEntity(doc: Doc, entity: Entity): { id: PointId; param: number 
   return found;
 }
 
-function computeDerivedSegments(doc: Doc, entity: Entity): DerivedSegment[] {
+function computeDerivedSegments(doc: Doc, entity: Entity): { segs: DerivedSegment[]; lone: PointId | null } {
   const pts = pointsOnEntity(doc, entity);
-  if (pts.length < 2) return [];
+  if (pts.length < 2) return { segs: [], lone: pts[0]?.id ?? null };
   const segs: DerivedSegment[] = [];
   const count = entity.kind === 'circle' ? pts.length : pts.length - 1;
   for (let i = 0; i < count; i++) {
@@ -104,7 +105,7 @@ function computeDerivedSegments(doc: Doc, entity: Entity): DerivedSegment[] {
     const to = pts[(i + 1) % pts.length]!;
     segs.push({ key: `${entity.id}:${from.id}:${to.id}`, entityId: entity.id, from: from.id, to: to.id, fromParam: from.param, toParam: to.param });
   }
-  return segs;
+  return { segs, lone: null };
 }
 
 // Phase 3.1 item 7: `pointsOnEntity` is O(points on doc) per entity (each point is projected
@@ -122,21 +123,33 @@ function computeDerivedSegments(doc: Doc, entity: Entity): DerivedSegment[] {
 // every such growth (or Trim/Delete's shrink) and invalidates the whole per-doc cache, while
 // still reusing freely across every render frame and pointer-move once a Doc has settled as
 // `controller.doc` between commits — which is the case this was actually written to help.
-const perDocSegmentCache = new WeakMap<Doc, { pointCount: number; entityCount: number; byEntity: Map<EntityId, DerivedSegment[]> }>();
+const perDocSegmentCache = new WeakMap<
+  Doc,
+  { pointCount: number; entityCount: number; byEntity: Map<EntityId, DerivedSegment[]>; lone: Map<EntityId, PointId | null> }
+>();
 
 /** The segments `entity` is currently split into. Empty for an as-yet-untouched circle
  * (spec §4.5: "if the circle has none"); a line always has at least one (its own endpoints). */
 export function deriveSegments(doc: Doc, entity: Entity): DerivedSegment[] {
   let record = perDocSegmentCache.get(doc);
   if (!record || record.pointCount !== doc.points.length || record.entityCount !== doc.entities.length) {
-    record = { pointCount: doc.points.length, entityCount: doc.entities.length, byEntity: new Map() };
+    record = { pointCount: doc.points.length, entityCount: doc.entities.length, byEntity: new Map(), lone: new Map() };
     perDocSegmentCache.set(doc, record);
   }
   const cached = record.byEntity.get(entity.id);
   if (cached) return cached;
-  const segs = computeDerivedSegments(doc, entity);
+  const { segs, lone } = computeDerivedSegments(doc, entity);
   record.byEntity.set(entity.id, segs);
+  record.lone.set(entity.id, lone);
   return segs;
+}
+
+/** The one point on a curve that has too few points to have segments yet (a whole circle touched
+ * at a single place — a tangency, say) — null when it has segments, or no point at all. Such a
+ * curve is still entirely drawn, so that point sits on live geometry. */
+export function lonePointOn(doc: Doc, entity: Entity): PointId | null {
+  deriveSegments(doc, entity);
+  return perDocSegmentCache.get(doc)?.lone.get(entity.id) ?? null;
 }
 
 // ---- Phase 5.6 items 32–38: Construction and Extension on one supporting line ----
@@ -207,7 +220,8 @@ export function isParamTrimmed(doc: Doc, entity: Entity, param: number): boolean
  * point kinds (intersection/centre/frame-vertex, plus hand-placed free/on-curve points) always
  * split a group; Derived kinds (midpoint/division) only split one while `doc.pointTargets.derived`
  * is on — off, they're invisible to grouping (still real, still recoverable) without needing new
- * points, migrated state, or any other change to the underlying model. A trimmed granular segment
+ * points, migrated state, or any other change to the underlying model — unless another curve
+ * crosses there too, which makes them a crossing like any other (usage.ts). A trimmed granular segment
  * is always its own boundary (and excluded) — grouping across a genuinely removed span isn't "one
  * piece of curve" by any reading.
  */
@@ -223,7 +237,7 @@ export interface SelectableGroup {
 function isTopologySplitPoint(doc: Doc, pointId: PointId): boolean {
   const p = doc.points.find((pt) => pt.id === pointId);
   if (!p) return true; // safe default — unknown point, don't silently merge across it
-  if (p.kind === 'midpoint' || p.kind === 'division') return doc.pointTargets.derived;
+  if (p.kind === 'midpoint' || p.kind === 'division') return doc.pointTargets.derived || isCrossingPoint(doc, pointId);
   return true; // Primary kinds, plus free/on-curve (outside the Primary/Derived/Free scheme — Phase 3.4)
 }
 
