@@ -4,7 +4,7 @@
 // Precision mode (press ≥350ms then slide) is deferred — see project notes.
 
 import type { Vec2 } from '../model/types.ts';
-import type { AppController, ViewTransform } from '../app/controller.ts';
+import type { AppController, GestureSnapshot, ViewTransform } from '../app/controller.ts';
 import type { Gesture, ToolModule } from './tools/types.ts';
 
 // Phase 5.2 item 30: screen px of involuntary finger movement that still counts as a tap — sized
@@ -52,6 +52,8 @@ export class PointerManager {
   private session: Session | null = null;
   private lastCentroid: Vec2 | null = null;
   private lastPinchDist = 0;
+  /** Phase 5.12a: the state as it was when the first finger of the current touch went down. */
+  private before: GestureSnapshot | null = null;
 
   constructor(
     canvas: HTMLCanvasElement,
@@ -69,7 +71,7 @@ export class PointerManager {
     canvas.addEventListener('pointerdown', this.onDown);
     canvas.addEventListener('pointermove', this.onMove);
     canvas.addEventListener('pointerup', this.onUp);
-    canvas.addEventListener('pointercancel', this.onUp);
+    canvas.addEventListener('pointercancel', this.onCancelPointer);
   }
 
   private toLocal(e: PointerEvent): Vec2 {
@@ -120,6 +122,9 @@ export class PointerManager {
       this.session = null;
       this.controller.viewGesture = false;
     }
+    // Phase 5.12a: the first finger of a touch records everything its gesture may change, before
+    // anything does, so a pointercancel can put it all back.
+    if (this.active.size === 0) this.before = this.controller.captureGestureState();
     this.active.set(e.pointerId, { x, y, startX: x, startY: y, maxTravel: 0 });
     // Phase 5.4: transient Fill diagnostics last only until the next interaction.
     this.controller.clearFillDiagnostic();
@@ -237,5 +242,38 @@ export class PointerManager {
       this.lastCentroid = null;
       this.lastPinchDist = 0;
     }
+  };
+
+  /**
+   * Phase 5.12a: `pointercancel` means the browser or OS took the touch away (an iOS system gesture,
+   * a palm, an alert) — not that the participant lifted their finger — so nothing may complete or
+   * commit. A single-finger gesture is abandoned and everything it changed is put back exactly as
+   * it was at pointerdown: no geometry, no Fair state, no selection change, no undo entry. A
+   * two-finger view gesture simply ends where it is (the camera is not history) and never counts
+   * as a two-finger undo / three-finger redo tap. Any other fingers still down are dropped as well,
+   * so nothing half-finished carries on.
+   */
+  private onCancelPointer = (e: PointerEvent): void => {
+    if (!this.active.has(e.pointerId)) return;
+    for (const id of this.active.keys()) {
+      try {
+        this.canvas.releasePointerCapture(id);
+      } catch {
+        // Already released or never captured; nothing to clean up.
+      }
+    }
+    const wasSingle = this.mode === 'single';
+    this.gesture?.onCancel();
+    this.gesture = null;
+    this.active.clear();
+    this.mode = 'idle';
+    this.session = null;
+    this.lastCentroid = null;
+    this.lastPinchDist = 0;
+    this.controller.viewGesture = false;
+    this.controller.pointerScreenPos = null;
+    if (wasSingle && this.before) this.controller.restoreGestureState(this.before);
+    this.before = null;
+    this.controller.notifyView();
   };
 }

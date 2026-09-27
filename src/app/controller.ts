@@ -197,6 +197,41 @@ export interface LineChoice {
 
 type Listener = () => void;
 
+/** Phase 5.12a: what AppController.captureGestureState() records (see there). */
+type GestureTransientKey =
+  | 'pending'
+  | 'selection'
+  | 'extendChip'
+  | 'fairPromoteChip'
+  | 'pendingMerge'
+  | 'preview'
+  | 'nodeInset'
+  | 'snapConfirm'
+  | 'noPoint'
+  | 'pressHighlight'
+  | 'lineChoice'
+  | 'cue'
+  | 'focusWorld'
+  | 'sweep'
+  | 'multiRegion'
+  | 'pointEdit'
+  | 'divide'
+  | 'precision'
+  | 'dividePreview'
+  | 'recentPoints'
+  | 'fairTrace'
+  | 'fillPreview'
+  | 'fillDiagnostic'
+  | 'repeatDrag'
+  | 'repeatContactFlash'
+  | 'repeatRotateDrag';
+export interface GestureSnapshot {
+  doc: Doc;
+  undo: Doc[];
+  redo: Doc[];
+  transient: Pick<AppController, GestureTransientKey>;
+}
+
 export class AppController {
   doc: Doc;
   tool: ToolId = 'select';
@@ -352,6 +387,56 @@ export class AppController {
   restoreHistory(undo: Doc[], redo: Doc[]): void {
     this.undoStack = undo.slice();
     this.redoStack = redo.slice();
+  }
+
+  /** Phase 5.12a: everything one single-finger gesture can change — the document and its history
+   * (a gesture only ever edits through commit()) and every transient tool, selection and feedback
+   * state — taken at pointerdown so a pointercancel can abandon the gesture without a trace. */
+  captureGestureState(): GestureSnapshot {
+    return {
+      doc: this.doc,
+      undo: this.undoStack.slice(),
+      redo: this.redoStack.slice(),
+      transient: {
+        pending: this.pending,
+        selection: this.selection,
+        extendChip: this.extendChip,
+        fairPromoteChip: this.fairPromoteChip,
+        pendingMerge: this.pendingMerge,
+        preview: this.preview,
+        nodeInset: this.nodeInset,
+        snapConfirm: this.snapConfirm,
+        noPoint: this.noPoint,
+        pressHighlight: this.pressHighlight,
+        lineChoice: this.lineChoice,
+        cue: this.cue,
+        focusWorld: this.focusWorld,
+        sweep: this.sweep,
+        multiRegion: this.multiRegion,
+        pointEdit: this.pointEdit,
+        divide: this.divide,
+        precision: this.precision,
+        dividePreview: this.dividePreview,
+        recentPoints: this.recentPoints,
+        fairTrace: this.fairTrace,
+        fillPreview: this.fillPreview,
+        fillDiagnostic: this.fillDiagnostic,
+        repeatDrag: this.repeatDrag,
+        repeatContactFlash: this.repeatContactFlash,
+        repeatRotateDrag: this.repeatRotateDrag,
+      },
+    };
+  }
+
+  /** Puts back a captureGestureState() snapshot. A commit made during the gesture is dropped like
+   * an undo (camera and preferences stay live — see swapTo), and the history is restored exactly,
+   * so no undo or redo entry is gained or lost. */
+  restoreGestureState(snapshot: GestureSnapshot): void {
+    if (this.doc !== snapshot.doc) this.swapTo(snapshot.doc);
+    this.undoStack = snapshot.undo;
+    this.redoStack = snapshot.redo;
+    Object.assign(this, snapshot.transient);
+    this.notify();
   }
 
   /** Phase 3.6 item 2: `view` (zoom/pan) rides inside every snapshot for cloning convenience, but
