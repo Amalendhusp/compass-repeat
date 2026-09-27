@@ -13,7 +13,11 @@ const TAP_MOVE_THRESHOLD = 12;
 const MULTI_TAP_MAX_TRAVEL = 10; // pt, §2
 const MULTI_TAP_MAX_MS = 250; // §2
 const MIN_ZOOM = 0.15;
-const MAX_ZOOM = 8;
+// Extended precision zoom: 3× the earlier maximum of 8, so the smallest pieces of a dense
+// construction (Plate 113's shortest tenth of Fair pieces, ~6 px apart at 8) open up to finger
+// size. Every hit/snap radius, stroke width and marker is in screen px, so none of them scale
+// with this. Fit keeps its own ceiling of 8 (main.ts) — only a pinch goes further.
+const MAX_ZOOM = 24;
 
 interface PointerRecord {
   x: number;
