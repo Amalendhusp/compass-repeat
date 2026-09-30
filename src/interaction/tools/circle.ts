@@ -286,14 +286,43 @@ export function evaluateEdges(doc: Doc, lines: IncircleLine[]): IncircleState {
   }
 }
 
-/** The edge under the finger, as a choice (null off any line). */
-function edgeUnder(doc: Doc, view: ViewTransform, sp: Vec2): IncircleLine | null {
-  const hit = curveCandidatesAt(doc, view, sp).find((h) => h.entity.kind === 'line');
-  if (!hit || hit.entity.kind !== 'line') return null;
+/** Sticky edge: once a press is on an edge, that edge stays the choice unless the finger comes
+ * clearly closer to another line — by more than this — or clearly past the crossing that ends the
+ * edge. Fingertips drift 2–8 px between touching and lifting, and in a dense construction the next
+ * line is often only 5–8 px away; without this, an ordinary tap on a phone could lift off the
+ * neighbouring line and choose it instead (a still mouse click never drifts). Deliberate slides
+ * still move the choice. */
+const STICKY_EDGE_PX = 10;
+
+type EdgeHit = { entity: Extract<Entity, { kind: 'line' }>; param: number; d: number };
+
+function lineHitsAt(doc: Doc, view: ViewTransform, sp: Vec2): EdgeHit[] {
+  return curveCandidatesAt(doc, view, sp).filter((h): h is EdgeHit => h.entity.kind === 'line');
+}
+
+/** The edge of `hit`'s line through its param, as a choice. */
+function edgeOf(doc: Doc, hit: EdgeHit): IncircleLine | null {
   const run = edgeRunAt(doc, hit.entity, hit.param);
   const g = resolveEntityGeom(doc, hit.entity);
   if (!run || g.kind !== 'line') return null;
   return { entityId: hit.entity.id, t0: run.t0, t1: run.t1, a: lineAt(g, run.t0), b: lineAt(g, run.t1) };
+}
+
+/** The edge the finger means now, given the edge it meant a moment ago (`held`). */
+function stickyEdge(doc: Doc, view: ViewTransform, sp: Vec2, held: IncircleLine | null): IncircleLine | null {
+  const hits = lineHitsAt(doc, view, sp);
+  const best = hits[0];
+  if (!best) return null;
+  if (!held) return edgeOf(doc, best);
+  const same = hits.find((h) => h.entity.id === held.entityId);
+  // The held line is out of reach, or another line is clearly closer: move on.
+  if (!same || same.d - best.d > STICKY_EDGE_PX) return edgeOf(doc, best);
+  // Still on the held line: keep its edge until the finger is clearly past either end of it.
+  const g = resolveEntityGeom(doc, same.entity);
+  if (g.kind !== 'line') return held;
+  const lenPx = Math.hypot(g.b.x - g.a.x, g.b.y - g.a.y) * view.zoom;
+  const beyond = Math.max(held.t0 - same.param, same.param - held.t1, 0) * lenPx;
+  return beyond > STICKY_EDGE_PX ? edgeOf(doc, same) : held;
 }
 
 /** The edges with `pick` toggled: the same edge again removes it, another edge of the same line
@@ -310,13 +339,15 @@ function toggleEdge(lines: IncircleLine[], pick: IncircleLine): IncircleLine[] {
 }
 
 /** Press: the edge under the finger is shown as chosen (or un-chosen) at once, with the circle if
- * that closes it; sliding moves to the edge now under the finger; lifting keeps it — and makes
- * the circle when there is one. A tap on empty canvas clears the chosen edges. */
+ * that closes it; sliding clearly onto another edge moves the choice there (small drift does not —
+ * see STICKY_EDGE_PX); lifting keeps it — and makes the circle when there is one. A tap on empty
+ * canvas clears the chosen edges. */
 function betweenEdgesGesture(controller: AppController, view: ViewTransform, screenPos: Vec2): Gesture {
   const doc = controller.doc;
   const before = controller.incircle ?? emptyEdges();
+  let held: IncircleLine | null = null;
   const at = (sp: Vec2): { state: IncircleState; offCurves: boolean } => {
-    const pick = edgeUnder(doc, view, sp);
+    const pick = (held = stickyEdge(doc, view, sp, held));
     if (!pick) return { state: before, offCurves: curveCandidatesAt(doc, view, sp).length === 0 };
     const lines = toggleEdge(before.lines, pick);
     return { state: lines === before.lines ? before : evaluateEdges(doc, lines), offCurves: false };
