@@ -1193,32 +1193,32 @@ function drawPreview(ctx: CanvasRenderingContext2D, controller: AppController, v
  * Arc's chosen centre) stays strongly highlighted — independent of the live
  * preview — and survives pinch/pan untouched, since it reads straight from controller.pending
  * rather than any gesture-local state. */
-/** Phase 5.12b/c: Circle → Between 3 Lines. Each chosen edge as one continuous Signal stroke with
- * its label; once three edges bound a nearby triangle, the triangle itself (a faint tint, a quiet
- * dashed outline and its three corners), the proposed incircle — a stronger dashed stroke over a
- * pale halo so it reads clearly over dense construction, yet never looks like committed geometry —
- * its centre, and the three tangency points. A circle too small to see at this zoom gets a locator
- * ring around its centre. */
+/** Phase 5.12b/c → 5.13: Circle → Between edges. Each chosen edge as one continuous Signal stroke
+ * (no labels — the canvas shows the state). Once the edges close a polygon with an exact circle:
+ * the polygon itself (a faint tint, a quiet dashed outline and its corners), the circle — a stronger
+ * dashed stroke over a pale halo so it reads clearly over dense construction, yet never looks like
+ * committed geometry — its centre, and every tangency point. A closed polygon with no such circle
+ * shows only its quiet dashed outline. A circle too small to see at this zoom gets a locator ring. */
 function drawIncircle(ctx: CanvasRenderingContext2D, controller: AppController, view: ViewTransform): void {
   const st = controller.incircle;
   if (controller.tool !== 'circle' || controller.circleVariant !== 'three-lines' || !st) return;
   ctx.save();
   const c = st.result;
-  if (c) {
-    const [A, Bv, Cv] = c.vertices.map((v) => worldToScreen(view, v));
-    const tri = new Path2D();
-    tri.moveTo(A!.x, A!.y);
-    tri.lineTo(Bv!.x, Bv!.y);
-    tri.lineTo(Cv!.x, Cv!.y);
-    tri.closePath();
-    ctx.fillStyle = color.signalLight;
-    ctx.globalAlpha = 0.45;
-    ctx.fill(tri);
-    ctx.globalAlpha = 1;
-    ctx.strokeStyle = color.signal;
+  if (st.polygon && st.polygon.length >= 3) {
+    const pts = st.polygon.map((v) => worldToScreen(view, v));
+    const poly = new Path2D();
+    pts.forEach((p, i) => (i === 0 ? poly.moveTo(p.x, p.y) : poly.lineTo(p.x, p.y)));
+    poly.closePath();
+    if (c) {
+      ctx.fillStyle = color.signalLight;
+      ctx.globalAlpha = 0.45;
+      ctx.fill(poly);
+      ctx.globalAlpha = 1;
+    }
+    ctx.strokeStyle = c ? color.signal : color.muted;
     ctx.lineWidth = 1;
     ctx.setLineDash([3, 3]);
-    ctx.stroke(tri);
+    ctx.stroke(poly);
     ctx.setLineDash([]);
   }
   st.lines.forEach((line) => {
@@ -1292,27 +1292,12 @@ function drawIncircle(ctx: CanvasRenderingContext2D, controller: AppController, 
       ctx.stroke();
     }
   }
-  // Labels last, so no preview stroke covers them.
-  st.lines.forEach((line, i) => {
-    const a = worldToScreen(view, line.a);
-    const b = worldToScreen(view, line.b);
-    const len = Math.hypot(b.x - a.x, b.y - a.y) || 1;
-    const n = { x: -(b.y - a.y) / len, y: (b.x - a.x) / len };
-    const mid = { x: (a.x + b.x) / 2, y: (a.y + b.y) / 2 };
-    // Put the label on the side away from the circle, when there is one.
-    let side = 1;
-    if (c) {
-      const cs = worldToScreen(view, c.centre);
-      if ((cs.x - mid.x) * n.x + (cs.y - mid.y) * n.y > 0) side = -1;
-    }
-    drawLabelPill(ctx, { x: mid.x + n.x * 18 * side, y: mid.y + n.y * 18 * side }, [`Edge ${i + 1}`], view);
-  });
   ctx.restore();
 }
 
-/** Phase 5.12d: Circle → Copy Radius. The whole source circle (every part of it, even trimmed ones —
- * it is the circle's radius being copied) flashes strongly when chosen, then stays quietly marked;
- * a centre chosen for the next copy shows as a ghost circle of exactly that radius. */
+/** Phase 5.12d/5.13: Circle → Copy circle. The whole source circle (every part of it, even trimmed
+ * ones — it is the circle's radius being copied) flashes strongly when chosen, then stays quietly
+ * marked; while a finger places the copy, the ghost circle of exactly that radius follows it. */
 function drawCopyRadius(ctx: CanvasRenderingContext2D, controller: AppController, view: ViewTransform): void {
   const st = controller.copyRadius;
   if (controller.tool !== 'circle' || controller.circleVariant !== 'copy-radius' || !st || st.radius === null) return;

@@ -1,20 +1,25 @@
-// Circle tool, spec §4.2 + the radius model (§3), Point Targets per Phase 3.4. Phase 5.2 item 17:
-// two modes — Set radius (centre, then a point or drag that fixes the radius; the radius is then
-// remembered) and Same radius (the remembered radius, placed at each new centre). The remembered
-// radius is shared with Arc (doc.toolPrefs.lastRadius).
+// Circle tool, spec §4.2 + the radius model (§3), Point Targets per Phase 3.4. Phase 5.13 — direct
+// manipulation, three ways, no buttons: finger down begins, a drag shows the live ghost, release
+// commits (Undo corrects; pointercancel abandons):
+// - By radius: press a centre, drag out (the radius end snaps to points), release. A tap on a centre
+//   and a later tap/drag for the radius still works. The radius is remembered for Arc.
+// - Between edges: tap 3–6 edges; the circle appears the moment they close a polygon that has one,
+//   and is made on that release.
+// - Copy circle: tap a circle to take its radius, then press/drag the copy into place — its centre
+//   snaps to points and slides along lines and curves — and release to make it. Repeat for more.
 
-import { addCircleEntity, addCircleWithExactRadius, addCircleWithRadius, addOnCurvePoint, addOrReuseFreePoint } from '../../model/doc.ts';
-import type { AppController, CopyRadiusState, IncircleLine, ViewTransform } from '../../app/controller.ts';
+import { addCircleEntity, addCircleWithExactRadius, addOnCurvePoint, addOrReuseFreePoint } from '../../model/doc.ts';
+import type { AppController, CopyRadiusState, IncircleLine, IncircleState, ViewTransform } from '../../app/controller.ts';
 import { screenToWorld } from '../../app/controller.ts';
 import { dist } from '../../geometry/vec.ts';
 import { curveCandidatesAt, isNearAnyCurve } from '../hittest.ts';
 import { deriveSegments, isParamTrimmed } from '../../geometry/segments.ts';
-import { incircleOfLines, type InfiniteLine } from '../../geometry/incircle.ts';
+import { circleInEdges, type EdgeInput } from '../../geometry/incircle.ts';
 import { buildNodeInset } from '../nodeinset.ts';
-import { confirmSnap, noPointGesture, PointHold, resolveTap, showNoPoint, SnapTracker } from '../snap.ts';
+import { confirmSnap, noPointGesture, PointHold, resolveTap, showNoPoint, SnapTracker, type SnapHit } from '../snap.ts';
 import { materializeRef, refAt, refFromHit, refLocation, type PointRef } from '../pointref.ts';
 import { showToast } from '../../ui/toast.ts';
-import type { Doc, Entity, Vec2 } from '../../model/types.ts';
+import type { Doc, Entity, EntityId, Vec2 } from '../../model/types.ts';
 import { resolveEntityGeom, epsilon, intersectEntities, projectOntoEntity } from '../../geometry/kernel.ts';
 import type { Gesture, ToolModule } from './types.ts';
 
@@ -34,82 +39,21 @@ function sameExisting(a: PointRef, b: PointRef): boolean {
   return a.kind === 'existing' && b.kind === 'existing' && a.id === b.id;
 }
 
-/** Same radius: press on a centre, see the circle, slide to another centre if needed, release to
- * place it. Nothing under the finger at release means nothing is created. */
-function sameRadiusGesture(controller: AppController, view: ViewTransform, screenPos: { x: number; y: number }, radius: number): Gesture | null {
-  const doc = controller.doc;
-  const tracker = new SnapTracker(doc);
-  let centre = tracker.pick(view, screenPos);
-  if (!centre) return tracker.noPoint ? noPointGesture(controller, tracker.noPoint) : null;
-  const show = () => {
-    controller.preview = centre ? { kind: 'circle', centre: centre.at, through: { x: centre.at.x + radius, y: centre.at.y } } : null;
-    controller.notifyView();
-  };
-  show();
-  const hold = new PointHold(controller, view, tracker, screenPos);
-  return {
-    onMove(sp) {
-      const held = hold.move(sp);
-      if (held !== undefined) {
-        centre = held;
-        show();
-        return;
-      }
-      if (hold.open) return;
-      centre = tracker.pick(view, sp);
-      controller.nodeInset = centre ? buildNodeInset(doc, view, sp, centre.at, tracker) : null;
-      show();
-    },
-    onUp(_sp, wasDrag) {
-      const held = hold.release();
-      if (held) centre = held;
-      const hit = centre;
-      controller.preview = null;
-      controller.nodeInset = null;
-      if (!hit) {
-        controller.notify();
-        return;
-      }
-      const place = (h: NonNullable<typeof hit>) => {
-        if (circleExists(doc, refFromHit(h), radius)) {
-          showToast('Already drawn');
-          controller.notify();
-          return;
-        }
-        controller.commit((d) => {
-          addCircleWithRadius(d, materializeRef(d, refFromHit(h)), radius);
-        });
-      };
-      if (wasDrag || held) {
-        confirmSnap(controller, hit);
-        place(hit);
-      } else resolveTap(controller, tracker, hit, place);
-    },
-    onCancel() {
-      hold.cancel();
-      controller.preview = null;
-      controller.nodeInset = null;
-      controller.notify();
-    },
-  };
-}
-
 export const circleTool: ToolModule = {
   id: 'circle',
   hint(controller) {
-    if (controller.circleVariant === 'three-lines') return incirclePrompt(controller);
-    if (controller.circleVariant === 'copy-radius') return copyRadiusPrompt(controller);
+    if (controller.circleVariant === 'three-lines') return 'Tap the edges around the circle';
+    if (controller.circleVariant === 'copy-radius') return controller.copyRadius?.radius ? 'Drag the copy into place' : 'Tap a circle';
     if (controller.pending?.kind === 'circle') {
       return controller.pointLockHint ? 'Point Targets · choose an existing point' : 'Drag to set the radius, or tap a point';
     }
     return 'Tap a point or a curve';
   },
   beginGesture(controller, view, screenPos): Gesture | null {
-    if (controller.circleVariant === 'three-lines') return threeLinesGesture(controller, view);
-    if (controller.circleVariant === 'copy-radius') return copyRadiusGesture(controller, view, screenPos);
+    if (controller.circleVariant === 'three-lines') return betweenEdgesGesture(controller, view, screenPos);
+    if (controller.circleVariant === 'copy-radius') return copyCircleGesture(controller, view, screenPos);
+    // Phase 5.13: By radius only — Same radius is now Copy circle (any circle's radius, exactly).
     const doc = controller.doc;
-    const remembered = doc.toolPrefs.lastRadius;
-    if (doc.toolPrefs.circleMode === 'same' && remembered) return sameRadiusGesture(controller, view, screenPos, remembered);
 
     const tracker = new SnapTracker(doc);
     let centreHit: ReturnType<SnapTracker['pick']> = null;
@@ -252,26 +196,21 @@ export const circleTool: ToolModule = {
   },
 };
 
-// ---- Phase 5.12b/c: Between 3 Lines — the circle inscribed in the triangle three edges bound ----
+// ---- Between edges (Phase 5.12b/c → 5.13): the exact circle inside 3–6 chosen edges ----
 //
-// Phase 5.12c: a tap chooses an EDGE — the continuous visible stretch of the tapped line between the
-// nearest genuine crossings with other curves on either side — because that is how an edge is read
-// in a dense construction. Division points, on-curve points, tangency contacts and collinear lines
-// do not break it (for this tool only; Select and Fair keep their own piece semantics). The whole
-// infinite line takes part in the geometry. Tapping a chosen edge again removes it; with three
-// chosen, a new edge replaces the most recent choice. The lines are used in a fixed order, so the
-// order edges were chosen in never changes the circle. The three edges must bound a triangle near
-// them — not merely have extensions that meet somewhere far away.
+// A tap chooses an EDGE — the continuous visible stretch of the tapped line between the nearest
+// genuine crossings with other curves on either side (Phase 5.12c) — because that is how an edge is
+// read in a dense construction. The whole infinite line takes part in the geometry. Tapping a chosen
+// edge again removes it; a tap on empty canvas clears them all. The edges are used in a fixed order
+// (by line id), so the order they were chosen in never changes the circle. The moment the chosen
+// edges close a polygon end to end that has one exact tangent circle (geometry/incircle.ts
+// circleInEdges), the circle shows while the finger is still down and is made when it lifts.
 
-const TRIANGLE_PROBLEM = 'These three lines do not form a triangle';
-const NOT_NEARBY_PROBLEM = 'These edges do not bound a nearby triangle';
+const MAX_EDGES = 6;
 const MIN_RADIUS_EPS = 20;
-/** Every triangle corner must lie within this many edge-lengths (the longest chosen edge) of the
- * two chosen edges that meet there — otherwise the triangle is somewhere else. */
-const NEARBY_EDGE_LENGTHS = 3;
 
-function emptyIncircle(): NonNullable<AppController['incircle']> {
-  return { lines: [], result: null, problem: null };
+function emptyEdges(): IncircleState {
+  return { lines: [], result: null, polygon: null, status: 'open' };
 }
 
 /** The chosen edges in a fixed order (by entity id), independent of the order they were tapped. */
@@ -321,134 +260,99 @@ export function edgeRunAt(doc: Doc, line: Extract<Entity, { kind: 'line' }>, par
   return t1 - t0 > 1e-12 ? { t0, t1 } : null;
 }
 
-function infiniteLine(doc: Doc, entityId: string): InfiniteLine | null {
-  const e = doc.entities.find((x) => x.id === entityId);
-  if (!e || e.kind !== 'line') return null;
-  const g = resolveEntityGeom(doc, e);
-  return g.kind === 'line' ? { a: g.a, b: g.b } : null;
-}
-
-function distToSegment(p: Vec2, a: Vec2, b: Vec2): number {
-  const dx = b.x - a.x;
-  const dy = b.y - a.y;
-  const l2 = dx * dx + dy * dy;
-  const t = l2 < 1e-24 ? 0 : Math.max(0, Math.min(1, ((p.x - a.x) * dx + (p.y - a.y) * dy) / l2));
-  return Math.hypot(a.x + dx * t - p.x, a.y + dy * t - p.y);
-}
-
-/** Recomputes the circle for the edges chosen so far (only three give one). */
-export function recomputeIncircle(controller: AppController): void {
-  const st = controller.incircle;
-  if (!st) return;
-  st.result = null;
-  st.problem = null;
-  if (st.lines.length < 3) return;
-  const edges = canonicalLines(st.lines);
-  const lines = edges.map((l) => infiniteLine(controller.doc, l.entityId));
-  if (lines.some((l) => !l)) {
-    st.problem = TRIANGLE_PROBLEM;
-    return;
+/** What the chosen edges make: open, never closable, closed without a circle, or the circle. */
+export function evaluateEdges(doc: Doc, lines: IncircleLine[]): IncircleState {
+  const edges = canonicalLines(lines);
+  const inputs: EdgeInput[] = [];
+  for (const l of edges) {
+    const e = doc.entities.find((x) => x.id === l.entityId);
+    if (!e || e.kind !== 'line') return { lines, result: null, polygon: null, status: 'invalid' };
+    const g = resolveEntityGeom(doc, e);
+    if (g.kind !== 'line') return { lines, result: null, polygon: null, status: 'invalid' };
+    inputs.push({ line: { a: g.a, b: g.b }, run: [l.a, l.b] });
   }
   // Smaller than this and its centre and tangency points would merge into each other (the model
   // merges points closer than epsilon), so it could not be built as a true tangent circle.
-  const r = incircleOfLines(lines as [InfiniteLine, InfiniteLine, InfiniteLine], epsilon(controller.doc) * MIN_RADIUS_EPS);
-  if (!r.ok) {
-    st.problem = r.reason === 'same-line' ? 'Two of these are the same line' : TRIANGLE_PROBLEM;
-    return;
+  const r = circleInEdges(inputs, { minRadius: epsilon(doc) * MIN_RADIUS_EPS });
+  switch (r.kind) {
+    case 'open':
+      return { lines, result: null, polygon: null, status: 'open' };
+    case 'invalid':
+      return { lines, result: null, polygon: null, status: 'invalid' };
+    case 'no-circle':
+      return { lines, result: null, polygon: r.polygon, status: 'no-circle' };
+    case 'circle':
+      return { lines, result: r.circle, polygon: r.polygon, status: 'circle' };
   }
-  // Local triangle: each chosen edge lies on its own side of the triangle, and each corner is near
-  // the two chosen edges that meet there.
-  const [A, Bv, Cv] = r.circle.vertices; // A opposite line 0 (on lines 1, 2), B opposite 1, C opposite 2
-  const sides: [Vec2, Vec2][] = [
-    [Bv, Cv],
-    [Cv, A],
-    [A, Bv],
-  ];
-  const longest = Math.max(...edges.map((e) => Math.hypot(e.b.x - e.a.x, e.b.y - e.a.y)));
-  const onSide = edges.every((e, i) => {
-    const g = lines[i]!;
-    const [p, q] = sides[i]!;
-    const tp = projectOntoEntityParam(g, p);
-    const tq = projectOntoEntityParam(g, q);
-    const lo = Math.max(Math.min(e.t0, e.t1), Math.min(tp, tq));
-    const hi = Math.min(Math.max(e.t0, e.t1), Math.max(tp, tq));
-    return hi - lo > 0.01 * Math.abs(e.t1 - e.t0);
-  });
-  const cornersNear = [
-    [A, 1, 2],
-    [Bv, 2, 0],
-    [Cv, 0, 1],
-  ].every(([v, i, j]) => {
-    const vv = v as Vec2;
-    const ei = edges[i as number]!;
-    const ej = edges[j as number]!;
-    return distToSegment(vv, ei.a, ei.b) <= NEARBY_EDGE_LENGTHS * longest && distToSegment(vv, ej.a, ej.b) <= NEARBY_EDGE_LENGTHS * longest;
-  });
-  if (!onSide || !cornersNear) {
-    st.problem = NOT_NEARBY_PROBLEM;
-    return;
-  }
-  st.result = r.circle;
 }
 
-function projectOntoEntityParam(g: InfiniteLine, p: Vec2): number {
-  const dx = g.b.x - g.a.x;
-  const dy = g.b.y - g.a.y;
-  return ((p.x - g.a.x) * dx + (p.y - g.a.y) * dy) / (dx * dx + dy * dy);
+/** The edge under the finger, as a choice (null off any line). */
+function edgeUnder(doc: Doc, view: ViewTransform, sp: Vec2): IncircleLine | null {
+  const hit = curveCandidatesAt(doc, view, sp).find((h) => h.entity.kind === 'line');
+  if (!hit || hit.entity.kind !== 'line') return null;
+  const run = edgeRunAt(doc, hit.entity, hit.param);
+  const g = resolveEntityGeom(doc, hit.entity);
+  if (!run || g.kind !== 'line') return null;
+  return { entityId: hit.entity.id, t0: run.t0, t1: run.t1, a: lineAt(g, run.t0), b: lineAt(g, run.t1) };
 }
 
-export function incirclePrompt(controller: AppController): string {
-  const st = controller.incircle;
-  const n = st?.lines.length ?? 0;
-  if (st?.problem) return n === 3 ? `${st.problem} · tap a chosen edge to swap it` : st.problem;
-  if (n < 3) return `Tap Edge ${n + 1}`;
-  return 'Edges 1–3 · incircle shown';
+/** The edges with `pick` toggled: the same edge again removes it, another edge of the same line
+ * moves that line's choice, a new line is added (up to six). */
+function toggleEdge(lines: IncircleLine[], pick: IncircleLine): IncircleLine[] {
+  const out = [...lines];
+  const i = out.findIndex((l) => l.entityId === pick.entityId);
+  if (i >= 0) {
+    if (Math.abs(out[i]!.t0 - pick.t0) < 1e-9 && Math.abs(out[i]!.t1 - pick.t1) < 1e-9) out.splice(i, 1);
+    else out[i] = pick;
+  } else if (out.length < MAX_EDGES) out.push(pick);
+  else return lines;
+  return out;
 }
 
-/** A tap chooses (or un-chooses) the edge under the finger; a drag does nothing. */
-function threeLinesGesture(controller: AppController, view: ViewTransform): Gesture {
+/** Press: the edge under the finger is shown as chosen (or un-chosen) at once, with the circle if
+ * that closes it; sliding moves to the edge now under the finger; lifting keeps it — and makes
+ * the circle when there is one. A tap on empty canvas clears the chosen edges. */
+function betweenEdgesGesture(controller: AppController, view: ViewTransform, screenPos: Vec2): Gesture {
+  const doc = controller.doc;
+  const before = controller.incircle ?? emptyEdges();
+  const at = (sp: Vec2): { state: IncircleState; offCurves: boolean } => {
+    const pick = edgeUnder(doc, view, sp);
+    if (!pick) return { state: before, offCurves: curveCandidatesAt(doc, view, sp).length === 0 };
+    const lines = toggleEdge(before.lines, pick);
+    return { state: lines === before.lines ? before : evaluateEdges(doc, lines), offCurves: false };
+  };
+  let now = at(screenPos);
+  controller.incircle = now.state;
+  controller.notifyView();
   return {
-    onMove() {},
+    onMove(sp) {
+      now = at(sp);
+      controller.incircle = now.state;
+      controller.notifyView();
+    },
     onUp(sp, wasDrag) {
-      if (wasDrag) return;
-      const doc = controller.doc;
-      const prev = controller.incircle ?? emptyIncircle();
-      const near = curveCandidatesAt(doc, view, sp);
-      const hit = near.find((h) => h.entity.kind === 'line');
-      const run = hit && hit.entity.kind === 'line' ? edgeRunAt(doc, hit.entity, hit.param) : null;
-      if (!hit || hit.entity.kind !== 'line' || !run) {
-        // With three edges already chosen, a stray tap changes nothing; before that, say what's wanted.
-        if (prev.lines.length === 3) return;
-        controller.incircle = { lines: prev.lines, result: null, problem: near.length > 0 ? 'Choose a straight edge' : 'Tap an edge' };
-        controller.notify();
-        return;
-      }
-      const g = resolveEntityGeom(doc, hit.entity);
-      if (g.kind !== 'line') return;
-      const pick: IncircleLine = { entityId: hit.entity.id, t0: run.t0, t1: run.t1, a: lineAt(g, run.t0), b: lineAt(g, run.t1) };
-      const lines = [...prev.lines];
-      const i = lines.findIndex((l) => l.entityId === pick.entityId);
-      if (i >= 0) {
-        // The same line again: tapping the chosen edge removes it; another edge of it moves the choice.
-        if (Math.abs(lines[i]!.t0 - pick.t0) < 1e-9 && Math.abs(lines[i]!.t1 - pick.t1) < 1e-9) lines.splice(i, 1);
-        else lines[i] = pick;
-      } else if (lines.length < 3) lines.push(pick);
-      else lines[2] = pick;
-      controller.incircle = { lines, result: null, problem: null };
-      recomputeIncircle(controller);
+      now = at(sp);
+      if (now.state.status === 'circle') {
+        createFromEdges(controller, now.state);
+      } else if (now.state === before && now.offCurves && !wasDrag) {
+        controller.incircle = emptyEdges();
+      } else controller.incircle = now.state;
       controller.notify();
     },
-    onCancel() {},
+    onCancel() {
+      controller.incircle = before;
+      controller.notify();
+    },
   };
 }
 
-/** Commits the previewed circle as one undoable step: its centre (an existing point if one is
- * already there) and a through-point at the exact tangency on the first line (in fixed order);
- * the other two tangencies are materialized like any other crossing. */
-export function createIncircle(controller: AppController): void {
-  const st = controller.incircle;
-  const c = st?.result;
-  if (!st || !c) return;
+/** Makes the circle as one undoable step: its centre (an existing point if one is already there)
+ * and a through-point at the exact tangency on the first line (in fixed order); the other
+ * tangencies are materialized like any other crossing. The chosen edges are then cleared. */
+function createFromEdges(controller: AppController, state: IncircleState): void {
+  const c = state.result;
+  controller.incircle = emptyEdges();
+  if (!c) return;
   const doc = controller.doc;
   const tol = epsilon(doc) * 100;
   const exists = doc.entities.some((e) => {
@@ -460,47 +364,45 @@ export function createIncircle(controller: AppController): void {
     showToast('Already drawn');
     return;
   }
-  const first = canonicalLines(st.lines)[0]!;
+  const first = canonicalLines(state.lines)[0]!;
   controller.commit((d) => {
     const centre = addOrReuseFreePoint(d, c.centre);
-    const through = addOnCurvePoint(d, first.entityId, c.params[0], c.feet[0]);
+    const through = addOnCurvePoint(d, first.entityId, c.params[0]!, c.feet[0]!);
     addCircleEntity(d, centre, through);
   });
-  controller.incircle = emptyIncircle();
-  controller.notify();
 }
 
-export function cancelIncircle(controller: AppController): void {
-  controller.incircle = emptyIncircle();
-  controller.notify();
-}
-
-// ---- Phase 5.12d: Copy Radius — any existing circle's exact radius, at new centres ----
+// ---- Copy circle (Phase 5.12d → 5.13): any circle's exact radius, placed by dragging ----
 //
-// Once made, a circle is just a centre and a radius, however it was constructed (Centre–Radius,
-// Same radius, Between 3 Lines…). Tap the circle itself — anywhere on it — and its radius is read
-// exactly from its stored geometry (never measured from the screen). Then press a point to see a
-// ghost circle of that radius there (slide to another point to move it), release to keep the ghost,
-// and Create commits it as its own undo step. The mode stays ready for the next centre until Done
-// (or another tool).
+// Once made, a circle is just a centre and a radius, however it was constructed. Tap the circle
+// itself — anywhere on it — and its radius is read exactly from its stored geometry (never measured
+// from the screen). Then press where the copy should go: the whole ghost circle follows the finger,
+// its centre snapping to a point near the finger, otherwise sliding along the line or curve under
+// it (for placing only — Point Targets are unchanged). Release makes it (one undo step) and the same
+// radius stays ready for the next copy. A tap on a bare circle takes that circle's radius instead;
+// nothing under the finger means nothing is made. The centre point itself is created only on release.
 
 const SOURCE_FLASH_MS = 1200;
 
 function copyState(controller: AppController): CopyRadiusState {
-  return controller.copyRadius ?? { sourceId: null, radius: null, flashUntil: 0, centre: null, centreAt: null, note: null };
+  return controller.copyRadius ?? { sourceId: null, radius: null, flashUntil: 0, centreAt: null };
 }
 
-export function copyRadiusPrompt(controller: AppController): string {
-  const st = controller.copyRadius;
-  if (st?.note) return st.note;
-  if (!st?.radius) return 'Tap a circle to copy its radius';
-  if (st.centre) return 'Same radius · Create, or choose another centre';
-  return 'Same radius · Select centre';
+/** Takes `circleId`'s radius exactly, and flashes it. */
+function captureRadius(controller: AppController, circleId: EntityId): boolean {
+  const e = controller.doc.entities.find((x) => x.id === circleId);
+  const g = e ? resolveEntityGeom(controller.doc, e) : null;
+  if (!g || g.kind !== 'circle') return false;
+  controller.copyRadius = { sourceId: circleId, radius: g.radius, flashUntil: performance.now() + SOURCE_FLASH_MS, centreAt: null };
+  setTimeout(() => controller.notifyView(), SOURCE_FLASH_MS + 30);
+  return true;
 }
 
-function copyRadiusGesture(controller: AppController, view: ViewTransform, screenPos: { x: number; y: number }): Gesture | null {
-  const st = copyState(controller);
+type Placement = { kind: 'point'; hit: SnapHit; at: Vec2 } | { kind: 'curve'; host: EntityId; circle: boolean; at: Vec2 };
+
+function copyCircleGesture(controller: AppController, view: ViewTransform, screenPos: Vec2): Gesture {
   const doc = controller.doc;
+  const st = copyState(controller);
 
   if (st.radius === null) {
     // Choosing the source: a tap on any circle (or arc) — its curve, not a point on it.
@@ -509,113 +411,85 @@ function copyRadiusGesture(controller: AppController, view: ViewTransform, scree
       onUp(sp, wasDrag) {
         if (wasDrag) return;
         const hit = curveCandidatesAt(doc, view, sp).find((h) => h.entity.kind === 'circle');
-        const g = hit ? resolveEntityGeom(doc, hit.entity) : null;
-        if (!hit || !g || g.kind !== 'circle') {
-          controller.copyRadius = { ...st, note: 'Tap a circle' };
-          controller.notify();
-          return;
-        }
-        const until = performance.now() + SOURCE_FLASH_MS;
-        controller.copyRadius = { sourceId: hit.entity.id, radius: g.radius, flashUntil: until, centre: null, centreAt: null, note: null };
-        setTimeout(() => controller.notifyView(), SOURCE_FLASH_MS + 30);
-        controller.notify();
+        if (hit && captureRadius(controller, hit.entity.id)) controller.notify();
       },
       onCancel() {},
     };
   }
 
-  // Choosing a centre: the ghost follows the finger over points; release keeps it for Create.
   const radius = st.radius;
   const tracker = new SnapTracker(doc);
-  let centre = tracker.pick(view, screenPos);
-  if (!centre) return tracker.noPoint ? noPointGesture(controller, tracker.noPoint) : null;
-  const show = () => {
-    controller.preview = centre ? { kind: 'circle', centre: centre.at, through: { x: centre.at.x + radius, y: centre.at.y } } : null;
+  const placeAt = (sp: Vec2): Placement | null => {
+    const hit = tracker.pick(view, sp);
+    if (hit?.id) return { kind: 'point', hit, at: hit.at };
+    const curve = curveCandidatesAt(doc, view, sp)[0];
+    if (!curve) return null;
+    const g = resolveEntityGeom(doc, curve.entity);
+    const at =
+      g.kind === 'line'
+        ? lineAt(g, curve.param)
+        : { x: g.centre.x + g.radius * Math.cos(curve.param), y: g.centre.y + g.radius * Math.sin(curve.param) };
+    return { kind: 'curve', host: curve.entity.id, circle: curve.entity.kind === 'circle', at };
+  };
+  let place = placeAt(screenPos);
+  const show = (sp: Vec2) => {
+    controller.copyRadius = { ...copyState(controller), centreAt: place?.at ?? null };
+    controller.nodeInset = place?.kind === 'point' ? buildNodeInset(doc, view, sp, place.at, tracker) : null;
     controller.notifyView();
   };
-  show();
+  show(screenPos);
   const hold = new PointHold(controller, view, tracker, screenPos);
+  const clear = () => {
+    controller.copyRadius = { ...copyState(controller), centreAt: null };
+    controller.nodeInset = null;
+    controller.preview = null;
+  };
   return {
     onMove(sp) {
       const held = hold.move(sp);
       if (held !== undefined) {
-        centre = held;
-        show();
+        place = { kind: 'point', hit: held, at: held.at };
+        show(sp);
         return;
       }
       if (hold.open) return;
-      centre = tracker.pick(view, sp);
-      controller.nodeInset = centre ? buildNodeInset(doc, view, sp, centre.at, tracker) : null;
-      show();
+      place = placeAt(sp);
+      show(sp);
     },
-    onUp(_sp, wasDrag) {
+    onUp(sp, wasDrag) {
       const held = hold.release();
-      if (held) centre = held;
-      const hit = centre;
-      controller.preview = null;
-      controller.nodeInset = null;
-      if (!hit) {
+      if (held) place = { kind: 'point', hit: held, at: held.at };
+      else if (!hold.open) place = placeAt(sp);
+      clear();
+      const p = place;
+      if (!p) {
         controller.notify();
         return;
       }
-      const keep = (h: NonNullable<typeof hit>) => {
-        controller.copyRadius = { ...copyState(controller), centre: refFromHit(h), centreAt: h.at, note: null };
-      };
-      if (wasDrag || held) {
-        confirmSnap(controller, hit);
-        keep(hit);
-      } else resolveTap(controller, tracker, hit, keep);
+      // A plain tap on a bare circle takes its radius (the way a radius is chosen in the first place).
+      if (p.kind === 'curve' && p.circle && !wasDrag) {
+        captureRadius(controller, p.host);
+        controller.notify();
+        return;
+      }
+      const centre: PointRef = p.kind === 'point' ? refFromHit(p.hit) : refAt(p.at);
+      if (circleExists(doc, centre, radius)) {
+        showToast('Already drawn');
+        controller.notify();
+        return;
+      }
+      if (p.kind === 'point') confirmSnap(controller, p.hit);
+      controller.commit((d) => {
+        // A centre on a line or curve becomes a point there only now, as the circle is made.
+        const centreId = centre.kind === 'free' ? addOrReuseFreePoint(d, centre.at) : materializeRef(d, centre);
+        addCircleWithExactRadius(d, centreId, radius);
+      });
       controller.notify();
     },
     onCancel() {
       hold.cancel();
-      controller.preview = null;
-      controller.nodeInset = null;
+      clear();
       controller.notify();
     },
   };
-}
-
-/** Creates the ghost circle: the chosen centre, and exactly the source radius. One undo step. */
-export function createCopiedCircle(controller: AppController): void {
-  const st = controller.copyRadius;
-  if (!st?.centre || st.radius === null) return;
-  const { centre, radius } = st;
-  if (circleExists(controller.doc, centre, radius)) {
-    showToast('Already drawn');
-    return;
-  }
-  controller.commit((d) => {
-    addCircleWithExactRadius(d, materializeRef(d, centre), radius);
-  });
-  controller.copyRadius = { ...st, centre: null, centreAt: null, note: null };
-  controller.notify();
-}
-
-/** Leaves placement: back to choosing a circle to copy. */
-export function finishCopyRadius(controller: AppController): void {
-  controller.copyRadius = null;
-  controller.preview = null;
-  controller.notify();
-}
-
-// ---- Phase 5.12e: the compact Circle ribbon's short status words ----
-
-/** Between 3 Lines, in two or three words — the canvas shows the rest. */
-export function incircleStatus(controller: AppController): string {
-  const st = controller.incircle;
-  const n = st?.lines.length ?? 0;
-  if (st?.problem === TRIANGLE_PROBLEM) return 'Not a triangle';
-  if (st?.problem === NOT_NEARBY_PROBLEM) return 'Not nearby';
-  if (st?.problem === 'Two of these are the same line') return 'Same line twice';
-  if (st?.problem === 'Choose a straight edge') return 'Lines only';
-  if (st?.problem) return st.problem;
-  return n < 3 ? `Edge ${n + 1} of 3` : '';
-}
-
-/** Copy Radius, in two words. */
-export function copyRadiusStatus(controller: AppController): string {
-  const st = controller.copyRadius;
-  if (!st?.radius) return 'Tap circle';
-  return st.centre ? '' : 'Select centre';
 }

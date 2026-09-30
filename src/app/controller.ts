@@ -3,26 +3,24 @@ import type { PointDependent } from '../model/doc.ts';
 import { cloneDoc } from '../model/doc.ts';
 import { invalidatePointFacts } from '../geometry/usage.ts';
 import type { PointRef } from '../interaction/pointref.ts';
-import type { Incircle } from '../geometry/incircle.ts';
+import type { EdgeCircle } from '../geometry/incircle.ts';
 
 /** Phase 5.2 item 1: Polygon is no longer a creation tool (connected Lines make any polygon);
  * existing polygon groups stay fully supported as data and as Select targets. */
 export type ToolId = 'select' | 'circle' | 'line' | 'arc' | 'divide' | 'fair' | 'fill';
 
-/** Phase 5.12b: Circle's two ways of making a circle. */
+/** Circle's three ways of making a circle (Phase 5.13 labels: By radius · Between edges · Copy circle). */
 export type CircleVariant = 'centre-radius' | 'three-lines' | 'copy-radius';
 
-/** Phase 5.12d: Circle → Copy Radius. `sourceId`/`radius` once a circle has been chosen (the radius
- * read exactly from its stored geometry); `centre`/`centreAt` once a centre has been chosen for the
- * next copy (shown as a ghost until Create). */
+/** Phase 5.12d/5.13: Circle → Copy circle. `sourceId`/`radius` once a circle has been tapped (the
+ * radius read exactly from its stored geometry); `centreAt` is where the ghost copy is while a finger
+ * is placing it. */
 export interface CopyRadiusState {
   sourceId: EntityId | null;
   radius: number | null;
   /** The source is shown strongly until this time (ms, performance.now), then quietly. */
   flashUntil: number;
-  centre: PointRef | null;
   centreAt: Vec2 | null;
-  note: string | null;
 }
 
 /** Phase 5.12b/c: one edge chosen for Circle → Between 3 Lines — the whole (infinite) line takes
@@ -37,11 +35,14 @@ export interface IncircleLine {
 }
 
 export interface IncircleState {
+  /** The chosen edges (3–6 make a circle). */
   lines: IncircleLine[];
-  /** Set once three lines are chosen and they bound a triangle. */
-  result: Incircle | null;
-  /** Why three chosen lines give no circle, or a short note after a tap that chose nothing. */
-  problem: string | null;
+  /** 'open': not closed yet · 'invalid': these edges can never close one convex polygon ·
+   * 'no-circle': closed, but no single circle touches every side · 'circle': `result` is it. */
+  status: 'open' | 'invalid' | 'no-circle' | 'circle';
+  /** The closed polygon's corners, once the edges close one. */
+  polygon: Vec2[] | null;
+  result: EdgeCircle | null;
 }
 
 /** Tools implemented in this pass; the rest render in the dock but are inert (§ "do not attempt the entire app in one pass"). */
@@ -527,8 +528,8 @@ export class AppController {
     this.lineChoice = null;
     // Phase 5.12b: chosen lines may not exist in the other snapshot — choose again.
     this.incircle = null;
-    // Phase 5.12d: keep copying the same radius after an Undo, but drop a not-yet-created centre.
-    if (this.copyRadius) this.copyRadius = { ...this.copyRadius, centre: null, centreAt: null, note: null };
+    // Phase 5.12d: keep copying the same radius after an Undo.
+    if (this.copyRadius) this.copyRadius = { ...this.copyRadius, centreAt: null };
     this.notify();
   }
 
