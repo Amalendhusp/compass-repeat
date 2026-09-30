@@ -106,29 +106,27 @@ export function incircleOfLines(lines: [InfiniteLine, InfiniteLine, InfiniteLine
   };
 }
 
-// ---- Phase 5.13: Between edges — one exact circle tangent to 3–6 chosen edges ----
+// ---- Phase 5.13b: Between edges — an ordered chain of supporting lines, closed on purpose ----
 //
-// The chosen edges (visible runs of lines, each between the nearest genuine crossings) must close
-// a convex polygon END TO END: each edge lies wholly on one side of every other chosen line, the
-// region those sides enclose is bounded, and every side of it is exactly one chosen edge — each
-// corner is where two chosen edges meet. (So three of a pentagon's five lines never "close" the
-// larger triangle they happen to form; the pentagon closes when its fifth edge is chosen.) A circle
-// inside such a polygon and tangent to every side exists only for a tangential polygon (every
-// triangle; squares, rhombi, kites, regular polygons…) — it is found exactly or not at all, never
-// fitted. Three edges use the triangle incircle above, so a triangle's circle is unchanged to the
-// last bit.
+// Each chosen edge stands for its whole supporting line, with the place it was tapped. The chain's
+// order is the polygon's order: consecutive lines meet at its corners (L1∩L2, L2∩L3, …), and only
+// when the first edge is tapped again does the last line close it (Ln∩L1). A corner counts only
+// where it is really drawn from the tap along that line (the caller's `reachable`: inside the
+// line's own span, through no trimmed piece — other curves crossing it do not matter), each tap
+// must lie between its two corners, and the polygon must be convex and wind once. A circle inside
+// it tangent to every side exists only for a tangential polygon (every triangle; squares, rhombi,
+// kites, regular polygons…) — it is found exactly or not at all, never fitted. Three lines use the
+// triangle incircle above, so a triangle's circle is the same to the last bit as before.
 
 /** Residual tangency error allowed, relative to the polygon's size: exact up to floating-point
  * rounding of constructed geometry (~1e-13), far below anything a drawing could show. */
 const EXACT_REL = 1e-9;
-/** A corner and the end of an edge are the same place within this (relative to the polygon's size). */
-const CORNER_REL = 1e-7;
 
-export interface EdgeInput {
-  /** The whole line (its entity's two defining points); feet and params refer to it. */
+export interface ChainInput {
+  /** The whole supporting line (its entity's two defining points); feet and params refer to it. */
   line: InfiniteLine;
-  /** The chosen edge: the visible run of that line. */
-  run: [Vec2, Vec2];
+  /** Where it was tapped. */
+  tap: Vec2;
 }
 
 export interface EdgeCircle {
@@ -138,19 +136,31 @@ export interface EdgeCircle {
   feet: Vec2[];
   /** Each foot as a parameter along its line (0 at `a`, 1 at `b`). */
   params: number[];
-  /** The polygon's corners, in order around it. */
+  /** The polygon's corners, in chain order (L1∩L2, L2∩L3, …, Ln∩L1). */
   vertices: Vec2[];
 }
 
-export type EdgeSetResult =
-  /** Not closed end to end (yet) — more edges may close it. */
-  | { kind: 'open' }
-  /** These edges can never close one convex boundary (the same line twice; an edge crossing
-   * another chosen line; a line that is not one of the sides; an edge off its side). */
-  | { kind: 'invalid'; reason: 'same-line' | 'crossing' | 'not-a-side' }
+export type ChainResult =
+  /** A consistent chain, not closed. `corners[i]` = line i ∩ line i+1. */
+  | { kind: 'open'; corners: Vec2[] }
+  /** Inconsistent: two consecutive lines parallel, a corner not reached along drawn geometry, a tap
+   * outside its corners, or a chain that bends both ways / winds more than once. */
+  | { kind: 'invalid'; reason: 'parallel' | 'unreachable' | 'order' | 'not-convex'; corners: Vec2[] }
   /** Closed, but no single circle touches every side. */
   | { kind: 'no-circle'; polygon: Vec2[]; residual: number }
   | { kind: 'circle'; polygon: Vec2[]; circle: EdgeCircle; residual: number };
+
+export interface ChainOptions {
+  /** Close the chain (the first edge was tapped again). */
+  close: boolean;
+  /** Line i is really drawn all the way from its tap to `to`. */
+  reachable: (i: number, to: Vec2) => boolean;
+  /** How far (world units) a tap may lie beyond one of its corners and still count as between them. */
+  tapSlack?: number;
+  minRadius?: number;
+  /** The fixed order to solve the circle in (e.g. by entity id), so tap order never changes it. */
+  solveOrder?: number[];
+}
 
 function distToSeg(p: Vec2, a: Vec2, b: Vec2): number {
   const dx = b.x - a.x;
@@ -182,108 +192,84 @@ function solve3(m: number[][], v: number[]): number[] | null {
   return x;
 }
 
-/**
- * The exact circle tangent to every chosen edge's line, inside the convex polygon the edges close
- * end to end — or why there is none. Pass the edges in a fixed order (the caller sorts by entity
- * id) so the result never depends on the order they were chosen in. `minRadius` is the smallest
- * circle worth making.
- */
-export function circleInEdges(edges: EdgeInput[], opts: { minRadius?: number } = {}): EdgeSetResult {
-  const n = edges.length;
-  if (n < 3) return { kind: 'open' };
-  const dirs = edges.map((e) => unitDir(e.line));
-  if (dirs.some((d) => d === null)) return { kind: 'invalid', reason: 'same-line' };
-  const d = dirs as Vec2[];
-  let lo = { x: Infinity, y: Infinity };
-  let hi = { x: -Infinity, y: -Infinity };
-  for (const e of edges) for (const p of e.run) {
-    lo = { x: Math.min(lo.x, p.x), y: Math.min(lo.y, p.y) };
-    hi = { x: Math.max(hi.x, p.x), y: Math.max(hi.y, p.y) };
-  }
-  const scale = Math.max(Math.hypot(hi.x - lo.x, hi.y - lo.y), 1e-9);
-  const tol = 1e-9 * scale;
+const turnOf = (p: Vec2, q: Vec2, r: Vec2) => (q.x - p.x) * (r.y - q.y) - (q.y - p.y) * (r.x - q.x);
 
-  // The same line chosen twice (parallel and on top of each other).
-  for (let i = 0; i < n; i++) {
-    for (let j = i + 1; j < n; j++) {
-      if (Math.abs(d[i]!.x * d[j]!.y - d[i]!.y * d[j]!.x) >= PARALLEL_SIN) continue;
-      const off = Math.abs((edges[j]!.line.a.x - edges[i]!.line.a.x) * d[i]!.y - (edges[j]!.line.a.y - edges[i]!.line.a.y) * d[i]!.x);
-      if (off < 1e-9 * (1 + Math.hypot(edges[i]!.line.a.x, edges[i]!.line.a.y))) return { kind: 'invalid', reason: 'same-line' };
-    }
-  }
+/** The chain's polygon (open, or closed on request) and — once closed — its exact circle. */
+export function chainPolygon(lines: ChainInput[], opts: ChainOptions): ChainResult {
+  const n = lines.length;
+  const d = lines.map((l) => unitDir(l.line));
+  if (d.some((v) => v === null)) return { kind: 'invalid', reason: 'parallel', corners: [] };
+  const dir = d as Vec2[];
+  const along = (i: number, p: Vec2) => (p.x - lines[i]!.line.a.x) * dir[i]!.x + (p.y - lines[i]!.line.a.y) * dir[i]!.y;
+  const slack = opts.tapSlack ?? 0;
+  const meet = (i: number, j: number): Vec2 | null =>
+    Math.abs(dir[i]!.x * dir[j]!.y - dir[i]!.y * dir[j]!.x) < PARALLEL_SIN ? null : cross2(lines[i]!.line, dir[i]!, lines[j]!.line, dir[j]!);
+  const between = (i: number, p: Vec2, q: Vec2) => {
+    const t = along(i, lines[i]!.tap);
+    return Math.min(along(i, p), along(i, q)) - slack < t && t < Math.max(along(i, p), along(i, q)) + slack;
+  };
 
-  // Each line's inward normal: the side every other chosen edge lies on. An edge reaching across
-  // another chosen line means the edges cannot be the sides of one convex polygon.
-  const normals: Vec2[] = [];
-  const offsets: number[] = [];
+  // Consecutive corners, each really reached along both of its lines from their taps.
+  const corners: Vec2[] = [];
+  for (let i = 0; i + 1 < n; i++) {
+    const c = meet(i, i + 1);
+    if (!c) return { kind: 'invalid', reason: 'parallel', corners };
+    corners.push(c);
+    if (!opts.reachable(i, c) || !opts.reachable(i + 1, c)) return { kind: 'invalid', reason: 'unreachable', corners };
+  }
+  for (let i = 1; i + 1 < n; i++) if (!between(i, corners[i - 1]!, corners[i]!)) return { kind: 'invalid', reason: 'order', corners };
+  // An open chain bends one way only.
+  const path = [lines[0]!.tap, ...corners, lines[n - 1]!.tap];
+  let sign = 0;
+  for (let i = 0; i + 2 < path.length; i++) {
+    const s = Math.sign(turnOf(path[i]!, path[i + 1]!, path[i + 2]!));
+    if (s && sign && s !== sign) return { kind: 'invalid', reason: 'not-convex', corners };
+    if (s) sign = s;
+  }
+  if (!opts.close || n < 3) return { kind: 'open', corners };
+
+  // Closing: the last line meets the first, locally.
+  const last = meet(n - 1, 0);
+  if (!last) return { kind: 'invalid', reason: 'parallel', corners };
+  if (!opts.reachable(n - 1, last) || !opts.reachable(0, last)) return { kind: 'invalid', reason: 'unreachable', corners };
+  if (!between(0, last, corners[0]!) || !between(n - 1, corners[n - 2]!, last)) return { kind: 'invalid', reason: 'order', corners };
+  const polygon = [...corners, last];
+  // Convex and winding once: every turn the same way, turning 360° in all.
+  let total = 0;
+  sign = 0;
   for (let i = 0; i < n; i++) {
-    let nx = -d[i]!.y;
-    let ny = d[i]!.x;
-    let o = nx * edges[i]!.line.a.x + ny * edges[i]!.line.a.y;
-    const val = (p: Vec2) => nx * p.x + ny * p.y - o;
-    let sum = 0;
-    for (let j = 0; j < n; j++) if (j !== i) sum += val({ x: (edges[j]!.run[0].x + edges[j]!.run[1].x) / 2, y: (edges[j]!.run[0].y + edges[j]!.run[1].y) / 2 });
-    if (sum < 0) {
+    const p = polygon[(i + n - 1) % n]!;
+    const q = polygon[i]!;
+    const r = polygon[(i + 1) % n]!;
+    const s = Math.sign(turnOf(p, q, r));
+    if (!s || (sign && s !== sign)) return { kind: 'invalid', reason: 'not-convex', corners: polygon };
+    sign = s;
+    total += Math.atan2((q.x - p.x) * (r.y - q.y) - (q.y - p.y) * (r.x - q.x), (q.x - p.x) * (r.x - q.x) + (q.y - p.y) * (r.y - q.y));
+  }
+  if (Math.abs(Math.abs(total) - 2 * Math.PI) > 1e-6) return { kind: 'invalid', reason: 'not-convex', corners: polygon };
+
+  // Side i runs from corner i-1 (line i-1 ∩ line i) to corner i (line i ∩ line i+1).
+  const side = (i: number): [Vec2, Vec2] => [polygon[(i + n - 1) % n]!, polygon[i]!];
+  const cx = polygon.reduce((s, p) => s + p.x, 0) / n;
+  const cy = polygon.reduce((s, p) => s + p.y, 0) / n;
+  const size = Math.max(...polygon.map((p) => Math.hypot(p.x - cx, p.y - cy))) * 2;
+  // Inward normals (towards the polygon's inside).
+  const normals = lines.map((l, i) => {
+    let nx = -dir[i]!.y;
+    let ny = dir[i]!.x;
+    let o = nx * l.line.a.x + ny * l.line.a.y;
+    if (nx * cx + ny * cy - o < 0) {
       nx = -nx;
       ny = -ny;
       o = -o;
     }
-    for (let j = 0; j < n; j++) {
-      if (j === i) continue;
-      const [p, q] = edges[j]!.run;
-      const m = { x: (p.x + q.x) / 2, y: (p.y + q.y) / 2 };
-      if (val(m) <= tol || val(p) < -tol || val(q) < -tol) return { kind: 'invalid', reason: 'crossing' };
-    }
-    normals.push({ x: nx, y: ny });
-    offsets.push(o);
-  }
-
-  // Bounded: the inward normals leave no gap of half a turn or more.
-  const angles = normals.map((v) => Math.atan2(v.y, v.x)).sort((a, b) => a - b);
-  let maxGap = angles[0]! + Math.PI * 2 - angles[n - 1]!;
-  for (let k = 1; k < n; k++) maxGap = Math.max(maxGap, angles[k]! - angles[k - 1]!);
-  if (maxGap >= Math.PI - 1e-9) return { kind: 'open' };
-
-  // The polygon: every crossing of two chosen lines that lies inside all the half-planes.
-  const inside = (p: Vec2) => normals.every((v, k) => v.x * p.x + v.y * p.y - offsets[k]! >= -tol);
-  const corners: Vec2[] = [];
-  for (let i = 0; i < n; i++) {
-    for (let j = i + 1; j < n; j++) {
-      if (Math.abs(d[i]!.x * d[j]!.y - d[i]!.y * d[j]!.x) < PARALLEL_SIN) continue;
-      const p = cross2(edges[i]!.line, d[i]!, edges[j]!.line, d[j]!);
-      if (inside(p) && !corners.some((q) => Math.hypot(q.x - p.x, q.y - p.y) <= tol)) corners.push(p);
-    }
-  }
-  const cx = corners.reduce((s, p) => s + p.x, 0) / corners.length;
-  const cy = corners.reduce((s, p) => s + p.y, 0) / corners.length;
-  const polygon = corners.sort((p, q) => Math.atan2(p.y - cy, p.x - cx) - Math.atan2(q.y - cy, q.x - cx));
-
-  // Every chosen line is a side (two distinct corners on it) with its edge on it; closed when every
-  // side is exactly its edge — end to end, corner to corner.
-  const sides: [Vec2, Vec2][] = [];
-  let closed = true;
-  const cornerTol = CORNER_REL * scale;
-  for (let i = 0; i < n; i++) {
-    const along = (p: Vec2) => (p.x - edges[i]!.line.a.x) * d[i]!.x + (p.y - edges[i]!.line.a.y) * d[i]!.y;
-    const on = polygon.filter((p) => Math.abs(normals[i]!.x * p.x + normals[i]!.y * p.y - offsets[i]!) <= tol * 10);
-    if (on.length < 2) return { kind: 'invalid', reason: 'not-a-side' };
-    on.sort((p, q) => along(p) - along(q));
-    const p = on[0]!;
-    const q = on[on.length - 1]!;
-    if (along(q) - along(p) <= tol) return { kind: 'invalid', reason: 'not-a-side' };
-    const r0 = Math.min(along(edges[i]!.run[0]), along(edges[i]!.run[1]));
-    const r1 = Math.max(along(edges[i]!.run[0]), along(edges[i]!.run[1]));
-    if (Math.min(r1, along(q)) - Math.max(r0, along(p)) <= 0.01 * (r1 - r0)) return { kind: 'invalid', reason: 'not-a-side' };
-    if (Math.abs(r0 - along(p)) > cornerTol || Math.abs(r1 - along(q)) > cornerTol) closed = false;
-    sides.push([p, q]);
-  }
-  if (!closed) return { kind: 'open' };
-
-  // The circle: equidistant (distance r) from every line, on the inner side of each.
+    return { nx, ny, o };
+  });
+  const order = opts.solveOrder ?? lines.map((_, i) => i);
   let centre: Vec2;
   let radius: number;
   if (n === 3) {
-    const r = incircleOfLines([edges[0]!.line, edges[1]!.line, edges[2]!.line], opts.minRadius ?? 0);
+    const r = incircleOfLines([lines[order[0]!]!.line, lines[order[1]!]!.line, lines[order[2]!]!.line], opts.minRadius ?? 0);
     if (!r.ok) return { kind: 'no-circle', polygon, residual: Infinity };
     centre = r.circle.centre;
     radius = r.circle.radius;
@@ -294,10 +280,11 @@ export function circleInEdges(edges: EdgeInput[], opts: { minRadius?: number } =
       [0, 0, 0],
     ];
     const v = [0, 0, 0];
-    for (let k = 0; k < n; k++) {
-      const row = [normals[k]!.x, normals[k]!.y, -1];
+    for (const k of order) {
+      const w = normals[k]!;
+      const row = [w.nx, w.ny, -1];
       for (let a = 0; a < 3; a++) {
-        v[a]! += row[a]! * offsets[k]!;
+        v[a]! += row[a]! * w.o;
         for (let b = 0; b < 3; b++) m[a]![b]! += row[a]! * row[b]!;
       }
     }
@@ -307,22 +294,13 @@ export function circleInEdges(edges: EdgeInput[], opts: { minRadius?: number } =
     radius = x[2]!;
   }
   let residual = 0;
-  for (let k = 0; k < n; k++) residual = Math.max(residual, Math.abs(normals[k]!.x * centre.x + normals[k]!.y * centre.y - offsets[k]! - radius));
-  const polyScale = Math.max(...polygon.map((p) => Math.hypot(p.x - cx, p.y - cy))) * 2;
-  if (!(radius > 0) || residual > EXACT_REL * polyScale || radius < (opts.minRadius ?? 0) || radius < MIN_SHAPE * polyScale) {
-    return { kind: 'no-circle', polygon, residual };
-  }
-
-  // Each tangency on its own side of the polygon (true for a circle inside a convex polygon).
-  const feet = edges.map((e, i) => foot(e.line, d[i]!, centre));
+  for (const w of normals) residual = Math.max(residual, Math.abs(w.nx * centre.x + w.ny * centre.y - w.o - radius));
+  if (!(radius > 0) || residual > EXACT_REL * size || radius < (opts.minRadius ?? 0) || radius < MIN_SHAPE * size) return { kind: 'no-circle', polygon, residual };
+  // Each tangency on its own side (true for a circle inside a convex polygon).
+  const feet = lines.map((l, i) => foot(l.line, dir[i]!, centre));
   for (let i = 0; i < n; i++) {
-    const [p, q] = sides[i]!;
-    if (distToSeg(feet[i]!.at, p, q) > tol * 10 + EXACT_REL * polyScale) return { kind: 'no-circle', polygon, residual };
+    const [p, q] = side(i);
+    if (distToSeg(feet[i]!.at, p, q) > EXACT_REL * size * 10) return { kind: 'no-circle', polygon, residual };
   }
-  return {
-    kind: 'circle',
-    polygon,
-    residual,
-    circle: { centre, radius, feet: feet.map((f) => f.at), params: feet.map((f) => f.param), vertices: polygon },
-  };
+  return { kind: 'circle', polygon, residual, circle: { centre, radius, feet: feet.map((f) => f.at), params: feet.map((f) => f.param), vertices: polygon } };
 }

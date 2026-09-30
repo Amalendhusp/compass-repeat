@@ -23,24 +23,31 @@ export interface CopyRadiusState {
   centreAt: Vec2 | null;
 }
 
-/** Phase 5.12b/c: one edge chosen for Circle → Between 3 Lines — the whole (infinite) line takes
- * part in the geometry; the edge is the visible run of it that was tapped, between the nearest
- * genuine crossings with other curves (params `t0`–`t1` along the line, world ends `a`–`b`). */
+/** Phase 5.12b/c → 5.13b: one edge chosen for Circle → Between edges. It stands for its whole
+ * supporting line (the entity's infinite line); `tapT`/`tap` are where it was tapped, and the run
+ * `t0`–`t1` (world ends `a`–`b`) is the piece tapped — between the nearest genuine crossings. */
 export interface IncircleLine {
   entityId: EntityId;
   t0: number;
   t1: number;
   a: Vec2;
   b: Vec2;
+  tapT: number;
+  tap: Vec2;
 }
 
 export interface IncircleState {
-  /** The chosen edges (3–6 make a circle). */
+  /** The chosen edges, in the order chosen: that order is the polygon's (L1∩L2, L2∩L3, …). */
   lines: IncircleLine[];
-  /** 'open': not closed yet · 'invalid': these edges can never close one convex polygon ·
-   * 'no-circle': closed, but no single circle touches every side · 'circle': `result` is it. */
+  /** 'open': a consistent chain, not closed · 'invalid': the chain is inconsistent (parallel
+   * neighbours, a corner not reached along drawn geometry, a tap outside its corners, bending both
+   * ways) · 'no-circle': closed (first edge tapped again), but no single circle touches every side
+   * · 'circle': closed, `result` is it. */
   status: 'open' | 'invalid' | 'no-circle' | 'circle';
-  /** The closed polygon's corners, once the edges close one. */
+  /** What to highlight for each chosen edge, in chain order: its side between its corners (or,
+   * where a corner is not known yet or the chain is inconsistent, the piece tapped). */
+  sides: [Vec2, Vec2][];
+  /** The closed polygon's corners, once the chain is closed. */
   polygon: Vec2[] | null;
   result: EdgeCircle | null;
 }

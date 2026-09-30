@@ -14,7 +14,7 @@ import { screenToWorld } from '../../app/controller.ts';
 import { dist } from '../../geometry/vec.ts';
 import { curveCandidatesAt, isNearAnyCurve } from '../hittest.ts';
 import { deriveSegments, isParamTrimmed } from '../../geometry/segments.ts';
-import { circleInEdges, type EdgeInput } from '../../geometry/incircle.ts';
+import { chainPolygon, type ChainInput } from '../../geometry/incircle.ts';
 import { buildNodeInset } from '../nodeinset.ts';
 import { confirmSnap, noPointGesture, PointHold, resolveTap, showNoPoint, SnapTracker, type SnapHit } from '../snap.ts';
 import { materializeRef, refAt, refFromHit, refLocation, type PointRef } from '../pointref.ts';
@@ -196,26 +196,25 @@ export const circleTool: ToolModule = {
   },
 };
 
-// ---- Between edges (Phase 5.12b/c → 5.13): the exact circle inside 3–6 chosen edges ----
+// ---- Between edges (Phase 5.12b/c → 5.13b): the exact circle inside an ordered chain of edges ----
 //
-// A tap chooses an EDGE — the continuous visible stretch of the tapped line between the nearest
-// genuine crossings with other curves on either side (Phase 5.12c) — because that is how an edge is
-// read in a dense construction. The whole infinite line takes part in the geometry. Tapping a chosen
-// edge again removes it; a tap on empty canvas clears them all. The edges are used in a fixed order
-// (by line id), so the order they were chosen in never changes the circle. The moment the chosen
-// edges close a polygon end to end that has one exact tangent circle (geometry/incircle.ts
-// circleInEdges), the circle shows while the finger is still down and is made when it lifts.
+// A tap chooses an edge — the piece of line under the finger — but the edge stands for its whole
+// supporting line and the place it was tapped: other lines, circles, Fair or Extension geometry
+// crossing that line do not split the polygon's side (Select and Fair keep their own pieces). The
+// order the edges are chosen in is the polygon's order: corners are L1∩L2, L2∩L3, …, each only where
+// it is really drawn from the tap along that line (geometry/incircle.ts chainPolygon). The chain is
+// closed on purpose, by tapping the FIRST edge again (with three or more chosen): the last line then
+// meets the first, and if one exact circle touches every side, it shows while the finger is down and
+// is made when it lifts. Otherwise nothing is made and the edges stay chosen. Tapping any other
+// chosen edge removes it (a line lying exactly on a chosen one counts as the same side); a tap on
+// empty canvas clears them all. The circle is solved in a fixed order (by line id), so the order the
+// edges were chosen in never changes it.
 
 const MAX_EDGES = 6;
 const MIN_RADIUS_EPS = 20;
 
 function emptyEdges(): IncircleState {
-  return { lines: [], result: null, polygon: null, status: 'open' };
-}
-
-/** The chosen edges in a fixed order (by entity id), independent of the order they were tapped. */
-function canonicalLines(lines: IncircleLine[]): IncircleLine[] {
-  return [...lines].sort((p, q) => (p.entityId < q.entityId ? -1 : p.entityId > q.entityId ? 1 : 0));
+  return { lines: [], status: 'open', sides: [], polygon: null, result: null };
 }
 
 function lineAt(g: { a: Vec2; b: Vec2 }, t: number): Vec2 {
@@ -260,30 +259,75 @@ export function edgeRunAt(doc: Doc, line: Extract<Entity, { kind: 'line' }>, par
   return t1 - t0 > 1e-12 ? { t0, t1 } : null;
 }
 
-/** What the chosen edges make: open, never closable, closed without a circle, or the circle. */
-export function evaluateEdges(doc: Doc, lines: IncircleLine[]): IncircleState {
-  const edges = canonicalLines(lines);
-  const inputs: EdgeInput[] = [];
-  for (const l of edges) {
+/** True where `line` is really drawn all the way between params `t0` and `t1`: inside a finite
+ * line's own span and through no trimmed piece. Crossings with other curves do not matter, and a
+ * second line lying on top of this one does not fill a gap in it. */
+function drawnAlong(doc: Doc, line: Extract<Entity, { kind: 'line' }>, t0: number, t1: number): boolean {
+  const lo = Math.min(t0, t1);
+  const hi = Math.max(t0, t1);
+  const slack = 1e-7;
+  if (!line.extended && (lo < -slack || hi > 1 + slack)) return false;
+  for (const s of deriveSegments(doc, line)) {
+    if (doc.segmentStates.get(s.key)?.state !== 'trimmed') continue;
+    if (Math.min(hi, s.toParam) - Math.max(lo, s.fromParam) > slack) return false;
+  }
+  return true;
+}
+
+/** Two lines on exactly the same supporting line (the same side, whichever was tapped). */
+function sameSupport(doc: Doc, idA: EntityId, idB: EntityId): boolean {
+  if (idA === idB) return true;
+  const ea = doc.entities.find((e) => e.id === idA);
+  const eb = doc.entities.find((e) => e.id === idB);
+  if (!ea || !eb || ea.kind !== 'line' || eb.kind !== 'line') return false;
+  const ga = resolveEntityGeom(doc, ea);
+  const gb = resolveEntityGeom(doc, eb);
+  if (ga.kind !== 'line' || gb.kind !== 'line') return false;
+  const eps = epsilon(doc);
+  const off = (p: Vec2) => Math.abs((p.x - ga.a.x) * ga.dir.y - (p.y - ga.a.y) * ga.dir.x);
+  return Math.abs(ga.dir.x * gb.dir.y - ga.dir.y * gb.dir.x) < 1e-9 && off(gb.a) < eps && off(gb.b) < eps;
+}
+
+/** What the chosen edges make, in the order chosen; `close` when the first edge was tapped again.
+ * `tapSlack` (world units) lets a tap sit a finger's width past one of its corners. */
+export function evaluateEdges(doc: Doc, lines: IncircleLine[], close = false, tapSlack = 0): IncircleState {
+  const entities: Extract<Entity, { kind: 'line' }>[] = [];
+  const inputs: ChainInput[] = [];
+  for (const l of lines) {
     const e = doc.entities.find((x) => x.id === l.entityId);
-    if (!e || e.kind !== 'line') return { lines, result: null, polygon: null, status: 'invalid' };
-    const g = resolveEntityGeom(doc, e);
-    if (g.kind !== 'line') return { lines, result: null, polygon: null, status: 'invalid' };
-    inputs.push({ line: { a: g.a, b: g.b }, run: [l.a, l.b] });
+    const g = e ? resolveEntityGeom(doc, e) : null;
+    if (!e || e.kind !== 'line' || !g || g.kind !== 'line') return { lines, status: 'invalid', sides: lines.map((x) => [x.a, x.b]), polygon: null, result: null };
+    entities.push(e);
+    inputs.push({ line: { a: g.a, b: g.b }, tap: l.tap });
   }
-  // Smaller than this and its centre and tangency points would merge into each other (the model
-  // merges points closer than epsilon), so it could not be built as a true tangent circle.
-  const r = circleInEdges(inputs, { minRadius: epsilon(doc) * MIN_RADIUS_EPS });
-  switch (r.kind) {
-    case 'open':
-      return { lines, result: null, polygon: null, status: 'open' };
-    case 'invalid':
-      return { lines, result: null, polygon: null, status: 'invalid' };
-    case 'no-circle':
-      return { lines, result: null, polygon: r.polygon, status: 'no-circle' };
-    case 'circle':
-      return { lines, result: r.circle, polygon: r.polygon, status: 'circle' };
+  const order = lines.map((_, i) => i).sort((p, q) => (lines[p]!.entityId < lines[q]!.entityId ? -1 : lines[p]!.entityId > lines[q]!.entityId ? 1 : 0));
+  const r = chainPolygon(inputs, {
+    close,
+    reachable: (i, to) => drawnAlong(doc, entities[i]!, lines[i]!.tapT, projectOntoEntity(doc, entities[i]!, to).param),
+    tapSlack,
+    // Smaller than this and its centre and tangency points would merge into each other (the model
+    // merges points closer than epsilon), so it could not be built as a true tangent circle.
+    minRadius: epsilon(doc) * MIN_RADIUS_EPS,
+    solveOrder: order,
+  });
+  const n = lines.length;
+  if (r.kind === 'circle' || r.kind === 'no-circle') {
+    const sides = lines.map((_, i): [Vec2, Vec2] => [r.polygon[(i + n - 1) % n]!, r.polygon[i]!]);
+    return { lines, status: r.kind, sides, polygon: r.polygon, result: r.kind === 'circle' ? r.circle : null };
   }
+  if (r.kind === 'invalid') return { lines, status: 'invalid', sides: lines.map((x) => [x.a, x.b]), polygon: null, result: null };
+  // Open: each side between its known corners; an end of the chain from its corner out through the
+  // piece that was tapped.
+  const far = (l: IncircleLine, c: Vec2) => (dist(l.a, c) > dist(l.b, c) ? l.a : l.b);
+  const sides = lines.map((l, i): [Vec2, Vec2] => {
+    const prev = i > 0 ? r.corners[i - 1] : undefined;
+    const next = i < n - 1 ? r.corners[i] : undefined;
+    if (prev && next) return [prev, next];
+    if (prev) return [prev, far(l, prev)];
+    if (next) return [far(l, next), next];
+    return [l.a, l.b];
+  });
+  return { lines, status: 'open', sides, polygon: null, result: null };
 }
 
 /** Sticky edge: once a press is on an edge, that edge stays the choice unless the finger comes
@@ -305,7 +349,7 @@ function edgeOf(doc: Doc, hit: EdgeHit): IncircleLine | null {
   const run = edgeRunAt(doc, hit.entity, hit.param);
   const g = resolveEntityGeom(doc, hit.entity);
   if (!run || g.kind !== 'line') return null;
-  return { entityId: hit.entity.id, t0: run.t0, t1: run.t1, a: lineAt(g, run.t0), b: lineAt(g, run.t1) };
+  return { entityId: hit.entity.id, t0: run.t0, t1: run.t1, a: lineAt(g, run.t0), b: lineAt(g, run.t1), tapT: hit.param, tap: lineAt(g, hit.param) };
 }
 
 /** The edge the finger means now, given the edge it meant a moment ago (`held`). */
@@ -325,32 +369,33 @@ function stickyEdge(doc: Doc, view: ViewTransform, sp: Vec2, held: IncircleLine 
   return beyond > STICKY_EDGE_PX ? edgeOf(doc, same) : held;
 }
 
-/** The edges with `pick` toggled: the same edge again removes it, another edge of the same line
- * moves that line's choice, a new line is added (up to six). */
-function toggleEdge(lines: IncircleLine[], pick: IncircleLine): IncircleLine[] {
-  const out = [...lines];
-  const i = out.findIndex((l) => l.entityId === pick.entityId);
-  if (i >= 0) {
-    if (Math.abs(out[i]!.t0 - pick.t0) < 1e-9 && Math.abs(out[i]!.t1 - pick.t1) < 1e-9) out.splice(i, 1);
-    else out[i] = pick;
-  } else if (out.length < MAX_EDGES) out.push(pick);
-  else return lines;
-  return out;
+/** What a tap on `pick` does to the chain: the first edge again (three or more chosen) closes it;
+ * any other chosen edge — or a line lying exactly on one — is removed; a new line is added at the
+ * end (up to six). */
+function applyEdgeTap(doc: Doc, lines: IncircleLine[], pick: IncircleLine): { lines: IncircleLine[]; close: boolean } {
+  const i = lines.findIndex((l) => sameSupport(doc, l.entityId, pick.entityId));
+  if (i === 0 && lines.length >= 3) return { lines, close: true };
+  if (i >= 0) return { lines: lines.filter((_, k) => k !== i), close: false };
+  if (lines.length >= MAX_EDGES) return { lines, close: false };
+  return { lines: [...lines, pick], close: false };
 }
 
-/** Press: the edge under the finger is shown as chosen (or un-chosen) at once, with the circle if
- * that closes it; sliding clearly onto another edge moves the choice there (small drift does not —
- * see STICKY_EDGE_PX); lifting keeps it — and makes the circle when there is one. A tap on empty
- * canvas clears the chosen edges. */
+/** Press: the edge under the finger is shown chosen (or removed) at once — and, when it is the first
+ * edge again, the closed polygon with its circle if there is one; sliding clearly onto another edge
+ * moves the choice there (small drift does not — see STICKY_EDGE_PX); lifting keeps it, and makes
+ * the circle when the press closed the polygon and one exists. A tap on empty canvas clears the
+ * chosen edges. */
 function betweenEdgesGesture(controller: AppController, view: ViewTransform, screenPos: Vec2): Gesture {
   const doc = controller.doc;
   const before = controller.incircle ?? emptyEdges();
+  const slack = STICKY_EDGE_PX / view.zoom;
   let held: IncircleLine | null = null;
   const at = (sp: Vec2): { state: IncircleState; offCurves: boolean } => {
     const pick = (held = stickyEdge(doc, view, sp, held));
     if (!pick) return { state: before, offCurves: curveCandidatesAt(doc, view, sp).length === 0 };
-    const lines = toggleEdge(before.lines, pick);
-    return { state: lines === before.lines ? before : evaluateEdges(doc, lines), offCurves: false };
+    const next = applyEdgeTap(doc, before.lines, pick);
+    if (!next.close && next.lines === before.lines) return { state: before, offCurves: false };
+    return { state: evaluateEdges(doc, next.lines, next.close, slack), offCurves: false };
   };
   let now = at(screenPos);
   controller.incircle = now.state;
@@ -378,8 +423,9 @@ function betweenEdgesGesture(controller: AppController, view: ViewTransform, scr
 }
 
 /** Makes the circle as one undoable step: its centre (an existing point if one is already there)
- * and a through-point at the exact tangency on the first line (in fixed order); the other
- * tangencies are materialized like any other crossing. The chosen edges are then cleared. */
+ * and a through-point at the exact tangency on the chosen line with the lowest id (a fixed choice,
+ * whatever order the edges were tapped in); the other tangencies are materialized like any other
+ * crossing. The chosen edges are then cleared. */
 function createFromEdges(controller: AppController, state: IncircleState): void {
   const c = state.result;
   controller.incircle = emptyEdges();
@@ -395,10 +441,14 @@ function createFromEdges(controller: AppController, state: IncircleState): void 
     showToast('Already drawn');
     return;
   }
-  const first = canonicalLines(state.lines)[0]!;
+  let k = 0;
+  state.lines.forEach((l, i) => {
+    if (l.entityId < state.lines[k]!.entityId) k = i;
+  });
+  const first = state.lines[k]!;
   controller.commit((d) => {
     const centre = addOrReuseFreePoint(d, c.centre);
-    const through = addOnCurvePoint(d, first.entityId, c.params[0]!, c.feet[0]!);
+    const through = addOnCurvePoint(d, first.entityId, c.params[k]!, c.feet[k]!);
     addCircleEntity(d, centre, through);
   });
 }

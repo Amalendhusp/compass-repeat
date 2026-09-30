@@ -1193,8 +1193,9 @@ function drawPreview(ctx: CanvasRenderingContext2D, controller: AppController, v
  * Arc's chosen centre) stays strongly highlighted — independent of the live
  * preview — and survives pinch/pan untouched, since it reads straight from controller.pending
  * rather than any gesture-local state. */
-/** Phase 5.12b/c → 5.13: Circle → Between edges. Each chosen edge as one continuous Signal stroke
- * (no labels — the canvas shows the state). Once the edges close a polygon with an exact circle:
+/** Phase 5.12b/c → 5.13b: Circle → Between edges. Each chosen edge as one continuous Signal stroke
+ * along its side — between its corners, however many other curves cross it — with no labels (the
+ * canvas shows the state). Once the edges close a polygon with an exact circle:
  * the polygon itself (a faint tint, a quiet dashed outline and its corners), the circle — a stronger
  * dashed stroke over a pale halo so it reads clearly over dense construction, yet never looks like
  * committed geometry — its centre, and every tangency point. A closed polygon with no such circle
@@ -1221,9 +1222,9 @@ function drawIncircle(ctx: CanvasRenderingContext2D, controller: AppController, 
     ctx.stroke(poly);
     ctx.setLineDash([]);
   }
-  st.lines.forEach((line) => {
-    const a = worldToScreen(view, line.a);
-    const b = worldToScreen(view, line.b);
+  st.sides.forEach(([pa, pb]) => {
+    const a = worldToScreen(view, pa);
+    const b = worldToScreen(view, pb);
     ctx.beginPath();
     ctx.moveTo(a.x, a.y);
     ctx.lineTo(b.x, b.y);
