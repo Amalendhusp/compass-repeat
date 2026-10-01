@@ -1193,18 +1193,51 @@ function drawPreview(ctx: CanvasRenderingContext2D, controller: AppController, v
  * Arc's chosen centre) stays strongly highlighted — independent of the live
  * preview — and survives pinch/pan untouched, since it reads straight from controller.pending
  * rather than any gesture-local state. */
-/** Phase 5.12b/c → 5.13b: Circle → Between edges. Each chosen edge as one continuous Signal stroke
- * along its side — between its corners, however many other curves cross it — with no labels (the
- * canvas shows the state). Once the edges close a polygon with an exact circle:
- * the polygon itself (a faint tint, a quiet dashed outline and its corners), the circle — a stronger
- * dashed stroke over a pale halo so it reads clearly over dense construction, yet never looks like
- * committed geometry — its centre, and every tangency point. A closed polygon with no such circle
- * shows only its quiet dashed outline. A circle too small to see at this zoom gets a locator ring. */
+/** Phase 5.12b/c → 5.13c: Circle → Between edges, shown so the construction reads by itself (no
+ * labels). Each chosen edge: its whole supporting line as a light dashed Signal line right across the
+ * view, with the piece actually tapped solid. The chain's corners so far are marked. Whenever the
+ * chosen lines close validly — as a preview before the closing tap, and for real during it — the
+ * polygon they imply is outlined and faintly tinted with its corners, and, when it has one exact
+ * circle, the circle (a stronger dashed stroke over a pale halo, so it reads over dense construction
+ * yet never looks committed), its centre and every tangency point. A circle too small to see at
+ * this zoom gets a locator ring. None of this is geometry: nothing is created until release. */
 function drawIncircle(ctx: CanvasRenderingContext2D, controller: AppController, view: ViewTransform): void {
   const st = controller.incircle;
   if (controller.tool !== 'circle' || controller.circleVariant !== 'three-lines' || !st) return;
   ctx.save();
   const c = st.result;
+  const corner = (v: Vec2) => {
+    const s = worldToScreen(view, v);
+    ctx.beginPath();
+    ctx.rect(s.x - 3.5, s.y - 3.5, 7, 7);
+    ctx.fillStyle = color.paper;
+    ctx.fill();
+    ctx.lineWidth = 1.5;
+    ctx.strokeStyle = color.signal;
+    ctx.stroke();
+  };
+  // Supporting lines, right across the view (light, dashed).
+  const reach = Math.hypot(view.w, view.h) * 2;
+  ctx.lineCap = 'butt';
+  st.supports.forEach((l, i) => {
+    const piece = st.lines[i];
+    const a = worldToScreen(view, l.a);
+    const b = worldToScreen(view, l.b);
+    const len = Math.hypot(b.x - a.x, b.y - a.y) || 1;
+    const u = { x: (b.x - a.x) / len, y: (b.y - a.y) / len };
+    const mid = piece ? worldToScreen(view, piece.tap) : a;
+    ctx.beginPath();
+    ctx.moveTo(mid.x - u.x * reach, mid.y - u.y * reach);
+    ctx.lineTo(mid.x + u.x * reach, mid.y + u.y * reach);
+    ctx.strokeStyle = color.signal;
+    ctx.globalAlpha = 0.45;
+    ctx.lineWidth = 1.5;
+    ctx.setLineDash([6, 5]);
+    ctx.stroke();
+    ctx.setLineDash([]);
+    ctx.globalAlpha = 1;
+  });
+  // The implied polygon (preview or closing).
   if (st.polygon && st.polygon.length >= 3) {
     const pts = st.polygon.map((v) => worldToScreen(view, v));
     const poly = new Path2D();
@@ -1217,14 +1250,14 @@ function drawIncircle(ctx: CanvasRenderingContext2D, controller: AppController, 
       ctx.globalAlpha = 1;
     }
     ctx.strokeStyle = c ? color.signal : color.muted;
-    ctx.lineWidth = 1;
-    ctx.setLineDash([3, 3]);
+    ctx.lineWidth = 2;
+    ctx.lineJoin = 'round';
     ctx.stroke(poly);
-    ctx.setLineDash([]);
   }
-  st.sides.forEach(([pa, pb]) => {
-    const a = worldToScreen(view, pa);
-    const b = worldToScreen(view, pb);
+  // The pieces actually tapped (solid).
+  st.lines.forEach((line) => {
+    const a = worldToScreen(view, line.a);
+    const b = worldToScreen(view, line.b);
     ctx.beginPath();
     ctx.moveTo(a.x, a.y);
     ctx.lineTo(b.x, b.y);
@@ -1233,17 +1266,9 @@ function drawIncircle(ctx: CanvasRenderingContext2D, controller: AppController, 
     ctx.lineCap = 'round';
     ctx.stroke();
   });
+  // Corners: the closed polygon's, or the chain's so far.
+  for (const v of st.polygon ?? st.corners) corner(v);
   if (c) {
-    for (const v of c.vertices) {
-      const s = worldToScreen(view, v);
-      ctx.beginPath();
-      ctx.rect(s.x - 3.5, s.y - 3.5, 7, 7);
-      ctx.fillStyle = color.paper;
-      ctx.fill();
-      ctx.lineWidth = 1.5;
-      ctx.strokeStyle = color.signal;
-      ctx.stroke();
-    }
     const centre = worldToScreen(view, c.centre);
     const r = c.radius * view.zoom;
     ctx.lineCap = 'butt';

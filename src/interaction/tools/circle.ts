@@ -214,7 +214,7 @@ const MAX_EDGES = 6;
 const MIN_RADIUS_EPS = 20;
 
 function emptyEdges(): IncircleState {
-  return { lines: [], status: 'open', sides: [], polygon: null, result: null };
+  return { lines: [], supports: [], corners: [], status: 'open', closing: false, polygon: null, result: null };
 }
 
 function lineAt(g: { a: Vec2; b: Vec2 }, t: number): Vec2 {
@@ -289,45 +289,42 @@ function sameSupport(doc: Doc, idA: EntityId, idB: EntityId): boolean {
 }
 
 /** What the chosen edges make, in the order chosen; `close` when the first edge was tapped again.
+ * Even before that, whenever the chosen lines would close validly (three or more), their polygon and
+ * circle are worked out as a preview — so the polygon the lines imply can be seen before it is made.
  * `tapSlack` (world units) lets a tap sit a finger's width past one of its corners. */
 export function evaluateEdges(doc: Doc, lines: IncircleLine[], close = false, tapSlack = 0): IncircleState {
   const entities: Extract<Entity, { kind: 'line' }>[] = [];
   const inputs: ChainInput[] = [];
+  const supports: { a: Vec2; b: Vec2 }[] = [];
+  const none = (status: IncircleState['status']): IncircleState => ({ lines, supports, corners: [], status, closing: close, polygon: null, result: null });
   for (const l of lines) {
     const e = doc.entities.find((x) => x.id === l.entityId);
     const g = e ? resolveEntityGeom(doc, e) : null;
-    if (!e || e.kind !== 'line' || !g || g.kind !== 'line') return { lines, status: 'invalid', sides: lines.map((x) => [x.a, x.b]), polygon: null, result: null };
+    if (!e || e.kind !== 'line' || !g || g.kind !== 'line') return none('invalid');
     entities.push(e);
     inputs.push({ line: { a: g.a, b: g.b }, tap: l.tap });
+    supports.push({ a: g.a, b: g.b });
   }
   const order = lines.map((_, i) => i).sort((p, q) => (lines[p]!.entityId < lines[q]!.entityId ? -1 : lines[p]!.entityId > lines[q]!.entityId ? 1 : 0));
-  const r = chainPolygon(inputs, {
-    close,
-    reachable: (i, to) => drawnAlong(doc, entities[i]!, lines[i]!.tapT, projectOntoEntity(doc, entities[i]!, to).param),
-    tapSlack,
-    // Smaller than this and its centre and tangency points would merge into each other (the model
-    // merges points closer than epsilon), so it could not be built as a true tangent circle.
-    minRadius: epsilon(doc) * MIN_RADIUS_EPS,
-    solveOrder: order,
-  });
-  const n = lines.length;
-  if (r.kind === 'circle' || r.kind === 'no-circle') {
-    const sides = lines.map((_, i): [Vec2, Vec2] => [r.polygon[(i + n - 1) % n]!, r.polygon[i]!]);
-    return { lines, status: r.kind, sides, polygon: r.polygon, result: r.kind === 'circle' ? r.circle : null };
+  const solve = (closeIt: boolean) =>
+    chainPolygon(inputs, {
+      close: closeIt,
+      reachable: (i, to) => drawnAlong(doc, entities[i]!, lines[i]!.tapT, projectOntoEntity(doc, entities[i]!, to).param),
+      tapSlack,
+      // Smaller than this and its centre and tangency points would merge into each other (the model
+      // merges points closer than epsilon), so it could not be built as a true tangent circle.
+      minRadius: epsilon(doc) * MIN_RADIUS_EPS,
+      solveOrder: order,
+    });
+  const open = solve(false);
+  if (open.kind !== 'open') return none('invalid');
+  const closed = lines.length >= 3 ? solve(true) : null;
+  const shut = closed && (closed.kind === 'circle' || closed.kind === 'no-circle') ? closed : null;
+  if (close) {
+    if (!closed || !shut) return { ...none('invalid'), corners: open.corners };
+    return { lines, supports, corners: open.corners, status: shut.kind, closing: true, polygon: shut.polygon, result: shut.kind === 'circle' ? shut.circle : null };
   }
-  if (r.kind === 'invalid') return { lines, status: 'invalid', sides: lines.map((x) => [x.a, x.b]), polygon: null, result: null };
-  // Open: each side between its known corners; an end of the chain from its corner out through the
-  // piece that was tapped.
-  const far = (l: IncircleLine, c: Vec2) => (dist(l.a, c) > dist(l.b, c) ? l.a : l.b);
-  const sides = lines.map((l, i): [Vec2, Vec2] => {
-    const prev = i > 0 ? r.corners[i - 1] : undefined;
-    const next = i < n - 1 ? r.corners[i] : undefined;
-    if (prev && next) return [prev, next];
-    if (prev) return [prev, far(l, prev)];
-    if (next) return [far(l, next), next];
-    return [l.a, l.b];
-  });
-  return { lines, status: 'open', sides, polygon: null, result: null };
+  return { lines, supports, corners: open.corners, status: 'open', closing: false, polygon: shut?.polygon ?? null, result: shut?.kind === 'circle' ? shut.circle : null };
 }
 
 /** Sticky edge: once a press is on an edge, that edge stays the choice unless the finger comes
@@ -408,7 +405,7 @@ function betweenEdgesGesture(controller: AppController, view: ViewTransform, scr
     },
     onUp(sp, wasDrag) {
       now = at(sp);
-      if (now.state.status === 'circle') {
+      if (now.state.closing && now.state.status === 'circle') {
         createFromEdges(controller, now.state);
       } else if (now.state === before && now.offCurves && !wasDrag) {
         controller.incircle = emptyEdges();

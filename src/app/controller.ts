@@ -39,16 +39,22 @@ export interface IncircleLine {
 export interface IncircleState {
   /** The chosen edges, in the order chosen: that order is the polygon's (L1∩L2, L2∩L3, …). */
   lines: IncircleLine[];
-  /** 'open': a consistent chain, not closed · 'invalid': the chain is inconsistent (parallel
-   * neighbours, a corner not reached along drawn geometry, a tap outside its corners, bending both
-   * ways) · 'no-circle': closed (first edge tapped again), but no single circle touches every side
-   * · 'circle': closed, `result` is it. */
+  /** Each chosen edge's whole supporting line (two points on it), in chain order — previewed as a
+   * light dashed line through the solid piece that was tapped; never real geometry. */
+  supports: { a: Vec2; b: Vec2 }[];
+  /** The chain's corners so far that are really reached along drawn geometry (L1∩L2, L2∩L3, …). */
+  corners: Vec2[];
+  /** 'open': a consistent chain · 'invalid': the chain is inconsistent (parallel neighbours, a
+   * corner not reached along drawn geometry, a tap outside its corners, bending both ways) ·
+   * 'no-circle' / 'circle': this press closed the polygon (first edge tapped again), without / with
+   * one exact circle touching every side. */
   status: 'open' | 'invalid' | 'no-circle' | 'circle';
-  /** What to highlight for each chosen edge, in chain order: its side between its corners (or,
-   * where a corner is not known yet or the chain is inconsistent, the piece tapped). */
-  sides: [Vec2, Vec2][];
-  /** The closed polygon's corners, once the chain is closed. */
+  /** True when this state is the closing press (first edge again) — only then does release make the circle. */
+  closing: boolean;
+  /** The polygon the chosen lines close into (Ln∩L1 completing it), whenever that closure is valid —
+   * shown as a preview before the closing tap, and as the real thing during it. */
   polygon: Vec2[] | null;
+  /** Its exact circle, when it has one (preview until the closing tap). */
   result: EdgeCircle | null;
 }
 
