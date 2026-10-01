@@ -1,6 +1,6 @@
 import './style.css';
 import { cloneDoc, createDoc, defaultRepeatDisplay, placeFrame } from './model/doc.ts';
-import { AppController, type ViewTransform } from './app/controller.ts';
+import { AppController, type ToolId, type ViewTransform } from './app/controller.ts';
 import { PointerManager } from './interaction/pointer.ts';
 import { selectTool } from './interaction/tools/select.ts';
 import { circleTool } from './interaction/tools/circle.ts';
@@ -13,8 +13,8 @@ import { repeatTool } from './interaction/tools/repeatTool.ts';
 import { render } from './render/renderer.ts';
 import { renderRepeat } from './render/repeatRenderer.ts';
 import { buildShell, closeAnyPopover } from './ui/shell.ts';
-import { openGuide, type GuideHost, type GuideState } from './tutorial/engine.ts';
-import { squareGuide } from './tutorial/guides/square.ts';
+import { openGuide, type CoachHost } from './tutorial/engine.ts';
+import { beginnerGuide } from './tutorial/guides/beginner.ts';
 import { openStartScreen } from './ui/startscreen.ts';
 import { buildDrawFrameHud } from './ui/drawframehud.ts';
 import { attachDrawFrame } from './interaction/drawframe.ts';
@@ -43,7 +43,7 @@ const tools = { select: selectTool, circle: circleTool, line: lineTool, arc: arc
 
 /** Phase 5.5: the artwork currently open. Tearing it down stops its render loop, resize observer
  * and autosave, so switching artworks never leaves an old one drawing or saving in the background. */
-let session: { controller: AppController; autosave: AutosaveHandle; getView: () => ViewTransform; teardown: () => void } | null = null;
+let session: { controller: AppController; autosave: AutosaveHandle; getView: () => ViewTransform; fit: () => void; teardown: () => void } | null = null;
 
 /** Phase 5.7: the draw-frame gesture's own listeners and render loop, while it's armed. */
 let detachFrameDrawing: (() => void) | null = null;
@@ -55,9 +55,9 @@ function endSession(): void {
   detachFrameDrawing = null;
 }
 
-/** Phase 5.7: while a Beginner Guide runs, every artwork shown is a throwaway demonstration —
- * never autosaved, never listed, never the "last open" artwork. What was open before is saved as
- * it stands on entry and reopened, untouched, when the guide closes. */
+/** Phase 5.7 / vNext Phase 3: while the Beginner Guide runs, the artwork shown is a throwaway
+ * practice artwork — never autosaved, never listed, never the "last open" artwork. What was open
+ * before is saved as it stands on entry and reopened, untouched, when the guide closes. */
 let guideReturn: { artworkId: string | null } | null = null;
 const inertAutosave: AutosaveHandle = { detach: () => {}, flush: () => {} };
 
@@ -73,8 +73,11 @@ function fitViewState(viewState: { zoom: number; pan: { x: number; y: number } }
   const canvasRect = canvas.getBoundingClientRect();
   const overlayRect = overlay.getBoundingClientRect();
   const usableBottom = overlayRect.top > canvasRect.top ? overlayRect.top - canvasRect.top : canvasH;
+  // vNext Phase 3: while the Beginner Guide's strip sits over the top of the canvas, fit below it.
+  const strip = document.querySelector('.coach-strip.at-top')?.getBoundingClientRect();
+  const usableTop = strip ? Math.min(Math.max(strip.bottom + 8 - canvasRect.top, 0), usableBottom * 0.5) : 0;
   const usableW = canvasW;
-  const usableH = Math.min(Math.max(usableBottom, canvasH * 0.25), canvasH);
+  const usableH = Math.min(Math.max(usableBottom - usableTop, canvasH * 0.25), canvasH);
 
   let zoom: number;
   let centre: { x: number; y: number };
@@ -94,7 +97,7 @@ function fitViewState(viewState: { zoom: number; pan: { x: number; y: number } }
   // usable rectangle's centre (canvas-local coordinates) rather than the full canvas's centre.
   viewState.pan = {
     x: (usableW / 2 - canvasW / 2) / zoom - centre.x,
-    y: (usableH / 2 - canvasH / 2) / zoom - centre.y,
+    y: (usableTop + usableH / 2 - canvasH / 2) / zoom - centre.y,
   };
 }
 
@@ -141,8 +144,9 @@ function boot(doc: Doc, opts: { fitToScreen: boolean; history?: { undo: Doc[]; r
   // §9 restore: "the tool reset to Select" — AppController already defaults tool to 'select'.
   if (opts.history) controller.restoreHistory(opts.history.undo, opts.history.redo);
 
+  const fit = () => (controller.doc.view.workspace === 'repeat' ? fitRepeatView(controller, canvas, overlay) : fitView(controller, canvas, overlay));
   const { canvas, overlay } = buildShell(root!, controller, {
-    onFit: () => (controller.doc.view.workspace === 'repeat' ? fitRepeatView(controller, canvas, overlay) : fitView(controller, canvas, overlay)),
+    onFit: () => fit(),
     onNew: () => showStart('frames'),
     onOpen: () => showStart('artworks'),
     onSave: () => saveArtwork(),
@@ -164,6 +168,9 @@ function boot(doc: Doc, opts: { fitToScreen: boolean; history?: { undo: Doc[]; r
       controller.notify();
     },
   });
+  // vNext Phase 3: the practice artwork has no file menu — nothing in it is saved, and the guide's
+  // own Exit is the way back.
+  if (guideReturn) root!.querySelector<HTMLElement>('[aria-label="Menu"]')?.style.setProperty('visibility', 'hidden');
   // Phase 4: buildShell() clears `root` (`root.innerHTML = ''`) to rebuild the whole shell DOM
   // on every boot — a toast mounted before that point, as this used to be at module scope, ends
   // up appended then immediately detached, so showToast() would set text on an orphaned node no
@@ -255,6 +262,7 @@ function boot(doc: Doc, opts: { fitToScreen: boolean; history?: { undo: Doc[]; r
     controller,
     autosave,
     getView,
+    fit,
     teardown: () => {
       running = false;
       stopResizing();
@@ -317,11 +325,6 @@ function saveAsNewArtwork(): void {
 
 // ---- vNext Phase 2: the Start screen (Choose a frame · Beginner Guide · My Artworks) ----
 
-/** The Beginner Guide predates vNext (its steps describe the old menu and frame sheet), so until
- * Phase 3 rewrites it the Start screen offers it in development builds only; students see the card
- * disabled, marked "Coming soon". */
-const GUIDE_AVAILABLE = import.meta.env.DEV;
-
 /** New opens the Start screen at its frames, Open… at My Artworks. The artwork that was open is
  * saved as it stands first — so its card is up to date, and nothing chosen next can overwrite it —
  * and stays open underneath until something else is actually chosen. */
@@ -336,7 +339,7 @@ function showStart(focus: 'frames' | 'artworks'): void {
       console.warn('Listing artworks failed:', err);
       return [];
     }),
-    guide: GUIDE_AVAILABLE ? { onStart: () => startGuide(), note: 'Dev preview' } : { note: 'Coming soon' },
+    guide: { onStart: () => startGuide() },
     onChooseFrame: (k) => armDrawFrame(k),
     onOpenArtwork: (id) => void openFromStart(id),
   });
@@ -383,42 +386,44 @@ function armDrawFrame(kind: FrameKind): void {
   );
 }
 
-// ---- Phase 5.7: Beginner Guide host — the only door the guide engine has into the app ----
+// ---- vNext Phase 3: the Beginner Guide's host — the only door the guide has into the app ----
 
-const guideHost: GuideHost = {
-  root: root!,
-  enter() {
+/** Opens a practice state: never saved (guideReturn is set), points all shown so a first-timer can
+ * see what there is to start from. */
+function bootPractice(doc: Doc, history?: { undo: Doc[]; redo: Doc[] }, tool?: ToolId): void {
+  boot(doc, { fitToScreen: false, history });
+  const c = session!.controller;
+  c.pointVisibility = 'all';
+  if (tool) c.tool = tool;
+  c.notify();
+}
+
+const guideHost: CoachHost = {
+  begin(doc) {
+    closeAnyPopover();
     session?.autosave.flush({ thumbnail: true });
     guideReturn = { artworkId: session?.controller.doc.id ?? null };
+    bootPractice(doc);
   },
-  async exit({ tryItYourself }) {
+  fit: () => session?.fit(),
+  capture() {
+    if (!session) return null;
+    const c = session.controller;
+    const { undo, redo } = c.getHistorySnapshot();
+    return { doc: cloneDoc(c.doc), undo, redo, tool: c.tool };
+  },
+  restore(state) {
+    closeAnyPopover();
+    bootPractice(cloneDoc(state.doc), { undo: state.undo, redo: state.redo }, state.tool);
+  },
+  async exit() {
     const back = guideReturn;
     guideReturn = null;
     closeAnyPopover();
     endSession();
     root!.innerHTML = '';
     const reopened = back?.artworkId ? await openArtwork(back.artworkId) : false;
-    if (!reopened || tryItYourself) showStart('frames');
-  },
-  capture(): GuideState {
-    if (!session) return { kind: 'picker' };
-    const c = session.controller;
-    return { kind: 'artwork', doc: cloneDoc(c.doc), tool: c.tool, lineMode: c.lineMode, pointVisibility: c.pointVisibility };
-  },
-  restore(state) {
-    closeAnyPopover();
-    if (state.kind === 'picker') {
-      endSession();
-      root!.innerHTML = '';
-      showStart('frames');
-      return;
-    }
-    boot(cloneDoc(state.doc), { fitToScreen: false });
-    const c = session!.controller;
-    c.tool = state.tool;
-    c.lineMode = state.lineMode;
-    c.pointVisibility = state.pointVisibility;
-    c.notify();
+    if (!reopened) showStart('frames');
   },
   controller: () => session?.controller ?? null,
   view: () => session?.getView() ?? null,
@@ -426,7 +431,7 @@ const guideHost: GuideHost = {
 
 function startGuide(): void {
   if (guideReturn) return;
-  openGuide(squareGuide, guideHost);
+  openGuide(beginnerGuide, guideHost);
 }
 
 /** Brings a snapshot saved by any earlier version up to the current document shape. */

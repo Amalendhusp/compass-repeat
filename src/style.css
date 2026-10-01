@@ -155,6 +155,23 @@ body {
   opacity: 0.4;
   cursor: not-allowed;
 }
+/* vNext Phase 3: at 320 px the top bar was 382 px wide, pushing Share off the screen. A narrower
+ * Construct/Repeat switch makes everything fit; every icon button keeps its 44 px target. */
+@media (max-width: 359px) {
+  .topbar {
+    padding-left: 2px;
+    padding-right: 2px;
+  }
+  .point-targets-btn {
+    margin-left: 0;
+  }
+  .segmented button {
+    width: 66px;
+    padding: 0 2px;
+    font-size: 13px;
+    letter-spacing: 0;
+  }
+}
 
 /* ---- canvas ---- */
 
@@ -1364,212 +1381,133 @@ canvas.stage {
   flex: 1 1 auto;
 }
 
-/* ---- Phase 5.7: Beginner Guide overlay ---- */
+/* ---- vNext Phase 3: Beginner Guide — one compact strip, an outline on the real control, rings on
+   the drawing. Nothing here covers or blocks the app: only the strip itself takes touches. ---- */
 
-.guide-layer {
-  position: fixed;
-  inset: 0;
-  z-index: 60;
-  touch-action: none;
-}
-.guide-dim {
-  position: absolute;
-  inset: 0;
-  width: 100%;
-  height: 100%;
-  pointer-events: none;
-}
-.guide-halo {
-  position: fixed;
-  border-radius: 14px;
-  box-shadow: 0 0 0 2px rgba(251, 249, 245, 0.95), 0 0 0 6px rgba(47, 91, 234, 0.35), 0 0 22px 6px rgba(47, 91, 234, 0.35);
-  pointer-events: none;
-  animation: guide-breathe 1.6s ease-in-out infinite;
-}
-@keyframes guide-breathe {
-  50% {
-    box-shadow: 0 0 0 2px rgba(251, 249, 245, 0.95), 0 0 0 8px rgba(47, 91, 234, 0.22), 0 0 30px 10px rgba(47, 91, 234, 0.28);
-  }
-}
-.guide-finger {
-  position: fixed;
-  left: -17px;
-  top: -17px;
-  width: 34px;
-  height: 34px;
-  border-radius: 50%;
-  background: radial-gradient(circle at 42% 38%, rgba(255, 255, 255, 0.9), rgba(255, 255, 255, 0.55) 55%, rgba(30, 42, 54, 0.25));
-  border: 2px solid rgba(30, 42, 54, 0.55);
-  box-shadow: 0 4px 12px rgba(30, 42, 54, 0.3);
-  pointer-events: none;
-  opacity: 0;
-  transition: opacity 0.2s, scale 0.12s;
-  will-change: transform;
-}
-.guide-finger.show {
-  opacity: 1;
-}
-.guide-finger.down {
-  scale: 0.82;
-}
-.guide-ring {
-  position: fixed;
-  width: 18px;
-  height: 18px;
-  margin: -9px 0 0 -9px;
-  border-radius: 50%;
-  border: 2.5px solid rgba(47, 91, 234, 0.85);
-  pointer-events: none;
-  animation: guide-ring 0.65s ease-out forwards;
-}
-@keyframes guide-ring {
-  to {
-    transform: scale(3.4);
-    opacity: 0;
-  }
-}
-.guide-trail {
-  position: fixed;
-  width: 10px;
-  height: 10px;
-  margin: -5px 0 0 -5px;
-  border-radius: 50%;
-  background: rgba(47, 91, 234, 0.45);
-  pointer-events: none;
-  animation: guide-trail 0.45s ease-out forwards;
-}
-@keyframes guide-trail {
-  to {
-    transform: scale(0.3);
-    opacity: 0;
-  }
-}
-.guide-card {
+.coach-strip {
   position: fixed;
   left: 12px;
   right: 12px;
-  max-width: 420px;
+  max-width: 560px;
   margin: 0 auto;
+  z-index: 26;
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  align-items: center;
+  gap: 6px 8px;
+  padding: 8px 8px 8px 14px;
   background: var(--paper);
   color: var(--ink);
-  border-radius: 18px;
-  box-shadow: 0 12px 34px rgba(20, 28, 36, 0.28);
-  padding: 12px 14px 12px;
-  display: flex;
-  flex-direction: column;
-  gap: 6px;
-  -webkit-user-select: none;
-  user-select: none;
+  border: 1px solid var(--hairline);
+  border-radius: 16px;
+  box-shadow: 0 6px 20px rgba(30, 42, 54, 0.14);
+  font-family: var(--font-ui);
 }
-.guide-card.at-top {
-  top: calc(env(safe-area-inset-top, 0px) + 54px);
-}
-.guide-card.at-bottom {
-  bottom: calc(env(safe-area-inset-bottom, 0px) + 14px);
-}
-.guide-head {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-}
-.guide-progress {
-  display: flex;
-  align-items: center;
-  gap: 10px;
-  font-size: 11.5px;
-  font-weight: 600;
-  letter-spacing: 0.02em;
-  color: var(--muted);
-}
-.guide-dots {
-  display: flex;
-  gap: 4px;
-}
-.guide-dots i {
-  width: 6px;
-  height: 6px;
-  border-radius: 50%;
-  background: var(--hairline);
-}
-.guide-dots i.done {
-  background: var(--muted);
-}
-.guide-dots i.on {
-  background: var(--signal, #2f5bea);
-  width: 14px;
-  border-radius: 3px;
-}
-.guide-close {
-  width: 30px;
-  height: 30px;
-  border: none;
-  border-radius: 50%;
-  background: var(--well);
-  color: var(--ink);
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  cursor: pointer;
-}
-.guide-card h3 {
-  margin: 0;
-  font-family: var(--font-title);
-  font-size: 18px;
-  font-weight: 500;
-}
-.guide-card p {
-  margin: 0;
-  font-size: 13.5px;
-  line-height: 1.4;
-}
-.guide-micro {
-  margin: 0;
-  padding: 0;
-  list-style: none;
+.coach-main {
+  min-width: 0;
   display: flex;
   flex-direction: column;
   gap: 2px;
 }
-.guide-micro li {
-  font-size: 12px;
-  color: var(--muted);
-  opacity: 0.35;
-  transition: opacity 0.3s, color 0.3s;
-}
-.guide-micro li.on {
-  opacity: 1;
-  color: var(--ink);
-}
-.guide-actions {
+.coach-meta {
   display: flex;
   gap: 8px;
-  justify-content: flex-end;
-  margin-top: 2px;
+  font-size: 11px;
+  font-weight: 600;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  color: var(--muted);
 }
-.guide-btn {
-  height: 38px;
-  padding: 0 16px;
+.coach-label {
+  color: var(--signal);
+}
+.coach-text {
+  font-size: 14.5px;
+  line-height: 1.3;
+}
+.coach-strip.success .coach-text {
+  color: var(--signal);
+  font-weight: 600;
+}
+.coach-strip.success .coach-text::before {
+  content: '✓ ';
+}
+.coach-buttons {
+  display: flex;
+  align-items: center;
+  gap: 2px;
+  align-self: start;
+}
+.coach-btn {
+  min-width: 44px;
+  height: 44px;
+  padding: 0 14px;
   border: none;
   border-radius: 12px;
   background: var(--well);
   color: var(--ink);
+  font-family: var(--font-ui);
   font-size: 14px;
-  font-weight: 500;
+  font-weight: 600;
   cursor: pointer;
 }
-.guide-btn.primary {
+.coach-btn:active {
+  filter: brightness(0.94);
+}
+.coach-back {
+  width: 44px;
+  padding: 0;
+  display: grid;
+  place-items: center;
+  background: transparent;
+}
+.coach-continue {
+  grid-column: 1 / -1;
+  justify-self: end;
+}
+.coach-continue[hidden] {
+  display: none;
+}
+.coach-continue.primary {
+  padding: 0 20px;
   background: var(--ink);
   color: var(--paper);
-  font-weight: 600;
 }
-.guide-btn:disabled {
-  opacity: 0.4;
-  cursor: default;
+.coach-btn:focus-visible {
+  outline: 2px solid var(--signal);
+  outline-offset: 2px;
+}
+.coach-halo {
+  position: fixed;
+  z-index: 25;
+  border-radius: 12px;
+  box-shadow: 0 0 0 2px var(--signal), 0 0 14px 3px rgba(47, 91, 234, 0.3);
+  pointer-events: none;
+  animation: coach-breathe 1.8s ease-in-out infinite;
+}
+@keyframes coach-breathe {
+  50% {
+    box-shadow: 0 0 0 2px var(--signal), 0 0 20px 6px rgba(47, 91, 234, 0.18);
+  }
+}
+.coach-spot {
+  position: fixed;
+  z-index: 5;
+  border-radius: 50%;
+  border: 2px solid rgba(47, 91, 234, 0.75);
+  background: rgba(47, 91, 234, 0.08);
+  pointer-events: none;
+  animation: coach-pulse 1.8s ease-in-out infinite;
+}
+@keyframes coach-pulse {
+  50% {
+    transform: scale(1.25);
+    opacity: 0.55;
+  }
 }
 @media (prefers-reduced-motion: reduce) {
-  .guide-halo,
-  .guide-ring,
-  .guide-trail {
+  .coach-halo,
+  .coach-spot {
     animation: none;
   }
 }
