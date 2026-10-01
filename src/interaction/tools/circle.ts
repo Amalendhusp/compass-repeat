@@ -196,25 +196,26 @@ export const circleTool: ToolModule = {
   },
 };
 
-// ---- Between edges (Phase 5.12b/c → 5.13b): the exact circle inside an ordered chain of edges ----
+// ---- Between edges (Phase 5.12b/c → 5.13d): the exact circle inside an ordered chain of edges ----
 //
 // A tap chooses an edge — the piece of line under the finger — but the edge stands for its whole
 // supporting line and the place it was tapped: other lines, circles, Fair or Extension geometry
 // crossing that line do not split the polygon's side (Select and Fair keep their own pieces). The
 // order the edges are chosen in is the polygon's order: corners are L1∩L2, L2∩L3, …, each only where
-// it is really drawn from the tap along that line (geometry/incircle.ts chainPolygon). The chain is
-// closed on purpose, by tapping the FIRST edge again (with three or more chosen): the last line then
-// meets the first, and if one exact circle touches every side, it shows while the finger is down and
-// is made when it lifts. Otherwise nothing is made and the edges stay chosen. Tapping any other
-// chosen edge removes it (a line lying exactly on a chosen one counts as the same side); a tap on
-// empty canvas clears them all. The circle is solved in a fixed order (by line id), so the order the
-// edges were chosen in never changes it.
+// it is really drawn from the tap along that line, and the polygon is complete once the last line
+// meets the first validly (geometry/incircle.ts chainPolygon) — a pentagon's first three sides, whose
+// lines meet on the far side, stay open. The press that completes it shows the polygon and, when one
+// exact circle touches every side, the circle; lifting makes it, and the chosen edges clear for the
+// next. Without such a circle nothing is made and the edges stay chosen. Tapping a chosen edge
+// removes it (a line lying exactly on a chosen one counts as the same side); a tap on empty canvas
+// clears them all. The circle is solved in a fixed order (by line id), so the order the edges were
+// chosen in never changes it.
 
 const MAX_EDGES = 6;
 const MIN_RADIUS_EPS = 20;
 
 function emptyEdges(): IncircleState {
-  return { lines: [], supports: [], corners: [], status: 'open', closing: false, polygon: null, result: null };
+  return { lines: [], supports: [], corners: [], status: 'open', polygon: null, result: null };
 }
 
 function lineAt(g: { a: Vec2; b: Vec2 }, t: number): Vec2 {
@@ -288,15 +289,14 @@ function sameSupport(doc: Doc, idA: EntityId, idB: EntityId): boolean {
   return Math.abs(ga.dir.x * gb.dir.y - ga.dir.y * gb.dir.x) < 1e-9 && off(gb.a) < eps && off(gb.b) < eps;
 }
 
-/** What the chosen edges make, in the order chosen; `close` when the first edge was tapped again.
- * Even before that, whenever the chosen lines would close validly (three or more), their polygon and
- * circle are worked out as a preview — so the polygon the lines imply can be seen before it is made.
- * `tapSlack` (world units) lets a tap sit a finger's width past one of its corners. */
-export function evaluateEdges(doc: Doc, lines: IncircleLine[], close = false, tapSlack = 0): IncircleState {
+/** What the chosen edges make, in the order chosen: the consistent chain so far, and — once there
+ * are three or more and the last line meets the first validly — the complete polygon and its exact
+ * circle if it has one. `tapSlack` (world units) lets a tap sit a finger's width past a corner. */
+export function evaluateEdges(doc: Doc, lines: IncircleLine[], tapSlack = 0): IncircleState {
   const entities: Extract<Entity, { kind: 'line' }>[] = [];
   const inputs: ChainInput[] = [];
   const supports: { a: Vec2; b: Vec2 }[] = [];
-  const none = (status: IncircleState['status']): IncircleState => ({ lines, supports, corners: [], status, closing: close, polygon: null, result: null });
+  const none = (status: IncircleState['status']): IncircleState => ({ lines, supports, corners: [], status, polygon: null, result: null });
   for (const l of lines) {
     const e = doc.entities.find((x) => x.id === l.entityId);
     const g = e ? resolveEntityGeom(doc, e) : null;
@@ -320,11 +320,7 @@ export function evaluateEdges(doc: Doc, lines: IncircleLine[], close = false, ta
   if (open.kind !== 'open') return none('invalid');
   const closed = lines.length >= 3 ? solve(true) : null;
   const shut = closed && (closed.kind === 'circle' || closed.kind === 'no-circle') ? closed : null;
-  if (close) {
-    if (!closed || !shut) return { ...none('invalid'), corners: open.corners };
-    return { lines, supports, corners: open.corners, status: shut.kind, closing: true, polygon: shut.polygon, result: shut.kind === 'circle' ? shut.circle : null };
-  }
-  return { lines, supports, corners: open.corners, status: 'open', closing: false, polygon: shut?.polygon ?? null, result: shut?.kind === 'circle' ? shut.circle : null };
+  return { lines, supports, corners: open.corners, status: 'open', polygon: shut?.polygon ?? null, result: shut?.kind === 'circle' ? shut.circle : null };
 }
 
 /** Sticky edge: once a press is on an edge, that edge stays the choice unless the finger comes
@@ -366,22 +362,21 @@ function stickyEdge(doc: Doc, view: ViewTransform, sp: Vec2, held: IncircleLine 
   return beyond > STICKY_EDGE_PX ? edgeOf(doc, same) : held;
 }
 
-/** What a tap on `pick` does to the chain: the first edge again (three or more chosen) closes it;
- * any other chosen edge — or a line lying exactly on one — is removed; a new line is added at the
- * end (up to six). */
-function applyEdgeTap(doc: Doc, lines: IncircleLine[], pick: IncircleLine): { lines: IncircleLine[]; close: boolean } {
+/** What a tap on `pick` does to the chain: a chosen edge — or a line lying exactly on one — is
+ * removed; a new line is added at the end (up to six). */
+function applyEdgeTap(doc: Doc, lines: IncircleLine[], pick: IncircleLine): IncircleLine[] {
   const i = lines.findIndex((l) => sameSupport(doc, l.entityId, pick.entityId));
-  if (i === 0 && lines.length >= 3) return { lines, close: true };
-  if (i >= 0) return { lines: lines.filter((_, k) => k !== i), close: false };
-  if (lines.length >= MAX_EDGES) return { lines, close: false };
-  return { lines: [...lines, pick], close: false };
+  if (i >= 0) return lines.filter((_, k) => k !== i);
+  if (lines.length >= MAX_EDGES) return lines;
+  return [...lines, pick];
 }
 
-/** Press: the edge under the finger is shown chosen (or removed) at once — and, when it is the first
- * edge again, the closed polygon with its circle if there is one; sliding clearly onto another edge
- * moves the choice there (small drift does not — see STICKY_EDGE_PX); lifting keeps it, and makes
- * the circle when the press closed the polygon and one exists. A tap on empty canvas clears the
- * chosen edges. */
+/** Press: the edge under the finger is shown chosen (or removed) at once, with the polygon the chosen
+ * lines now complete and its circle if there is one; sliding clearly onto another edge moves the
+ * choice there (small drift does not — see STICKY_EDGE_PX). Lifting keeps the choice — and when that
+ * press completed a polygon with an exact circle, makes the circle at once (the chosen edges are
+ * cleared, ready for the next). A complete polygon without one makes nothing and keeps the edges. A
+ * tap on empty canvas clears the chosen edges. */
 function betweenEdgesGesture(controller: AppController, view: ViewTransform, screenPos: Vec2): Gesture {
   const doc = controller.doc;
   const before = controller.incircle ?? emptyEdges();
@@ -390,9 +385,9 @@ function betweenEdgesGesture(controller: AppController, view: ViewTransform, scr
   const at = (sp: Vec2): { state: IncircleState; offCurves: boolean } => {
     const pick = (held = stickyEdge(doc, view, sp, held));
     if (!pick) return { state: before, offCurves: curveCandidatesAt(doc, view, sp).length === 0 };
-    const next = applyEdgeTap(doc, before.lines, pick);
-    if (!next.close && next.lines === before.lines) return { state: before, offCurves: false };
-    return { state: evaluateEdges(doc, next.lines, next.close, slack), offCurves: false };
+    const lines = applyEdgeTap(doc, before.lines, pick);
+    if (lines === before.lines) return { state: before, offCurves: false };
+    return { state: evaluateEdges(doc, lines, slack), offCurves: false };
   };
   let now = at(screenPos);
   controller.incircle = now.state;
@@ -405,7 +400,7 @@ function betweenEdgesGesture(controller: AppController, view: ViewTransform, scr
     },
     onUp(sp, wasDrag) {
       now = at(sp);
-      if (now.state.closing && now.state.status === 'circle') {
+      if (now.state !== before && now.state.result) {
         createFromEdges(controller, now.state);
       } else if (now.state === before && now.offCurves && !wasDrag) {
         controller.incircle = emptyEdges();

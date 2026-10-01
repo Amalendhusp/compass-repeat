@@ -1196,7 +1196,7 @@ function drawPreview(ctx: CanvasRenderingContext2D, controller: AppController, v
 /** Phase 5.12b/c → 5.13c: Circle → Between edges, shown so the construction reads by itself (no
  * labels). Each chosen edge: its whole supporting line as a light dashed Signal line right across the
  * view, with the piece actually tapped solid. The chain's corners so far are marked. Whenever the
- * chosen lines close validly — as a preview before the closing tap, and for real during it — the
+ * chosen lines complete a valid polygon (shown while the finger is down; lifting makes its circle) the
  * polygon they imply is outlined and faintly tinted with its corners, and, when it has one exact
  * circle, the circle (a stronger dashed stroke over a pale halo, so it reads over dense construction
  * yet never looks committed), its centre and every tangency point. A circle too small to see at
@@ -1237,7 +1237,7 @@ function drawIncircle(ctx: CanvasRenderingContext2D, controller: AppController, 
     ctx.setLineDash([]);
     ctx.globalAlpha = 1;
   });
-  // The implied polygon (preview or closing).
+  // The polygon the chosen lines complete.
   if (st.polygon && st.polygon.length >= 3) {
     const pts = st.polygon.map((v) => worldToScreen(view, v));
     const poly = new Path2D();
