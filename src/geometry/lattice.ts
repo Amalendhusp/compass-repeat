@@ -6,7 +6,7 @@
 import type { Doc, FrameKind, RepeatSystem, Vec2 } from '../model/types.ts';
 import type { ViewTransform } from '../app/controller.ts';
 import { screenToWorld, worldToScreen } from '../app/controller.ts';
-import { computeFairRegions, pointInPolygon } from './regions.ts';
+import { computeFairRegions } from './regions.ts';
 import { resolveEntityGeom } from './kernel.ts';
 import { deriveSegments } from './segments.ts';
 
@@ -317,23 +317,42 @@ function segPointDistance(p: Vec2, a: Vec2, b: Vec2): number {
   return Math.hypot(p.x - cx, p.y - cy);
 }
 
-function segmentsIntersect(a1: Vec2, a2: Vec2, b1: Vec2, b2: Vec2): boolean {
-  const d1 = (b2.x - b1.x) * (a1.y - b1.y) - (b2.y - b1.y) * (a1.x - b1.x);
-  const d2 = (b2.x - b1.x) * (a2.y - b1.y) - (b2.y - b1.y) * (a2.x - b1.x);
-  const d3 = (a2.x - a1.x) * (b1.y - a1.y) - (a2.y - a1.y) * (b1.x - a1.x);
-  const d4 = (a2.x - a1.x) * (b2.y - a1.y) - (a2.y - a1.y) * (b2.x - a1.x);
-  return ((d1 > 0 && d2 < 0) || (d1 < 0 && d2 > 0)) && ((d3 > 0 && d4 < 0) || (d3 < 0 && d4 > 0));
+/** Unit normals of a convex polygon's edges — the candidate separating axes. */
+function axesOf(poly: Vec2[]): Vec2[] {
+  const axes: Vec2[] = [];
+  for (let i = 0; i < poly.length; i++) {
+    const a = poly[i]!;
+    const b = poly[(i + 1) % poly.length]!;
+    const len = Math.hypot(b.x - a.x, b.y - a.y);
+    if (len > 1e-12) axes.push({ x: -(b.y - a.y) / len, y: (b.x - a.x) / len });
+  }
+  return axes;
 }
 
-function polygonsOverlap(polyA: Vec2[], polyB: Vec2[]): boolean {
-  for (const p of polyA) if (pointInPolygon(polyB, p)) return true;
-  for (const p of polyB) if (pointInPolygon(polyA, p)) return true;
-  for (let i = 0; i < polyA.length; i++) {
-    for (let j = 0; j < polyB.length; j++) {
-      if (segmentsIntersect(polyA[i]!, polyA[(i + 1) % polyA.length]!, polyB[j]!, polyB[(j + 1) % polyB.length]!)) return true;
-    }
+function projectOnto(poly: Vec2[], n: Vec2): [number, number] {
+  let lo = Infinity;
+  let hi = -Infinity;
+  for (const p of poly) {
+    const d = p.x * n.x + p.y * n.y;
+    if (d < lo) lo = d;
+    if (d > hi) hi = d;
   }
-  return false;
+  return [lo, hi];
+}
+
+/** vNext Phase 1: how deeply two convex polygons overlap (separating-axis theorem) — the smallest
+ * overlap of their projections over every edge normal: positive = overlapping by that much, zero =
+ * exactly touching, negative = apart. Exact for touching shapes, where the old point-in-polygon
+ * test was ambiguous (and contact had to be faked a hair outside). Repeat frames — triangle, square,
+ * hexagon, rotated or mirrored — are always convex. */
+function penetration(polyA: Vec2[], polyB: Vec2[]): number {
+  let depth = Infinity;
+  for (const n of [...axesOf(polyA), ...axesOf(polyB)]) {
+    const [a0, a1] = projectOnto(polyA, n);
+    const [b0, b1] = projectOnto(polyB, n);
+    depth = Math.min(depth, Math.min(a1, b1) - Math.max(a0, b0));
+  }
+  return depth;
 }
 
 /** Minimum distance between two convex polygon boundaries (0 or negative-equivalent handled by
@@ -400,32 +419,31 @@ export function contactModel(doc: Doc, dir: 'a' | 'b'): ContactModel {
   const polyA = posedPolygon(doc, instancePose(doc.repeat, 0, 0));
   const baseB = posedPolygon(doc, neighbourPose(doc.repeat, dir));
 
+  // Overlapping by more than rounding: a real overlap. Exactly touching is contact.
+  const overlapEps = R * 1e-9;
   const classify = (t: Vec2): ContactState => {
     const polyB = baseB.map((p) => ({ x: p.x + t.x, y: p.y + t.y }));
-    if (polygonsOverlap(polyA, polyB)) return 'overlap';
+    if (penetration(polyA, polyB) > overlapEps) return 'overlap';
     const { distance, sharedVertexPairs } = polygonContactAnalysis(polyA, polyB);
     if (distance > snapEps) return 'gap';
     return sharedVertexPairs >= 2 ? 'edges-meet' : 'tips-touch';
   };
 
-  // Monotonic along a ray for convex shapes: overlapping at the reference, clear by 2R.
+  // Exactly where, along a direction, the neighbour stops overlapping the reference: for each
+  // separating axis, the distance at which the two projections stop overlapping; convex shapes
+  // are apart as soon as any one axis separates them, so contact is the smallest of these.
+  const axes = [...axesOf(polyA), ...axesOf(baseB)];
   const contactDistance = (unit: Vec2): number => {
-    let lo = 0;
-    let hi = R * 2.05;
-    for (let iter = 0; iter < 22; iter++) {
-      const mid = (lo + hi) / 2;
-      if (classify({ x: unit.x * mid, y: unit.y * mid }) === 'overlap') lo = mid;
-      else hi = mid;
+    let best = Infinity;
+    for (const n of axes) {
+      const k = unit.x * n.x + unit.y * n.y;
+      if (Math.abs(k) < 1e-12) continue;
+      const [a0, a1] = projectOnto(polyA, n);
+      const [b0, b1] = projectOnto(baseB, n);
+      const s = k > 0 ? (a1 - b0) / k : (a0 - b1) / k;
+      if (s > 0 && s < best) best = s;
     }
-    return hi;
-  };
-
-  // Exactly-coincident boundaries are ambiguous to the point-in-polygon test, so each detent sits
-  // a hair outside true contact — well inside `snapEps`, so it still classifies as contact.
-  const nudge = R * 0.002;
-  const pushOut = (t: Vec2): Vec2 => {
-    const len = Math.hypot(t.x, t.y);
-    return len < 1e-9 ? t : { x: t.x + (t.x / len) * nudge, y: t.y + (t.y / len) * nudge };
+    return Number.isFinite(best) ? best : R * 2;
   };
 
   const detents: ContactDetent[] = [];
@@ -439,13 +457,13 @@ export function contactModel(doc: Doc, dir: 'a' | 'b'): ContactModel {
       const q2 = baseB[(j + 1) % nB]!;
       // Antiparallel, equal-length edges can lie exactly along one another.
       if (Math.hypot(p2.x - p1.x + (q2.x - q1.x), p2.y - p1.y + (q2.y - q1.y)) > R * 1e-3) continue;
-      const t = pushOut({ x: p1.x - q2.x, y: p1.y - q2.y });
+      const t = { x: p1.x - q2.x, y: p1.y - q2.y };
       if (classify(t) === 'edges-meet') detents.push({ translate: t, state: 'edges-meet' });
     }
   }
   for (const p of polyA) {
     for (const q of baseB) {
-      const t = pushOut({ x: p.x - q.x, y: p.y - q.y });
+      const t = { x: p.x - q.x, y: p.y - q.y };
       if (detents.some((d) => Math.hypot(d.translate.x - t.x, d.translate.y - t.y) < R * 0.01)) continue;
       if (classify(t) === 'tips-touch') detents.push({ translate: t, state: 'tips-touch' });
     }
