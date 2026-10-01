@@ -197,6 +197,7 @@ const turnOf = (p: Vec2, q: Vec2, r: Vec2) => (q.x - p.x) * (r.y - q.y) - (q.y -
 /** The chain's polygon (open, or closed on request) and — once closed — its exact circle. */
 export function chainPolygon(lines: ChainInput[], opts: ChainOptions): ChainResult {
   const n = lines.length;
+  if (n === 0) return { kind: 'open', corners: [] };
   const d = lines.map((l) => unitDir(l.line));
   if (d.some((v) => v === null)) return { kind: 'invalid', reason: 'parallel', corners: [] };
   const dir = d as Vec2[];

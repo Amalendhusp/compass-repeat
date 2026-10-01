@@ -293,6 +293,8 @@ function sameSupport(doc: Doc, idA: EntityId, idB: EntityId): boolean {
  * are three or more and the last line meets the first validly — the complete polygon and its exact
  * circle if it has one. `tapSlack` (world units) lets a tap sit a finger's width past a corner. */
 export function evaluateEdges(doc: Doc, lines: IncircleLine[], tapSlack = 0): IncircleState {
+  // Removing the only chosen edge leaves nothing chosen.
+  if (lines.length === 0) return emptyEdges();
   const entities: Extract<Entity, { kind: 'line' }>[] = [];
   const inputs: ChainInput[] = [];
   const supports: { a: Vec2; b: Vec2 }[] = [];
