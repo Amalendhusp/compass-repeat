@@ -50,10 +50,10 @@ export const squareGuide: Guide = {
     {
       title: 'Choose a frame',
       text: 'Start with a frame. Choose Square to define your working area.',
-      controls: (ctx) => [ctx.find('.frame-option', 'Square')],
+      controls: (ctx) => [ctx.find('.start-frame', 'Square')],
       areas: (ctx) => [canvasArea(ctx)],
       async run(ctx) {
-        await ctx.press(ctx.find('.frame-option', 'Square'));
+        await ctx.press(ctx.find('.start-frame', 'Square'));
         await ctx.wait(500);
         // Draw it: touch the centre, drag toward a corner — diagonally, so the square sits level.
         const cv = ctx.canvas();

@@ -207,8 +207,9 @@ export function closeAnyPopover(): void {
 /** A small anchored flat-list menu, dismissed on an outside tap or a selection. Used by the
  * menu button (My Artworks, Save, Save as new, New artwork, Clear drawing). `title`, when given,
  * heads the list (the open artwork's name). */
-function showPopover(anchor: HTMLElement, items: { label: string; active?: boolean; onSelect: () => void }[], title?: string): void {
+function showPopover(anchor: HTMLElement, items: { label: string; active?: boolean; onSelect: () => void }[], title?: string, className?: string): void {
   mountPopover(anchor, (menu, close) => {
+    if (className) menu.classList.add(className);
     if (title) popoverSectionLabel(menu, title);
     for (const item of items) {
       const btn = document.createElement('button');
@@ -689,12 +690,10 @@ export function buildShell(
   controller: AppController,
   opts: {
     onFit: () => void;
-    onMyArtworks: () => void;
-    onBeginnerGuide: () => void;
+    onNew: () => void;
+    onOpen: () => void;
     onSave: () => void;
-    onSaveAsNew: () => void;
-    onNewArtwork: () => void;
-    onClearDrawing: () => void;
+    onSaveAs: () => void;
     onSwitchWorkspace: (ws: 'construct' | 'repeat') => void;
     getView: () => ViewTransform;
   },
@@ -715,14 +714,14 @@ export function buildShell(
   menuBtn.innerHTML = iconSvg('menu');
   onTap(menuBtn, () =>
     togglePanel(menuBtn, () =>
+      // vNext Phase 2: a plain file menu under the artwork's own name (a heading, not an action).
+      // New and Open… both lead to the Start screen — at its frames, or at My Artworks.
       showPopover(menuBtn, [
-        { label: 'My Artworks', onSelect: () => opts.onMyArtworks() },
+        { label: 'New', onSelect: () => opts.onNew() },
+        { label: 'Open…', onSelect: () => opts.onOpen() },
         { label: 'Save', onSelect: () => opts.onSave() },
-        { label: 'Save as new…', onSelect: () => opts.onSaveAsNew() },
-        { label: 'New artwork…', onSelect: () => opts.onNewArtwork() },
-        { label: 'Clear drawing…', onSelect: () => opts.onClearDrawing() },
-        { label: 'Beginner Guide', onSelect: () => opts.onBeginnerGuide() },
-      ], controller.doc.named ? controller.doc.name : 'Untitled artwork'),
+        { label: 'Save As…', onSelect: () => opts.onSaveAs() },
+      ], controller.doc.named ? controller.doc.name : 'Untitled artwork', 'file-menu'),
     ),
   );
   leftSide.appendChild(menuBtn);
