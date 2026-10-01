@@ -3,12 +3,13 @@ import type { AppController, SelectCandidate, ViewTransform } from '../app/contr
 import { resolveEntityGeom, resolvePoint } from '../geometry/kernel.ts';
 import { defaultSegmentKind, deriveSegments, segmentKey, type DerivedSegment } from '../geometry/segments.ts';
 import { computeConstructionRegions, computeDirectHoles, computeFairRegions } from '../geometry/regions.ts';
-import { isFramePoint, isPointOrphanedByTrim, isPointUsed } from '../geometry/usage.ts';
+import { isFramePoint, isPointOrphanedByTrim, isPointUsed, pointById } from '../geometry/usage.ts';
 import { dist } from '../geometry/vec.ts';
 import { refLocation } from '../interaction/pointref.ts';
 import { color, font, stroke } from './tokens.ts';
 import { worldToScreen } from '../app/controller.ts';
 import { makePath } from './svgContext.ts';
+import { MARKER_R } from '../interaction/precision.ts';
 
 // Phase 1.2 item 7 / Phase 3.3 item 3: the near-pointer field radius — a hard cutoff for whether
 // an otherwise-hidden point is drawn at all (isPointVisible), and the same radius the continuous
@@ -23,9 +24,19 @@ const TRACING_CONSTRUCTION_ALPHA = 0.15; // Phase 3.1 item 5: dimmer still while
  * construction", present-with-a-state means "show as this"; absent from the draft falls through
  * to the real doc state untouched). Nothing but rendering ever reads the draft. */
 function effectiveState(controller: AppController, key: SegmentKey, live = true): SegmentState | undefined {
-  const draft = live ? controller.fairTrace?.draft : undefined;
+  const draft = live ? activeFairDraft(controller) : undefined;
   if (draft?.has(key)) return draft.get(key) ?? undefined;
   return controller.doc.segmentStates.get(key);
+}
+
+/** Phase 5.8: the Fair run being shown — a live press/trace first, else a proposal awaiting ✓. */
+function activeFairDraft(controller: AppController): Map<SegmentKey, SegmentState | null> | undefined {
+  return controller.fairTrace?.draft;
+}
+
+/** Phase 5.8: while Fair is previewing or asking, everything that isn't the candidate recedes. */
+function fairPreviewing(controller: AppController): boolean {
+  return controller.tool === 'fair' && !!(controller.fairTrace || controller.lineChoice);
 }
 
 /** A piece of `entity`'s curve between two params, in screen space — shared by normal
@@ -99,6 +110,52 @@ function drawExtensionTails(ctx: CanvasRenderingContext2D, doc: Doc, view: ViewT
  * path and immediate candidate continuation; dim unrelated construction more strongly." An entity
  * with no derived segments yet (an untouched circle — §4.5) falls back to drawing the whole curve.
  */
+// ---- Focus construction: construction near the work stays clear, the rest fades right back ----
+
+const FOCUS_NEAR_PX = 90;
+const FOCUS_FAR_PX = 200;
+const FOCUS_FAINT = 0.1;
+
+/** Where the work is: the finger (last touch), and any pending anchor (Line's A, Circle's centre,
+ * Arc's compass). World space, so panning never moves it. */
+function focusSources(controller: AppController): Vec2[] {
+  const out: Vec2[] = [];
+  if (controller.focusWorld) out.push(controller.focusWorld);
+  const p = controller.pending;
+  if (p?.kind === 'line') out.push(refLocation(controller.doc, p.a));
+  else if (p?.kind === 'circle') out.push(refLocation(controller.doc, p.centre));
+  else if (p?.kind === 'arc') out.push(refLocation(controller.doc, p.stage === 'measure-b' ? p.a : p.centre));
+  return out;
+}
+
+/** Screen distance from `f` to one piece of curve. */
+function pieceDistancePx(g: ReturnType<typeof resolveEntityGeom>, from: number, to: number, f: Vec2, zoom: number): number {
+  if (g.kind === 'line') {
+    const a = paramPoint(g, from);
+    const b = paramPoint(g, to);
+    const dx = b.x - a.x;
+    const dy = b.y - a.y;
+    const len2 = dx * dx + dy * dy;
+    const t = len2 < 1e-12 ? 0 : Math.max(0, Math.min(1, ((f.x - a.x) * dx + (f.y - a.y) * dy) / len2));
+    return Math.hypot(a.x + dx * t - f.x, a.y + dy * t - f.y) * zoom;
+  }
+  let span = to - from;
+  if (span <= 0) span += Math.PI * 2;
+  let ang = Math.atan2(f.y - g.centre.y, f.x - g.centre.x) - from;
+  ang = ((ang % (Math.PI * 2)) + Math.PI * 2) % (Math.PI * 2);
+  if (ang <= span) return Math.abs(Math.hypot(f.x - g.centre.x, f.y - g.centre.y) - g.radius) * zoom;
+  return Math.min(dist(paramPoint(g, from), f), dist(paramPoint(g, to), f)) * zoom;
+}
+
+function focusAlpha(sources: Vec2[], g: ReturnType<typeof resolveEntityGeom>, from: number, to: number, zoom: number): number {
+  if (sources.length === 0) return 0.35;
+  let d = Infinity;
+  for (const f of sources) d = Math.min(d, pieceDistancePx(g, from, to, f, zoom));
+  if (d <= FOCUS_NEAR_PX) return 1;
+  if (d >= FOCUS_FAR_PX) return FOCUS_FAINT;
+  return 1 - (1 - FOCUS_FAINT) * ((d - FOCUS_NEAR_PX) / (FOCUS_FAR_PX - FOCUS_NEAR_PX));
+}
+
 function drawEntities(ctx: CanvasRenderingContext2D, controller: AppController, view: ViewTransform, exp?: ArtworkExport): void {
   const doc = controller.doc;
   const showConstruction = !exp || exp.construction;
@@ -106,16 +163,21 @@ function drawEntities(ctx: CanvasRenderingContext2D, controller: AppController, 
   // Phase 4: this file's own §4.10 comment always intended Fill to fade construction the same
   // way Fair does — never wired up before because Fill didn't exist yet.
   const quiet = controller.tool === 'fair' || controller.tool === 'fill';
-  const quietAlpha = controller.fairTrace ? TRACING_CONSTRUCTION_ALPHA : QUIET_CONSTRUCTION_ALPHA;
+  const quietAlpha = controller.fairTrace || controller.lineChoice ? TRACING_CONSTRUCTION_ALPHA : QUIET_CONSTRUCTION_ALPHA;
+  // Mobile performance: while two fingers pan/zoom, construction is drawn without dash patterns
+  // (the costliest part of a dense drawing); full quality returns on release.
+  const light = !exp && controller.viewGesture;
+  const focus = !exp && controller.focusConstruction ? focusSources(controller) : null;
   for (const e of doc.entities) {
     const segs = deriveSegments(doc, e);
+    const g = focus ? resolveEntityGeom(doc, e) : null;
     if (segs.length === 0) {
       if (!showConstruction) continue;
       wholeEntityPath(ctx, doc, view, e);
       ctx.strokeStyle = color.construction;
       ctx.lineWidth = baseWidth;
       ctx.setLineDash([]);
-      ctx.globalAlpha = quiet ? quietAlpha : 1;
+      ctx.globalAlpha = (quiet ? quietAlpha : 1) * (focus && g ? focusAlpha(focus, g, 0, g.kind === 'circle' ? Math.PI * 2 : 1, view.zoom) : 1);
       ctx.stroke();
       ctx.globalAlpha = 1;
       continue;
@@ -138,8 +200,8 @@ function drawEntities(ctx: CanvasRenderingContext2D, controller: AppController, 
         ctx.lineWidth = baseWidth;
         ctx.lineCap = 'butt';
         ctx.lineJoin = 'miter';
-        ctx.setLineDash(kind === 'extension' ? stroke.extensionDash : []);
-        ctx.globalAlpha = quiet ? quietAlpha : 1;
+        ctx.setLineDash(kind === 'extension' && !light ? stroke.extensionDash : []);
+        ctx.globalAlpha = (quiet ? quietAlpha : 1) * (focus && g ? focusAlpha(focus, g, seg.fromParam, seg.toParam, view.zoom) : 1);
       }
       ctx.stroke();
       ctx.globalAlpha = 1;
@@ -249,11 +311,37 @@ function drawSelectionHighlights(ctx: CanvasRenderingContext2D, doc: Doc, view: 
         // Phase 3.6 item 4: `cand` is a SelectableGroup — draw every granular piece it spans
         // (`cand.keys`), not a single derived segment matched by the group's own outer from/to
         // (no raw DerivedSegment has those exact endpoints once a group spans more than one).
-        for (const seg of deriveSegments(doc, entity)) {
-          if (!cand.keys.includes(seg.key)) continue;
+        // Phase 5.10: each scope looks different — a segment is a bold stroke between two ringed
+        // ends; a run adds a soft halo along its length; the whole shape (below) is halo only.
+        const isRun = cand.scope === 'run';
+        const pieces = deriveSegments(doc, entity).filter((seg) => cand.keys.includes(seg.key));
+        ctx.save();
+        if (isRun) {
+          ctx.strokeStyle = color.signalLight;
+          ctx.lineWidth = 11;
+          ctx.lineCap = 'round';
+          for (const seg of pieces) {
+            segmentPath(ctx, doc, view, entity, seg.fromParam, seg.toParam);
+            ctx.stroke();
+          }
+        }
+        ctx.strokeStyle = color.signal;
+        ctx.lineWidth = isRun ? 3.5 : 5;
+        ctx.lineCap = 'round';
+        for (const seg of pieces) {
           segmentPath(ctx, doc, view, entity, seg.fromParam, seg.toParam);
           ctx.stroke();
         }
+        for (const id of [cand.from, cand.to]) {
+          const e = worldToScreen(view, resolvePoint(doc, id));
+          ctx.beginPath();
+          ctx.arc(e.x, e.y, 5.5, 0, Math.PI * 2);
+          ctx.fillStyle = color.paper;
+          ctx.fill();
+          ctx.lineWidth = 2.5;
+          ctx.stroke();
+        }
+        ctx.restore();
         continue;
       }
       const segs = deriveSegments(doc, entity);
@@ -262,10 +350,18 @@ function drawSelectionHighlights(ctx: CanvasRenderingContext2D, doc: Doc, view: 
         ctx.stroke();
         continue;
       }
-      for (const seg of segs) {
-        if ((doc.segmentStates.get(seg.key)?.state ?? 'construction') === 'trimmed') continue;
-        segmentPath(ctx, doc, view, entity, seg.fromParam, seg.toParam);
-        ctx.stroke();
+      // Phase 5.10: the whole shape — a wide soft halo over its full length, then the stroke.
+      for (const pass of [0, 1]) {
+        ctx.save();
+        ctx.strokeStyle = pass === 0 ? color.signalLight : color.signal;
+        ctx.lineWidth = pass === 0 ? 13 : 3;
+        ctx.lineCap = 'round';
+        for (const seg of segs) {
+          if ((doc.segmentStates.get(seg.key)?.state ?? 'construction') === 'trimmed') continue;
+          segmentPath(ctx, doc, view, entity, seg.fromParam, seg.toParam);
+          ctx.stroke();
+        }
+        ctx.restore();
       }
     }
   }
@@ -449,6 +545,23 @@ function drawNodeInset(ctx: CanvasRenderingContext2D, controller: AppController,
   ctx.lineWidth = 2;
   ctx.stroke();
 
+  // Smart Snap: points about as close as the chosen one get a dashed Signal ring — this is a
+  // choice the finger is still making, not a settled one.
+  if (target.ambiguous && target.labels) {
+    for (const l of target.labels) {
+      if (l.active) continue;
+      const local = toLocal(worldToScreen(view, l.at));
+      if (dist(local, c) > NODE_INSET_RADIUS * 0.8) continue;
+      ctx.beginPath();
+      ctx.arc(local.x, local.y, 9, 0, Math.PI * 2);
+      ctx.setLineDash([3, 2]);
+      ctx.strokeStyle = color.signal;
+      ctx.lineWidth = 1.6;
+      ctx.stroke();
+      ctx.setLineDash([]);
+    }
+  }
+
   ctx.restore(); // clip
 
   ctx.beginPath();
@@ -456,98 +569,501 @@ function drawNodeInset(ctx: CanvasRenderingContext2D, controller: AppController,
   ctx.lineWidth = 1.5;
   ctx.strokeStyle = color.ink;
   ctx.stroke();
+
+  // Smart Snap: what the chosen point is — and, when it's too close to call, what else it could be.
+  const active = target.labels?.find((l) => l.active);
+  if (active) {
+    const others = target.ambiguous ? [...new Set(target.labels!.filter((l) => !l.active).map((l) => l.label))] : [];
+    const lines = [active.label, ...(others.length ? [`or ${others.slice(0, 2).join(' / ')} · slide to choose`] : [])];
+    drawLabelPill(ctx, { x: c.x, y: c.y + NODE_INSET_RADIUS + 14 }, lines, view);
+  }
   ctx.restore();
 }
 
-const PRECISION_LOUPE_RADIUS = 66;
+/** A small rounded label, centred on `at` and kept on screen. First line Signal, the rest muted. */
+function drawLabelPill(ctx: CanvasRenderingContext2D, at: Vec2, lines: string[], view: ViewTransform, alpha = 1): void {
+  ctx.save();
+  ctx.globalAlpha = alpha;
+  ctx.font = `600 11px ${font.ui}`;
+  const widths = lines.map((l, i) => {
+    ctx.font = `${i === 0 ? 600 : 500} ${i === 0 ? 11 : 10}px ${font.ui}`;
+    return ctx.measureText(l).width;
+  });
+  const w = Math.max(...widths) + 16;
+  const h = 8 + lines.length * 14;
+  const x = Math.min(Math.max(at.x - w / 2, 4), view.w - w - 4);
+  const y = Math.min(Math.max(at.y - h / 2, 4), view.h - h - 4);
+  ctx.shadowColor = 'rgba(30,42,54,0.18)';
+  ctx.shadowBlur = 8;
+  ctx.fillStyle = color.paper;
+  ctx.beginPath();
+  ctx.roundRect(x, y, w, h, 8);
+  ctx.fill();
+  ctx.shadowColor = 'transparent';
+  ctx.strokeStyle = color.hairline;
+  ctx.lineWidth = 1;
+  ctx.stroke();
+  ctx.textAlign = 'center';
+  ctx.textBaseline = 'middle';
+  lines.forEach((l, i) => {
+    ctx.font = `${i === 0 ? 600 : 500} ${i === 0 ? 11 : 10}px ${font.ui}`;
+    ctx.fillStyle = i === 0 ? color.signal : color.muted;
+    ctx.fillText(l, x + w / 2, y + 11 + i * 14);
+  });
+  ctx.restore();
+}
+
+/** Smart Snap: the point just used says what it was, briefly (Phase 5.9: with a hint line after a
+ * crowded tap); and any brief canvas cue ("Trace the line you want"). */
+function drawSnapFeedback(ctx: CanvasRenderingContext2D, controller: AppController, view: ViewTransform): void {
+  const conf = controller.snapConfirm;
+  if (conf && performance.now() < conf.until) {
+    const s = worldToScreen(view, conf.at);
+    ctx.save();
+    ctx.beginPath();
+    ctx.arc(s.x, s.y, 11, 0, Math.PI * 2);
+    ctx.strokeStyle = color.signal;
+    ctx.lineWidth = 2;
+    ctx.stroke();
+    ctx.restore();
+    drawLabelPill(ctx, { x: s.x, y: s.y - (conf.hint ? 34 : 26) }, conf.hint ? [conf.label, conf.hint] : [conf.label], view, 0.95);
+  }
+  const cue = controller.cue;
+  if (cue && performance.now() < cue.until) {
+    const s = worldToScreen(view, cue.at);
+    drawLabelPill(ctx, { x: s.x, y: s.y - 44 }, [cue.text], view, 0.97);
+  }
+  drawNoPoint(ctx, controller, view);
+}
+
+// ---- Phase 5.8/5.9: magnified local views, spread markers ----
+
+const CHOICE_MARKER_R = 11;
+
+/** Circled-number markers placed beside each candidate, pushed apart until none overlap. */
+function fanMarkers(points: Vec2[], centre: Vec2, spread: number, bound: { c: Vec2; r: number } | null): Vec2[] {
+  const n = points.length;
+  const pos = points.map((p, i) => {
+    let dx = p.x - centre.x;
+    let dy = p.y - centre.y;
+    let len = Math.hypot(dx, dy);
+    if (len < 1) {
+      const a = -Math.PI / 2 + (i * 2 * Math.PI) / Math.max(n, 1);
+      dx = Math.cos(a);
+      dy = Math.sin(a);
+      len = 1;
+    }
+    return { x: p.x + (dx / len) * spread, y: p.y + (dy / len) * spread };
+  });
+  const minGap = CHOICE_MARKER_R * 2 + 4;
+  for (let iter = 0; iter < 40; iter++) {
+    for (let i = 0; i < n; i++) {
+      for (let j = i + 1; j < n; j++) {
+        const a = pos[i]!;
+        const b = pos[j]!;
+        let dx = b.x - a.x;
+        let dy = b.y - a.y;
+        let d = Math.hypot(dx, dy);
+        if (d >= minGap) continue;
+        if (d < 0.01) {
+          dx = 1;
+          dy = 0;
+          d = 1;
+        }
+        const push = (minGap - d) / 2;
+        a.x -= (dx / d) * push;
+        a.y -= (dy / d) * push;
+        b.x += (dx / d) * push;
+        b.y += (dy / d) * push;
+      }
+    }
+    if (bound) {
+      for (const p of pos) {
+        const dx = p.x - bound.c.x;
+        const dy = p.y - bound.c.y;
+        const d = Math.hypot(dx, dy);
+        const max = bound.r - CHOICE_MARKER_R - 3;
+        if (d > max) {
+          p.x = bound.c.x + (dx / d) * max;
+          p.y = bound.c.y + (dy / d) * max;
+        }
+      }
+    }
+  }
+  return pos;
+}
+
+function drawNumberBadge(ctx: CanvasRenderingContext2D, at: Vec2, n: number, fill: string, strong: boolean, alpha: number): void {
+  ctx.save();
+  ctx.globalAlpha = alpha;
+  ctx.beginPath();
+  ctx.arc(at.x, at.y, CHOICE_MARKER_R, 0, Math.PI * 2);
+  ctx.fillStyle = strong ? fill : color.paper;
+  ctx.fill();
+  ctx.lineWidth = 2;
+  ctx.strokeStyle = fill;
+  ctx.stroke();
+  ctx.fillStyle = strong ? color.paper : fill;
+  ctx.font = `700 12px ${font.ui}`;
+  ctx.textAlign = 'center';
+  ctx.textBaseline = 'middle';
+  ctx.fillText(String(n), at.x, at.y + 0.5);
+  ctx.restore();
+}
+
+/** The drawing around `centreScreen`, magnified `mag`× into a circle at `c` (clipped). */
+function drawMagnified(ctx: CanvasRenderingContext2D, controller: AppController, view: ViewTransform, centreScreen: Vec2, c: Vec2, r: number, mag: number): (s: Vec2) => Vec2 {
+  const doc = controller.doc;
+  const toLocal = (s: Vec2): Vec2 => ({ x: c.x + (s.x - centreScreen.x) * mag, y: c.y + (s.y - centreScreen.y) * mag });
+  const reachPx = r / mag + 2;
+  const centreWorld = { x: (centreScreen.x - view.w / 2) / view.zoom - view.pan.x, y: (centreScreen.y - view.h / 2) / view.zoom - view.pan.y };
+  for (const e of doc.entities) {
+    const g = resolveEntityGeom(doc, e);
+    const segs = deriveSegments(doc, e);
+    const pieces = segs.length ? segs.map((sg) => ({ from: sg.fromParam, to: sg.toParam, key: sg.key as SegmentKey | null })) : [{ from: 0, to: g.kind === 'circle' ? Math.PI * 2 : 1, key: null }];
+    for (const pc of pieces) {
+      const st = pc.key ? effectiveState(controller, pc.key) : undefined;
+      if (st?.state === 'trimmed') continue;
+      if (pieceDistancePx(g, pc.from, pc.to, centreWorld, view.zoom) > reachPx) continue;
+      ctx.beginPath();
+      if (g.kind === 'circle') {
+        const cl = toLocal(worldToScreen(view, g.centre));
+        ctx.arc(cl.x, cl.y, g.radius * view.zoom * mag, pc.from, pc.to, false);
+      } else {
+        const a = toLocal(worldToScreen(view, paramPoint(g, pc.from)));
+        const b = toLocal(worldToScreen(view, paramPoint(g, pc.to)));
+        ctx.moveTo(a.x, a.y);
+        ctx.lineTo(b.x, b.y);
+      }
+      const isFair = st?.state === 'fair';
+      ctx.strokeStyle = isFair ? (st?.stroke?.colour ?? color.ink) : color.construction;
+      ctx.lineWidth = isFair ? 2.2 : 1.2;
+      ctx.globalAlpha = isFair ? 1 : 0.7;
+      ctx.stroke();
+      ctx.globalAlpha = 1;
+    }
+  }
+  return toLocal;
+}
+
+/** "No point here yet": a dashed ring where the tap met the curve; with the Divide ÷2 offer, a
+ * ghost of the midpoint that Divide would create. */
+function drawNoPoint(ctx: CanvasRenderingContext2D, controller: AppController, view: ViewTransform): void {
+  const np = controller.noPoint;
+  if (!np || performance.now() > np.until) return;
+  const s = worldToScreen(view, np.at);
+  ctx.save();
+  ctx.setLineDash([3, 3]);
+  ctx.strokeStyle = color.alert;
+  ctx.lineWidth = 1.6;
+  ctx.beginPath();
+  ctx.arc(s.x, s.y, 9, 0, Math.PI * 2);
+  ctx.stroke();
+  ctx.setLineDash([]);
+  ctx.beginPath();
+  ctx.moveTo(s.x - 5, s.y + 5);
+  ctx.lineTo(s.x + 5, s.y - 5);
+  ctx.stroke();
+  if (np.midAt) {
+    const m = worldToScreen(view, np.midAt);
+    ctx.beginPath();
+    ctx.arc(m.x, m.y, 5, 0, Math.PI * 2);
+    ctx.fillStyle = color.signalLight;
+    ctx.fill();
+    ctx.strokeStyle = color.signal;
+    ctx.lineWidth = 1.6;
+    ctx.setLineDash([2, 2]);
+    ctx.stroke();
+    ctx.setLineDash([]);
+  }
+  ctx.restore();
+}
+
+// ---- Phase 5.8: Fair Preview → Confirm, and "Which line?" ----
+
+const RUN_COLOURS = [color.signal, color.brass, '#2E8B57', '#8A4FD1'];
+const RUN_DASHES: number[][] = [[], [10, 5], [2, 5], [12, 4, 2, 4]];
+
+function keyPiece(doc: Doc, key: SegmentKey): { entity: Entity; seg: DerivedSegment } | null {
+  const entity = doc.entities.find((e) => key.startsWith(`${e.id}:`));
+  if (!entity) return null;
+  const seg = deriveSegments(doc, entity).find((sg) => sg.key === key);
+  return seg ? { entity, seg } : null;
+}
+
+/** Strokes a whole run as ONE path — so a translucent halo has no darker blobs where pieces meet. */
+function strokeRun(ctx: CanvasRenderingContext2D, doc: Doc, view: ViewTransform, keys: Iterable<SegmentKey>, whole: string | null): void {
+  if (whole) {
+    const e = doc.entities.find((x) => x.id === whole);
+    if (e) {
+      wholeEntityPath(ctx, doc, view, e);
+      ctx.stroke();
+    }
+    return;
+  }
+  const path = new Path2D();
+  for (const k of keys) {
+    const pc = keyPiece(doc, k);
+    if (!pc) continue;
+    const g = resolveEntityGeom(doc, pc.entity);
+    if (g.kind === 'circle') {
+      const c = worldToScreen(view, g.centre);
+      const start = paramPoint(g, pc.seg.fromParam);
+      const s0 = worldToScreen(view, start);
+      path.moveTo(s0.x, s0.y);
+      path.arc(c.x, c.y, g.radius * view.zoom, pc.seg.fromParam, pc.seg.toParam, false);
+    } else {
+      const a = worldToScreen(view, paramPoint(g, pc.seg.fromParam));
+      const b = worldToScreen(view, paramPoint(g, pc.seg.toParam));
+      path.moveTo(a.x, a.y);
+      path.lineTo(b.x, b.y);
+    }
+  }
+  ctx.stroke(path);
+}
+
+/** Open ends of a set of drafted pieces (world). */
+function draftEnds(doc: Doc, keys: Iterable<SegmentKey>): Vec2[] {
+  const count = new Map<PointId, number>();
+  for (const k of keys) {
+    const pc = keyPiece(doc, k);
+    if (!pc) continue;
+    for (const id of [pc.seg.from, pc.seg.to]) count.set(id, (count.get(id) ?? 0) + 1);
+  }
+  return [...count].filter(([, n]) => n === 1).map(([id]) => resolvePoint(doc, id));
+}
+
+/** Under the run: a broad halo, Signal for "will be Fair", amber dashes for "will stop being Fair". */
+function drawFairRunHalo(ctx: CanvasRenderingContext2D, controller: AppController, view: ViewTransform): void {
+  if (controller.tool !== 'fair') return;
+  const doc = controller.doc;
+  const draft = activeFairDraft(controller);
+  const whole = controller.fairTrace?.whole ?? null;
+  if ((!draft || draft.size === 0) && !whole) return;
+  const removing = !!draft && draft.size > 0 && [...draft.values()].every((v) => v?.state !== 'fair');
+  ctx.save();
+  ctx.lineCap = 'round';
+  ctx.lineJoin = 'round';
+  ctx.strokeStyle = removing ? color.alert : color.signal;
+  ctx.globalAlpha = removing ? 0.55 : 0.28;
+  ctx.lineWidth = stroke.fairDefault + 9;
+  if (removing) ctx.setLineDash([6, 5]);
+  strokeRun(ctx, doc, view, draft?.keys() ?? [], whole);
+  ctx.restore();
+}
+
+/** Over the run: an untouched circle's whole-curve preview, and small rings at the run's two ends
+ * — where it will stop — so the ends are never lost under the finger or among other points. */
+function drawFairRunMarkers(ctx: CanvasRenderingContext2D, controller: AppController, view: ViewTransform): void {
+  if (controller.tool !== 'fair') return;
+  const doc = controller.doc;
+  const whole = controller.fairTrace?.whole ?? null;
+  if (whole) {
+    ctx.save();
+    ctx.strokeStyle = color.ink;
+    ctx.lineWidth = stroke.fairDefault;
+    strokeRun(ctx, doc, view, [], whole);
+    ctx.restore();
+  }
+  const draft = controller.fairTrace?.draft;
+  const ends = draft && draft.size ? draftEnds(doc, draft.keys()) : [];
+  ctx.save();
+  for (const e of ends) {
+    const s = worldToScreen(view, e);
+    ctx.beginPath();
+    ctx.arc(s.x, s.y, 6.5, 0, Math.PI * 2);
+    ctx.fillStyle = color.paper;
+    ctx.fill();
+    ctx.lineWidth = 2.5;
+    ctx.strokeStyle = color.signal;
+    ctx.stroke();
+  }
+  ctx.restore();
+}
+
+/** "Which line?": every candidate run drawn complete, each in its own colour and dash, with its
+ * number beside it; pressing a chooser button shows only that run. */
+function drawLineChoice(ctx: CanvasRenderingContext2D, controller: AppController, view: ViewTransform): void {
+  const choice = controller.lineChoice;
+  if (!choice) return;
+  const doc = controller.doc;
+  const focus = choice.focus;
+  ctx.save();
+  ctx.lineCap = 'round';
+  ctx.lineJoin = 'round';
+  // Longest first, so a shorter candidate lying along a longer one is drawn on top of it, never hidden.
+  const runLength = (run: (typeof choice.candidates)[number]): number => {
+    if (run.whole) return Infinity;
+    let len = 0;
+    for (const k of run.keys) {
+      const pc = keyPiece(doc, k);
+      if (pc) len += dist(worldToScreen(view, paramPoint(resolveEntityGeom(doc, pc.entity), pc.seg.fromParam)), worldToScreen(view, paramPoint(resolveEntityGeom(doc, pc.entity), pc.seg.toParam)));
+    }
+    return len;
+  };
+  const order = choice.candidates.map((_r, i) => i).sort((a, b) => runLength(choice.candidates[b]!) - runLength(choice.candidates[a]!));
+  for (const i of order) {
+    const run = choice.candidates[i]!;
+    if (focus !== null && focus !== i) continue;
+    const colour = RUN_COLOURS[i % RUN_COLOURS.length]!;
+    // a paper casing, so the candidate reads clearly even over black Fair lines
+    ctx.strokeStyle = color.paper;
+    ctx.setLineDash([]);
+    ctx.lineWidth = focus === i ? 11 : 9;
+    ctx.globalAlpha = 0.9;
+    strokeRun(ctx, doc, view, run.keys, run.whole);
+    ctx.strokeStyle = colour;
+    ctx.setLineDash(RUN_DASHES[i % RUN_DASHES.length]!);
+    ctx.lineWidth = focus === i ? 6 : 5;
+    ctx.globalAlpha = 1;
+    strokeRun(ctx, doc, view, run.keys, run.whole);
+    // where this candidate starts and stops — the part of the choice a label can't convey
+    ctx.setLineDash([]);
+    for (const e of run.ends) {
+      const s = worldToScreen(view, e);
+      ctx.beginPath();
+      ctx.arc(s.x, s.y, 5.5, 0, Math.PI * 2);
+      ctx.fillStyle = color.paper;
+      ctx.fill();
+      ctx.lineWidth = 2.5;
+      ctx.strokeStyle = colour;
+      ctx.stroke();
+    }
+  }
+  ctx.setLineDash([]);
+  ctx.globalAlpha = 1;
+  const anchors = choice.candidates.map((r) => worldToScreen(view, r.badgeAt));
+  const badges = fanMarkers(anchors, choice.anchorScreen, CHOICE_MARKER_R + 6, null);
+  choice.candidates.forEach((_r, i) => {
+    const colour = RUN_COLOURS[i % RUN_COLOURS.length]!;
+    const on = focus === null || focus === i;
+    ctx.globalAlpha = on ? 1 : 0.3;
+    ctx.strokeStyle = colour;
+    ctx.lineWidth = 1.2;
+    ctx.beginPath();
+    ctx.moveTo(anchors[i]!.x, anchors[i]!.y);
+    ctx.lineTo(badges[i]!.x, badges[i]!.y);
+    ctx.stroke();
+    ctx.globalAlpha = 1;
+    drawNumberBadge(ctx, badges[i]!, i + 1, colour, focus === i, on ? 1 : 0.3);
+  });
+  ctx.restore();
+}
+
+/** Phase 5.10: Select — the segment under a finger that is still down. */
+function drawPressHighlight(ctx: CanvasRenderingContext2D, controller: AppController, view: ViewTransform): void {
+  const keys = controller.pressHighlight;
+  if (!keys || keys.length === 0 || controller.tool !== 'select') return;
+  ctx.save();
+  ctx.lineCap = 'round';
+  ctx.strokeStyle = color.signal;
+  ctx.globalAlpha = 0.3;
+  ctx.lineWidth = 12;
+  strokeRun(ctx, controller.doc, view, keys, null);
+  ctx.globalAlpha = 1;
+  ctx.lineWidth = 4;
+  strokeRun(ctx, controller.doc, view, keys, null);
+  ctx.restore();
+}
+
+/** Where "Which line?" badges sit on screen — the chooser's layout keeps its panel clear of them. */
+export function lineChoiceBadges(controller: AppController, view: ViewTransform): Vec2[] {
+  const choice = controller.lineChoice;
+  if (!choice) return [];
+  const anchors = choice.candidates.map((r) => worldToScreen(view, r.badgeAt));
+  return fanMarkers(anchors, choice.anchorScreen, CHOICE_MARKER_R + 6, null);
+}
 
 /**
- * Phase 2H: the full precision loupe (§5.4 / §2's press-then-slide). Explicit candidates always
- * outrank implicit ones already (they're never mixed in by the caller when Point Lock is on —
- * see interaction/precision.ts), so this only has to draw whichever candidate set it was given,
- * magnified enough to sit ≥24pt apart, with a slow-tracking reticle over the active one.
+ * The precision loupe (Phase 5.9): the drawing around the crowded spot, magnified, away from the
+ * fingertip. Each nearby point is shown at its true (magnified) place; where points would still
+ * be too close for a finger, a marker is spread out with a thin leader back to it. The finger's
+ * cursor moves 1:1 in here; the marker nearest it is the choice — filled, named, and ringed on the
+ * drawing itself. Release takes it.
  */
 function drawPrecisionLoupe(ctx: CanvasRenderingContext2D, controller: AppController, view: ViewTransform): void {
   const s = controller.precision;
   if (!s || s.candidates.length === 0) return;
-  const clusterScreen = worldToScreen(view, s.anchorWorld);
-  const candidateScreens = s.candidates.map((c) => worldToScreen(view, c.at));
-
-  let minPair = Infinity;
-  for (let i = 0; i < candidateScreens.length; i++) {
-    for (let j = i + 1; j < candidateScreens.length; j++) minPair = Math.min(minPair, dist(candidateScreens[i]!, candidateScreens[j]!));
-  }
-  if (!isFinite(minPair) || minPair < 1) minPair = 4;
-  const magnification = Math.min(8, Math.max(4, 24 / minPair));
-  const c = loupeCenter(s.anchorScreen, PRECISION_LOUPE_RADIUS, view);
+  const { loupe } = s;
+  const c = { x: loupe.x, y: loupe.y };
+  const r = loupe.r;
 
   ctx.save();
   ctx.strokeStyle = color.hairline;
   ctx.lineWidth = 1;
   ctx.setLineDash([2, 3]);
   ctx.beginPath();
-  ctx.moveTo(s.anchorScreen.x, s.anchorScreen.y);
+  ctx.moveTo(loupe.centreScreen.x, loupe.centreScreen.y);
   ctx.lineTo(c.x, c.y);
   ctx.stroke();
   ctx.setLineDash([]);
-
   ctx.shadowColor = 'rgba(30,42,54,0.28)';
   ctx.shadowBlur = 18;
   ctx.shadowOffsetY = 5;
   ctx.beginPath();
-  ctx.arc(c.x, c.y, PRECISION_LOUPE_RADIUS, 0, Math.PI * 2);
-  ctx.fillStyle = color.plaster;
+  ctx.arc(c.x, c.y, r, 0, Math.PI * 2);
+  ctx.fillStyle = color.paper;
   ctx.fill();
   ctx.shadowColor = 'transparent';
   ctx.shadowBlur = 0;
 
   ctx.save();
   ctx.beginPath();
-  ctx.arc(c.x, c.y, PRECISION_LOUPE_RADIUS - 2, 0, Math.PI * 2);
+  ctx.arc(c.x, c.y, r - 2, 0, Math.PI * 2);
   ctx.clip();
-
-  const toLocal = (real: Vec2): Vec2 => ({ x: c.x + (real.x - clusterScreen.x) * magnification, y: c.y + (real.y - clusterScreen.y) * magnification });
-
-  s.candidates.forEach((_cand, i) => {
-    const local = toLocal(candidateScreens[i]!);
+  const toLocal = drawMagnified(ctx, controller, view, loupe.centreScreen, c, r, loupe.mag);
+  s.candidates.forEach((cand, i) => {
+    const truePos = toLocal(worldToScreen(view, cand.at));
+    const m = s.markers[i]!;
     const active = i === s.activeIndex;
+    if (dist(truePos, m) > 2) {
+      ctx.strokeStyle = active ? color.signal : color.muted;
+      ctx.globalAlpha = active ? 1 : 0.6;
+      ctx.lineWidth = 1.2;
+      ctx.beginPath();
+      ctx.moveTo(truePos.x, truePos.y);
+      ctx.lineTo(m.x, m.y);
+      ctx.stroke();
+      ctx.globalAlpha = 1;
+    }
     ctx.beginPath();
-    ctx.arc(local.x, local.y, active ? 11 : 8, 0, Math.PI * 2);
+    ctx.arc(truePos.x, truePos.y, 2.5, 0, Math.PI * 2);
+    ctx.fillStyle = color.ink;
+    ctx.fill();
+    ctx.beginPath();
+    ctx.arc(m.x, m.y, active ? MARKER_R + 1 : MARKER_R - 2, 0, Math.PI * 2);
     ctx.fillStyle = active ? color.signal : color.paper;
     ctx.fill();
+    ctx.lineWidth = 2;
     ctx.strokeStyle = color.signal;
-    ctx.lineWidth = active ? 2 : 1.4;
     ctx.stroke();
-    ctx.fillStyle = active ? color.paper : color.ink;
-    ctx.font = `600 11px ${font.mono}`;
-    ctx.textAlign = 'center';
-    ctx.textBaseline = 'middle';
-    ctx.fillText(String(i + 1), local.x, local.y + 0.5);
   });
-
-  // The reticle: a slow-tracking crosshair independent of the numbered candidates, so the
-  // participant can see exactly how their finger's fine movement is being read.
-  const reticleLocal = toLocal(worldToScreen(view, s.reticleWorld));
+  // the finger's cursor
   ctx.strokeStyle = color.ink;
-  ctx.lineWidth = 1.5;
+  ctx.lineWidth = 1.4;
   ctx.beginPath();
-  ctx.moveTo(reticleLocal.x - 11, reticleLocal.y);
-  ctx.lineTo(reticleLocal.x - 4, reticleLocal.y);
-  ctx.moveTo(reticleLocal.x + 4, reticleLocal.y);
-  ctx.lineTo(reticleLocal.x + 11, reticleLocal.y);
-  ctx.moveTo(reticleLocal.x, reticleLocal.y - 11);
-  ctx.lineTo(reticleLocal.x, reticleLocal.y - 4);
-  ctx.moveTo(reticleLocal.x, reticleLocal.y + 4);
-  ctx.lineTo(reticleLocal.x, reticleLocal.y + 11);
+  ctx.arc(s.cursor.x, s.cursor.y, 4, 0, Math.PI * 2);
   ctx.stroke();
-
   ctx.restore(); // clip
 
   ctx.beginPath();
-  ctx.arc(c.x, c.y, PRECISION_LOUPE_RADIUS, 0, Math.PI * 2);
+  ctx.arc(c.x, c.y, r, 0, Math.PI * 2);
   ctx.lineWidth = 1.5;
   ctx.strokeStyle = color.ink;
   ctx.stroke();
+
+  // On the drawing itself: the real point that release would take.
+  const act = s.candidates[s.activeIndex];
+  if (act) {
+    const t = worldToScreen(view, act.at);
+    ctx.beginPath();
+    ctx.arc(t.x, t.y, 9, 0, Math.PI * 2);
+    ctx.lineWidth = 3;
+    ctx.strokeStyle = color.signal;
+    ctx.stroke();
+    const above = c.y < t.y;
+    drawLabelPill(ctx, { x: c.x, y: above ? c.y - r - 14 : c.y + r + 14 }, [act.label ?? 'Point', 'Slide · release to choose'], view);
+  }
   ctx.restore();
 }
 
@@ -677,6 +1193,182 @@ function drawPreview(ctx: CanvasRenderingContext2D, controller: AppController, v
  * Arc's chosen centre) stays strongly highlighted — independent of the live
  * preview — and survives pinch/pan untouched, since it reads straight from controller.pending
  * rather than any gesture-local state. */
+/** Phase 5.12b/c → 5.13c: Circle → Between edges, shown so the construction reads by itself (no
+ * labels). Each chosen edge: its whole supporting line as a light dashed Signal line right across the
+ * view, with the piece actually tapped solid. The chain's corners so far are marked. Whenever the
+ * chosen lines complete a valid polygon (shown while the finger is down; lifting makes its circle) the
+ * polygon they imply is outlined and faintly tinted with its corners, and, when it has one exact
+ * circle, the circle (a stronger dashed stroke over a pale halo, so it reads over dense construction
+ * yet never looks committed), its centre and every tangency point. A circle too small to see at
+ * this zoom gets a locator ring. None of this is geometry: nothing is created until release. */
+function drawIncircle(ctx: CanvasRenderingContext2D, controller: AppController, view: ViewTransform): void {
+  const st = controller.incircle;
+  if (controller.tool !== 'circle' || controller.circleVariant !== 'three-lines' || !st) return;
+  ctx.save();
+  const c = st.result;
+  const corner = (v: Vec2) => {
+    const s = worldToScreen(view, v);
+    ctx.beginPath();
+    ctx.rect(s.x - 3.5, s.y - 3.5, 7, 7);
+    ctx.fillStyle = color.paper;
+    ctx.fill();
+    ctx.lineWidth = 1.5;
+    ctx.strokeStyle = color.signal;
+    ctx.stroke();
+  };
+  // Supporting lines, right across the view (light, dashed).
+  const reach = Math.hypot(view.w, view.h) * 2;
+  ctx.lineCap = 'butt';
+  st.supports.forEach((l, i) => {
+    const piece = st.lines[i];
+    const a = worldToScreen(view, l.a);
+    const b = worldToScreen(view, l.b);
+    const len = Math.hypot(b.x - a.x, b.y - a.y) || 1;
+    const u = { x: (b.x - a.x) / len, y: (b.y - a.y) / len };
+    const mid = piece ? worldToScreen(view, piece.tap) : a;
+    ctx.beginPath();
+    ctx.moveTo(mid.x - u.x * reach, mid.y - u.y * reach);
+    ctx.lineTo(mid.x + u.x * reach, mid.y + u.y * reach);
+    ctx.strokeStyle = color.signal;
+    ctx.globalAlpha = 0.45;
+    ctx.lineWidth = 1.5;
+    ctx.setLineDash([6, 5]);
+    ctx.stroke();
+    ctx.setLineDash([]);
+    ctx.globalAlpha = 1;
+  });
+  // The polygon the chosen lines complete.
+  if (st.polygon && st.polygon.length >= 3) {
+    const pts = st.polygon.map((v) => worldToScreen(view, v));
+    const poly = new Path2D();
+    pts.forEach((p, i) => (i === 0 ? poly.moveTo(p.x, p.y) : poly.lineTo(p.x, p.y)));
+    poly.closePath();
+    if (c) {
+      ctx.fillStyle = color.signalLight;
+      ctx.globalAlpha = 0.45;
+      ctx.fill(poly);
+      ctx.globalAlpha = 1;
+    }
+    ctx.strokeStyle = c ? color.signal : color.muted;
+    ctx.lineWidth = 2;
+    ctx.lineJoin = 'round';
+    ctx.stroke(poly);
+  }
+  // The pieces actually tapped (solid).
+  st.lines.forEach((line) => {
+    const a = worldToScreen(view, line.a);
+    const b = worldToScreen(view, line.b);
+    ctx.beginPath();
+    ctx.moveTo(a.x, a.y);
+    ctx.lineTo(b.x, b.y);
+    ctx.strokeStyle = color.signal;
+    ctx.lineWidth = 4;
+    ctx.lineCap = 'round';
+    ctx.stroke();
+  });
+  // Corners: the closed polygon's, or the chain's so far.
+  for (const v of st.polygon ?? st.corners) corner(v);
+  if (c) {
+    const centre = worldToScreen(view, c.centre);
+    const r = c.radius * view.zoom;
+    ctx.lineCap = 'butt';
+    ctx.beginPath();
+    ctx.arc(centre.x, centre.y, r, 0, Math.PI * 2);
+    ctx.strokeStyle = color.paper;
+    ctx.lineWidth = 5;
+    ctx.globalAlpha = 0.8;
+    ctx.stroke();
+    ctx.globalAlpha = 1;
+    ctx.strokeStyle = color.signal;
+    ctx.lineWidth = 2.25;
+    ctx.setLineDash([9, 5]);
+    ctx.stroke();
+    ctx.setLineDash([]);
+    if (r < 10) {
+      ctx.beginPath();
+      ctx.arc(centre.x, centre.y, 16, 0, Math.PI * 2);
+      ctx.strokeStyle = color.signal;
+      ctx.lineWidth = 1.5;
+      ctx.setLineDash([2, 3]);
+      ctx.stroke();
+      ctx.setLineDash([]);
+    }
+    ctx.beginPath();
+    ctx.arc(centre.x, centre.y, 4, 0, Math.PI * 2);
+    ctx.fillStyle = color.paper;
+    ctx.fill();
+    ctx.lineWidth = 1.6;
+    ctx.strokeStyle = color.signal;
+    ctx.stroke();
+    ctx.beginPath();
+    ctx.moveTo(centre.x - 7, centre.y);
+    ctx.lineTo(centre.x + 7, centre.y);
+    ctx.moveTo(centre.x, centre.y - 7);
+    ctx.lineTo(centre.x, centre.y + 7);
+    ctx.lineWidth = 1;
+    ctx.stroke();
+    for (const f of c.feet) {
+      const s = worldToScreen(view, f);
+      ctx.beginPath();
+      ctx.arc(s.x, s.y, 4.5, 0, Math.PI * 2);
+      ctx.fillStyle = color.signal;
+      ctx.fill();
+      ctx.lineWidth = 1.5;
+      ctx.strokeStyle = color.paper;
+      ctx.stroke();
+    }
+  }
+  ctx.restore();
+}
+
+/** Phase 5.12d/5.13: Circle → Copy circle. The whole source circle (every part of it, even trimmed
+ * ones — it is the circle's radius being copied) flashes strongly when chosen, then stays quietly
+ * marked; while a finger places the copy, the ghost circle of exactly that radius follows it. */
+function drawCopyRadius(ctx: CanvasRenderingContext2D, controller: AppController, view: ViewTransform): void {
+  const st = controller.copyRadius;
+  if (controller.tool !== 'circle' || controller.circleVariant !== 'copy-radius' || !st || st.radius === null) return;
+  const doc = controller.doc;
+  ctx.save();
+  const source = st.sourceId ? doc.entities.find((e) => e.id === st.sourceId) : undefined;
+  if (source && source.kind === 'circle') {
+    const g = resolveEntityGeom(doc, source);
+    if (g.kind === 'circle') {
+      const c = worldToScreen(view, g.centre);
+      const strong = performance.now() < st.flashUntil;
+      ctx.beginPath();
+      ctx.arc(c.x, c.y, g.radius * view.zoom, 0, Math.PI * 2);
+      ctx.strokeStyle = color.signal;
+      ctx.lineWidth = strong ? 4 : 2;
+      ctx.globalAlpha = strong ? 1 : 0.4;
+      ctx.stroke();
+      ctx.globalAlpha = 1;
+    }
+  }
+  if (st.centreAt) {
+    const c = worldToScreen(view, st.centreAt);
+    const r = st.radius * view.zoom;
+    ctx.beginPath();
+    ctx.arc(c.x, c.y, r, 0, Math.PI * 2);
+    ctx.strokeStyle = color.paper;
+    ctx.lineWidth = 5;
+    ctx.globalAlpha = 0.8;
+    ctx.stroke();
+    ctx.globalAlpha = 1;
+    ctx.strokeStyle = color.signal;
+    ctx.lineWidth = 2.25;
+    ctx.setLineDash([9, 5]);
+    ctx.stroke();
+    ctx.setLineDash([]);
+    ctx.beginPath();
+    ctx.arc(c.x, c.y, 5, 0, Math.PI * 2);
+    ctx.fillStyle = color.plaster;
+    ctx.fill();
+    ctx.lineWidth = 1.6;
+    ctx.stroke();
+  }
+  ctx.restore();
+}
+
 function drawPendingAnchor(ctx: CanvasRenderingContext2D, controller: AppController, view: ViewTransform): void {
   const pending = controller.pending;
   if (!pending) return;
@@ -687,6 +1379,8 @@ function drawPendingAnchor(ctx: CanvasRenderingContext2D, controller: AppControl
 
   refs.forEach((ref, i) => {
     const at = refLocation(doc, ref);
+    // While the precision loupe is still choosing this anchor, it isn't chosen yet — don't mark it.
+    if (controller.precision) return;
     const s = worldToScreen(view, at);
 
     ctx.beginPath();
@@ -837,13 +1531,13 @@ function drawPointEdit(ctx: CanvasRenderingContext2D, controller: AppController,
 }
 
 function isHiddenPoint(doc: Doc, id: PointId): boolean {
-  const p = doc.points.find((pt) => pt.id === id);
+  const p = pointById(doc, id);
   return p?.kind === 'free' && !!p.hidden;
 }
 
 function isPendingAnchorPoint(controller: AppController, pointId: PointId): boolean {
   const pending = controller.pending;
-  if (!pending) return false;
+  if (!pending || controller.precision) return false;
   const refs = pending.kind === 'circle' ? [pending.centre] : pending.kind === 'line' ? [pending.a] : pending.stage === 'measure-b' ? [pending.a] : [pending.centre];
   return refs.some((ref) => ref.kind === 'existing' && ref.id === pointId);
 }
@@ -879,7 +1573,7 @@ function isPointVisible(
   // Phase 5.2 item 16: committed division points are real, persistent points — visible whenever
   // points are shown at all, in every tool, never on a timer.
   const mode = controller.pointVisibility;
-  if (mode !== 'none' && doc.points.find((p) => p.id === pointId)?.kind === 'division') return true;
+  if (mode !== 'none' && pointById(doc, pointId)?.kind === 'division') return true;
 
   if (controller.tool === 'fair') {
     if (controller.fairTrace?.relevantPoints.has(pointId)) return true;
@@ -950,6 +1644,9 @@ function drawOrdinaryPoint(ctx: CanvasRenderingContext2D, controller: AppControl
 }
 
 function drawPoints(ctx: CanvasRenderingContext2D, controller: AppController, view: ViewTransform): void {
+  // Phase 5.8/5.9: no point cloud over a Fair trace (it hid the run's end and its junctions), nor
+  // while the precision loupe is choosing (the loupe shows the only points that matter).
+  if (fairPreviewing(controller) || controller.precision) return;
   const doc = controller.doc;
   const selectedIds = selectedPointIds(controller.selection);
   const recentIds = controller.recentPoints?.ids ?? new Set<PointId>();
@@ -1056,12 +1753,16 @@ export function render(ctx: CanvasRenderingContext2D, controller: AppController,
     ctx.fillRect(0, 0, view.w, view.h);
   }
   drawFills(ctx, controller, view, !exp);
+  if (!exp) drawFairRunHalo(ctx, controller, view);
   drawEntities(ctx, controller, view, exp);
   if (exp) {
     ctx.restore();
     return;
   }
   drawSelectionHighlights(ctx, controller.doc, view, controller.selection);
+  drawPressHighlight(ctx, controller, view);
+  drawIncircle(ctx, controller, view);
+  drawCopyRadius(ctx, controller, view);
   drawFairTracePreview(ctx, controller, view);
   drawArcMeasure(ctx, controller, view);
   drawPreview(ctx, controller, view);
@@ -1069,8 +1770,11 @@ export function render(ctx: CanvasRenderingContext2D, controller: AppController,
   drawSweep(ctx, controller);
   drawFillDiagnostic(ctx, controller, view);
   drawPointEdit(ctx, controller, view);
-  drawPoints(ctx, controller, view);
+  if (!controller.viewGesture) drawPoints(ctx, controller, view);
   drawPendingAnchor(ctx, controller, view);
+  drawFairRunMarkers(ctx, controller, view);
+  drawLineChoice(ctx, controller, view);
+  drawSnapFeedback(ctx, controller, view);
   drawNodeInset(ctx, controller, view);
   drawPrecisionLoupe(ctx, controller, view);
   ctx.restore();

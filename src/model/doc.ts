@@ -10,7 +10,7 @@ import { withSegmentMigration } from '../geometry/segmentstate.ts';
 import { defaultSegmentKind, deriveSegments, fairSegmentState, invalidateSegmentCaches, isParamTrimmed, unfairedSegmentState } from '../geometry/segments.ts';
 import { invalidateRegionCaches } from '../geometry/regions.ts';
 import { circleDivisionPositions, segmentDivisionPositions, type SegmentSpan } from '../geometry/divide.ts';
-import { isEditablePointKind } from '../geometry/usage.ts';
+import { invalidatePointFacts, isEditablePointKind } from '../geometry/usage.ts';
 import { color, fairPalette, stroke } from '../render/tokens.ts';
 
 /** §4.1 §Phase 1.1: the frame is drawn by the participant, not auto-placed — see interaction/drawframe.ts. */
@@ -177,6 +177,15 @@ export function addLineEntity(doc: Doc, a: PointId, b: PointId, groupId?: string
 export function addFreePoint(doc: Doc, x: number, y: number): PointId {
   const id = genId('pt');
   doc.points.push({ id, kind: 'free', x, y });
+  doc.updatedAt = Date.now();
+  return id;
+}
+
+/** Phase 5.12b: a free point at a computed location — or the point already there, by the same
+ * merge rule every other point this module creates follows, so it never doubles an existing node
+ * (e.g. an incentre that falls exactly on the frame's centre). */
+export function addOrReuseFreePoint(doc: Doc, at: Vec2): PointId {
+  const id = mergeOrCreatePoint(doc, at, (pid) => ({ id: pid, kind: 'free', x: at.x, y: at.y }));
   doc.updatedAt = Date.now();
   return id;
 }
@@ -547,6 +556,7 @@ export function invalidateGeometryCaches(doc: Doc): void {
   invalidateResolveCache(doc);
   invalidateSegmentCaches(doc);
   invalidateRegionCaches(doc);
+  invalidatePointFacts(doc);
 }
 
 export type EndpointRole = 'a' | 'b' | 'centre' | 'through';
@@ -657,6 +667,33 @@ function hiddenRadiusHandle(doc: Doc, pointId: PointId): Extract<Point, { kind: 
 export function addCircleWithRadius(doc: Doc, centreId: PointId, radius: number): Entity {
   const c = resolvePoint(doc, centreId);
   return addCircleEntity(doc, centreId, addRadiusHandle(doc, c, radius, 0));
+}
+
+/** Phase 5.12d (Copy Radius): as addCircleWithRadius, but the hidden radius handle goes on
+ * whichever axis direction from the centre (±x, ±y) reproduces `radius` most exactly. A circle's
+ * radius is always re-derived as dist(centre, through-point), and storing centre ± radius as a
+ * coordinate can round in its last bit; of the four placements the one whose derived radius is
+ * nearest (usually bit-identical) is kept, so a copied radius matches its source. */
+export function addCircleWithExactRadius(doc: Doc, centreId: PointId, radius: number): Entity {
+  const c = resolvePoint(doc, centreId);
+  const options: Vec2[] = [
+    { x: c.x + radius, y: c.y },
+    { x: c.x - radius, y: c.y },
+    { x: c.x, y: c.y + radius },
+    { x: c.x, y: c.y - radius },
+  ];
+  let best = options[0]!;
+  let bestErr = Infinity;
+  for (const o of options) {
+    const err = Math.abs(dist(c, o) - radius);
+    if (err < bestErr) {
+      best = o;
+      bestErr = err;
+    }
+  }
+  const id = genId('pt');
+  doc.points.push({ id, kind: 'free', x: best.x, y: best.y, hidden: true });
+  return addCircleEntity(doc, centreId, id);
 }
 
 function normalizeAngle(a: number): number {

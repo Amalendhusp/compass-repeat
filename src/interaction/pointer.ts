@@ -4,7 +4,7 @@
 // Precision mode (press ≥350ms then slide) is deferred — see project notes.
 
 import type { Vec2 } from '../model/types.ts';
-import type { AppController, ViewTransform } from '../app/controller.ts';
+import type { AppController, GestureSnapshot, ViewTransform } from '../app/controller.ts';
 import type { Gesture, ToolModule } from './tools/types.ts';
 
 // Phase 5.2 item 30: screen px of involuntary finger movement that still counts as a tap — sized
@@ -13,7 +13,16 @@ const TAP_MOVE_THRESHOLD = 12;
 const MULTI_TAP_MAX_TRAVEL = 10; // pt, §2
 const MULTI_TAP_MAX_MS = 250; // §2
 const MIN_ZOOM = 0.15;
-const MAX_ZOOM = 8;
+// Extended precision zoom: 3× the earlier maximum of 8, so the smallest pieces of a dense
+// construction (Plate 113's shortest tenth of Fair pieces, ~6 px apart at 8) open up to finger
+// size. Every hit/snap radius, stroke width and marker is in screen px, so none of them scale
+// with this. Fit keeps its own ceiling of 8 (main.ts) — only a pinch goes further.
+const MAX_ZOOM = 24;
+// Phase 5.12c: desktop wheel zoom — a trackpad pinch sends small deltas many times a second; a
+// mouse wheel notch sends ~100 at once, clamped so one notch is one comfortable step (~×1.5).
+const WHEEL_ZOOM_RATE = 0.01;
+const WHEEL_ZOOM_CLAMP = 40;
+const WHEEL_IDLE_MS = 140;
 
 interface PointerRecord {
   x: number;
@@ -48,6 +57,8 @@ export class PointerManager {
   private session: Session | null = null;
   private lastCentroid: Vec2 | null = null;
   private lastPinchDist = 0;
+  /** Phase 5.12a: the state as it was when the first finger of the current touch went down. */
+  private before: GestureSnapshot | null = null;
 
   constructor(
     canvas: HTMLCanvasElement,
@@ -65,12 +76,97 @@ export class PointerManager {
     canvas.addEventListener('pointerdown', this.onDown);
     canvas.addEventListener('pointermove', this.onMove);
     canvas.addEventListener('pointerup', this.onUp);
-    canvas.addEventListener('pointercancel', this.onUp);
+    canvas.addEventListener('pointercancel', this.onCancelPointer);
+    // Phase 5.12c: desktop zoom and pan (trackpad pinch, ⌘/Ctrl + scroll, plain scroll).
+    canvas.addEventListener('wheel', this.onWheel, { passive: false });
+    canvas.addEventListener('gesturestart', this.onGestureStart as EventListener, { passive: false });
+    canvas.addEventListener('gesturechange', this.onGestureChange as EventListener, { passive: false });
+    canvas.addEventListener('gestureend', this.onGestureEnd as EventListener, { passive: false });
   }
 
-  private toLocal(e: PointerEvent): Vec2 {
+  // ---- Phase 5.12c: desktop zoom ----
+  //
+  // A Mac trackpad pinch arrives as a wheel event with ctrlKey set in Chrome/Firefox/Edge, and as
+  // WebKit's own gesturestart/change/end in Safari; ⌘/Ctrl + mouse wheel is the same zoom. Plain
+  // scrolling (two fingers on a trackpad, or a mouse wheel) pans the drawing instead of the page.
+  // Every zoom keeps the construction point under the cursor where it is, within the same
+  // MIN_ZOOM–MAX_ZOOM as a touch pinch. Touch pinch itself is untouched: WebKit also fires gesture
+  // events for a two-finger touch pinch on iOS, so they are ignored while touch pointers are down.
+
+  private gestureScale = 1;
+  private wheelIdle: ReturnType<typeof setTimeout> | null = null;
+
+  /** Scales the view by `factor` about `anchor` (canvas px), keeping the world point there fixed. */
+  zoomAt(anchor: Vec2, factor: number): void {
+    const view = this.getView();
+    const viewState = this.getViewState();
+    const oldZoom = viewState.zoom;
+    const newZoom = Math.min(MAX_ZOOM, Math.max(MIN_ZOOM, oldZoom * factor));
+    if (newZoom === oldZoom) return;
+    const world = { x: (anchor.x - view.w / 2) / oldZoom - viewState.pan.x, y: (anchor.y - view.h / 2) / oldZoom - viewState.pan.y };
+    viewState.zoom = newZoom;
+    viewState.pan = { x: (anchor.x - view.w / 2) / newZoom - world.x, y: (anchor.y - view.h / 2) / newZoom - world.y };
+    this.markViewGesture();
+  }
+
+  /** Continuous wheel/gesture zoom and pan draw light, like a touch pinch, until input pauses. */
+  private markViewGesture(): void {
+    this.controller.viewGesture = true;
+    this.controller.notifyView();
+    if (this.wheelIdle !== null) clearTimeout(this.wheelIdle);
+    this.wheelIdle = setTimeout(() => {
+      this.wheelIdle = null;
+      if (this.mode !== 'multi') this.controller.viewGesture = false;
+      this.controller.notifyView();
+    }, WHEEL_IDLE_MS);
+  }
+
+  private onWheel = (e: WheelEvent): void => {
+    e.preventDefault();
+    if (this.active.size > 0) return;
+    const unit = e.deltaMode === 1 ? 16 : e.deltaMode === 2 ? this.canvas.clientHeight : 1;
+    const dx = e.deltaX * unit;
+    const dy = e.deltaY * unit;
+    if (e.ctrlKey || e.metaKey) {
+      const step = Math.max(-WHEEL_ZOOM_CLAMP, Math.min(WHEEL_ZOOM_CLAMP, dy));
+      this.zoomAt(this.toLocal(e), Math.exp(-step * WHEEL_ZOOM_RATE));
+      return;
+    }
+    const viewState = this.getViewState();
+    const [px, py] = e.shiftKey && dx === 0 ? [dy, 0] : [dx, dy];
+    viewState.pan = { x: viewState.pan.x - px / viewState.zoom, y: viewState.pan.y - py / viewState.zoom };
+    this.markViewGesture();
+  };
+
+  private onGestureStart = (e: Event & { scale?: number }): void => {
+    e.preventDefault();
+    this.gestureScale = 1;
+  };
+
+  private onGestureChange = (e: Event & { scale?: number; clientX?: number; clientY?: number }): void => {
+    e.preventDefault();
+    if (this.active.size > 0 || !e.scale) return; // an iOS touch pinch — the pointer path owns it
+    const factor = e.scale / this.gestureScale;
+    this.gestureScale = e.scale;
+    const rect = this.canvas.getBoundingClientRect();
+    const anchor = e.clientX !== undefined && e.clientY !== undefined ? { x: e.clientX - rect.left, y: e.clientY - rect.top } : { x: rect.width / 2, y: rect.height / 2 };
+    this.zoomAt(anchor, factor);
+  };
+
+  private onGestureEnd = (e: Event): void => {
+    e.preventDefault();
+    this.gestureScale = 1;
+  };
+
+  private toLocal(e: MouseEvent): Vec2 {
     const rect = this.canvas.getBoundingClientRect();
     return { x: e.clientX - rect.left, y: e.clientY - rect.top };
+  }
+
+  /** Focus construction follows the working finger (kept in world space, so it stays put under pan). */
+  private noteFocus(x: number, y: number): void {
+    const v = this.getView();
+    this.controller.focusWorld = { x: (x - v.w / 2) / v.zoom - v.pan.x, y: (y - v.h / 2) / v.zoom - v.pan.y };
   }
 
   private centroid(): Vec2 {
@@ -108,7 +204,11 @@ export class PointerManager {
       this.active.clear();
       this.mode = 'idle';
       this.session = null;
+      this.controller.viewGesture = false;
     }
+    // Phase 5.12a: the first finger of a touch records everything its gesture may change, before
+    // anything does, so a pointercancel can put it all back.
+    if (this.active.size === 0) this.before = this.controller.captureGestureState();
     this.active.set(e.pointerId, { x, y, startX: x, startY: y, maxTravel: 0 });
     // Phase 5.4: transient Fill diagnostics last only until the next interaction.
     this.controller.clearFillDiagnostic();
@@ -119,6 +219,7 @@ export class PointerManager {
       // Item 7: the "near finger" reveal radius follows the actual touch point, independent
       // of whichever tool is active.
       this.controller.pointerScreenPos = { x, y };
+      this.noteFocus(x, y);
       const tool = this.getTool();
       this.gesture = tool ? tool.beginGesture(this.controller, this.getView(), { x, y }) : null;
       this.controller.notifyView();
@@ -128,6 +229,7 @@ export class PointerManager {
         this.gesture = null;
       }
       this.mode = 'multi';
+      this.controller.viewGesture = true;
       this.controller.pointerScreenPos = null;
       if (this.session) this.session.maxConcurrent = Math.max(this.session.maxConcurrent, this.active.size);
       this.lastCentroid = this.centroid();
@@ -147,6 +249,7 @@ export class PointerManager {
 
     if (this.mode === 'single') {
       this.controller.pointerScreenPos = { x, y };
+      this.noteFocus(x, y);
       this.gesture?.onMove({ x, y });
       this.controller.notifyView();
     } else if (this.mode === 'multi') {
@@ -211,6 +314,8 @@ export class PointerManager {
     }
 
     if (this.mode === 'multi' && this.active.size === 0) {
+      this.controller.viewGesture = false;
+      this.controller.notifyView(); // back to full quality
       const s = this.session;
       if (s && s.maxTravel <= MULTI_TAP_MAX_TRAVEL && performance.now() - s.startTime <= MULTI_TAP_MAX_MS) {
         if (s.maxConcurrent === 2) this.controller.undo();
@@ -221,5 +326,38 @@ export class PointerManager {
       this.lastCentroid = null;
       this.lastPinchDist = 0;
     }
+  };
+
+  /**
+   * Phase 5.12a: `pointercancel` means the browser or OS took the touch away (an iOS system gesture,
+   * a palm, an alert) — not that the participant lifted their finger — so nothing may complete or
+   * commit. A single-finger gesture is abandoned and everything it changed is put back exactly as
+   * it was at pointerdown: no geometry, no Fair state, no selection change, no undo entry. A
+   * two-finger view gesture simply ends where it is (the camera is not history) and never counts
+   * as a two-finger undo / three-finger redo tap. Any other fingers still down are dropped as well,
+   * so nothing half-finished carries on.
+   */
+  private onCancelPointer = (e: PointerEvent): void => {
+    if (!this.active.has(e.pointerId)) return;
+    for (const id of this.active.keys()) {
+      try {
+        this.canvas.releasePointerCapture(id);
+      } catch {
+        // Already released or never captured; nothing to clean up.
+      }
+    }
+    const wasSingle = this.mode === 'single';
+    this.gesture?.onCancel();
+    this.gesture = null;
+    this.active.clear();
+    this.mode = 'idle';
+    this.session = null;
+    this.lastCentroid = null;
+    this.lastPinchDist = 0;
+    this.controller.viewGesture = false;
+    this.controller.pointerScreenPos = null;
+    if (wasSingle && this.before) this.controller.restoreGestureState(this.before);
+    this.before = null;
+    this.controller.notifyView();
   };
 }

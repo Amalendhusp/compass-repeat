@@ -1,19 +1,25 @@
 // Select tool, spec §1.2 / §4.9. Phase 5.2: no filter row — what gets selected follows from what
 // the finger touches and how:
-// - tap a point → that point; tap a curve → its segment, tap it again → the whole shape, again →
-//   nothing (driven by what is CURRENTLY selected, never by tap timing, so it behaves the same on
-//   every device); tap inside a closed region → that region's whole boundary; tap empty → clear.
-// - long-press inside a region → start collecting regions of that same type (item 11).
-// - drag across segments → collect every segment crossed of the first one's type (item 12).
+// - tap a point → that point. Tap a curve (Phase 5.10, progressive scope — each tap on the same
+//   spot widens it, so a broad selection is always deliberate):
+//     1st → the one SEGMENT under the finger (between the two split points around the tap)
+//     2nd → its RUN — the visually continuous stretch (Phase 5.9: through crossings, same style)
+//     3rd → the WHOLE shape; 4th → nothing.
+//   Driven by what is CURRENTLY selected, never by tap timing. The segment under a finger that is
+//   still down is highlighted before release. Tap inside a closed region → that region's whole
+//   boundary; tap empty → clear.
+// - press and hold: on a crowded cluster of points → the precision loupe (slide, release); inside a
+//   region → start collecting regions of that same type (item 11).
+// - drag across curves → collect every segment crossed, of the first one's type (item 12).
 // - while a point is being edited (Move/Rebind, items 13–15), gestures belong to that edit.
 
 import type { Doc, Entity, Vec2 } from '../../model/types.ts';
 import type { AppController, SelectCandidate, ViewTransform } from '../../app/controller.ts';
 import { screenToWorld, worldToScreen } from '../../app/controller.ts';
 import { projectOntoEntity, resolveEntityGeom, resolvePoint } from '../../geometry/kernel.ts';
-import { deriveSelectableGroups, groupContainingParam } from '../../geometry/segments.ts';
+import { deriveSegments, deriveSelectableGroups, groupContainingParam, type DerivedSegment } from '../../geometry/segments.ts';
 import { dist } from '../../geometry/vec.ts';
-import { isUniformlyFair, pickCurveHit, pickPointTarget, pickRegionAt, pickSelectCandidates } from '../hittest.ts';
+import { isUniformlyFair, pickCurveHit, pickPointTarget, pickRegionAt, pickSelectCandidates, segmentContainingParam } from '../hittest.ts';
 import { ambiguousCandidates, closePrecision, movePrecision, openPrecision } from '../precision.ts';
 import { materializeRef, refFromHit, type PointRef } from '../pointref.ts';
 import { mergePointInto, moveFreePoint, rebindEndpoint, slideOnCurvePoint } from '../../model/doc.ts';
@@ -24,6 +30,7 @@ const HOLD_MS = 350; // §2/§5.4: press-then-slide opens the precision loupe on
 const LONG_PRESS_MS = 450; // item 11: the one deliberate long-press — multi-region selection
 const SWEEP_SAMPLE_PX = 6;
 const DEPENDENT_PICK_PX = 28;
+const POINT_AIMED_PX = 4; // a Select tap this close to a point means the point (lines are crossed every few px)
 
 type SegmentCandidate = Extract<SelectCandidate, { kind: 'segment' }>;
 type RegionCandidate = Extract<SelectCandidate, { kind: 'region' }>;
@@ -36,15 +43,26 @@ function candidateCovers(parent: SelectCandidate, entityId: string): boolean {
   return (parent.kind === 'entity' && parent.entityId === entityId) || (parent.kind === 'group' && parent.entityIds.includes(entityId));
 }
 
-/** nothing → Segment → parent shape → nothing, for the curve nearest the tap. */
-function tapCurve(controller: AppController, tiers: SelectCandidate[]): void {
+const sameKeys = (a: SegmentCandidate, b: SegmentCandidate) => a.keys.length === b.keys.length && a.keys.every((k) => b.keys.includes(k));
+
+/** Phase 5.10: nothing → segment → run → whole shape → nothing, for the curve nearest the tap. */
+function tapCurve(controller: AppController, view: ViewTransform, sp: Vec2, tiers: SelectCandidate[]): void {
   const first = tiers[0]!;
   const entityId = first.kind === 'segment' ? first.entityId : first.kind === 'entity' ? first.entityId : first.kind === 'group' ? first.entityIds[0]! : '';
-  const segment = first.kind === 'segment' ? first : null;
+  const segment: SegmentCandidate | null = first.kind === 'segment' ? { ...first, scope: 'segment' } : null;
+  const hit = pickCurveHit(controller.doc, view, sp);
+  const vr = hit && hit.entity.id === entityId ? visualRun(controller.doc, hit.entity, hit.param) : { run: null, whole: false };
+  let run: SegmentCandidate | null = vr.run ? { ...vr.run, scope: 'run' } : null;
+  if (run && segment && sameKeys(run, segment)) run = null; // nothing wider to show at this step
   const parent = tiers.find((t) => (t.kind === 'entity' || t.kind === 'group') && candidateCovers(t, entityId)) ?? null;
   const current = controller.selection.length === 1 ? controller.selection[0]! : null;
+  const coversTap = (c: SelectCandidate) => c.kind === 'segment' && !!segment && c.entityId === entityId && segment.keys.every((k) => c.keys.includes(k));
 
-  if (current && segment && sameSegment(current, segment)) {
+  if (current?.kind === 'segment' && current.scope !== 'run' && segment && sameSegment(current, segment)) {
+    controller.select(run ? [run] : parent ? [parent] : []);
+    return;
+  }
+  if (current?.kind === 'segment' && current.scope === 'run' && coversTap(current)) {
     controller.select(parent ? [parent] : []);
     return;
   }
@@ -52,7 +70,7 @@ function tapCurve(controller: AppController, tiers: SelectCandidate[]): void {
     controller.select([]);
     return;
   }
-  controller.select([segment ?? parent!]);
+  controller.select([segment ?? run ?? parent ?? first]);
 }
 
 function toggleRegion(controller: AppController, region: RegionCandidate): void {
@@ -62,12 +80,72 @@ function toggleRegion(controller: AppController, region: RegionCandidate): void 
   controller.select(next);
 }
 
+// ---- Phase 5.9: what the eye sees as one run ----
+
+/** A piece's visual "kind" for grouping: Fair, trimmed (a gap), or construction on a given side of
+ * an Extension line's own span (its tails read as different from its span). */
+function runStyle(doc: Doc, entity: Entity, s: DerivedSegment): string {
+  const st = doc.segmentStates.get(s.key)?.state;
+  if (st === 'trimmed') return 'gap';
+  if (st === 'fair') return 'fair';
+  if (entity.kind === 'line' && entity.extended) {
+    const mid = (s.fromParam + s.toParam) / 2;
+    return mid < -1e-9 ? 'tail-' : mid > 1 + 1e-9 ? 'tail+' : 'span';
+  }
+  return 'construction';
+}
+
+function asCandidate(entity: Entity, pieces: DerivedSegment[]): SegmentCandidate {
+  const first = pieces[0]!;
+  const last = pieces[pieces.length - 1]!;
+  return { kind: 'segment', entityId: entity.id, from: first.from, to: last.to, fromParam: first.fromParam, toParam: last.toParam, keys: pieces.map((p) => p.key) };
+}
+
+/**
+ * The visually continuous run through the piece at `param`: neighbouring pieces of the same style
+ * on the same curve, through every crossing (a crossing is not a break the eye sees). Null when
+ * the run is the whole shape — then the shape itself is the natural first selection.
+ */
+function visualRun(doc: Doc, entity: Entity, param: number): { run: SegmentCandidate | null; whole: boolean } {
+  const segs = deriveSegments(doc, entity);
+  const isCircle = entity.kind === 'circle';
+  const seed = segmentContainingParam(segs, param, isCircle);
+  if (!seed) return { run: null, whole: false };
+  const style = runStyle(doc, entity, seed);
+  if (style === 'gap') return { run: null, whole: false };
+  const i0 = segs.findIndex((s) => s.key === seed.key);
+  const n = segs.length;
+  const same = (i: number) => runStyle(doc, entity, segs[i]!) === style;
+  let lo = i0;
+  let hi = i0;
+  if (isCircle) {
+    let count = 1;
+    while (count < n && same((hi + 1) % n)) {
+      hi = (hi + 1) % n;
+      count++;
+    }
+    if (count === n) return { run: null, whole: true };
+    while (same((lo - 1 + n) % n)) lo = (lo - 1 + n) % n;
+    const pieces: DerivedSegment[] = [];
+    for (let i = lo; ; i = (i + 1) % n) {
+      pieces.push(segs[i]!);
+      if (i === hi) break;
+    }
+    return { run: asCandidate(entity, pieces), whole: false };
+  }
+  while (hi + 1 < n && same(hi + 1)) hi++;
+  while (lo - 1 >= 0 && same(lo - 1)) lo--;
+  const whole = lo === 0 && hi === n - 1;
+  return { run: whole ? null : asCandidate(entity, segs.slice(lo, hi + 1)), whole };
+}
+
+/** The segment under `sp` — the selectable group between the split points around it. */
 function segmentCandidateAt(doc: Doc, view: ViewTransform, sp: Vec2): SegmentCandidate | null {
   const hit = pickCurveHit(doc, view, sp);
   if (!hit) return null;
   const group = groupContainingParam(deriveSelectableGroups(doc, hit.entity), hit.param, hit.entity.kind === 'circle');
   if (!group) return null;
-  return { kind: 'segment', entityId: group.entityId, from: group.from, to: group.to, fromParam: group.fromParam, toParam: group.toParam, keys: group.segments.map((s) => s.key) };
+  return { ...asCandidate(hit.entity, group.segments), scope: 'segment' };
 }
 
 /** Phase 5.2 item 12: drag across segments — the first one crossed fixes the type (Fair or
@@ -275,15 +353,35 @@ export const selectTool: ToolModule = {
     // §2H: a press on a tight cluster of explicit points opens the precision loupe; any other
     // press held still is the deliberate multi-region long-press.
     const ambiguous = ambiguousCandidates(doc, view, screenPos);
+    // Phase 5.10: while the finger is down on a curve, emphasise the one segment a tap would take
+    // (unless it is aimed at a point) — so at a dense crossing it is visible before release.
+    {
+      const pc = pickSelectCandidates(doc, view, screenPos).find((c) => c.kind === 'point');
+      const pdist = pc?.kind === 'point' ? dist(worldToScreen(view, resolvePoint(doc, pc.id)), screenPos) : Infinity;
+      const ch = pickCurveHit(doc, view, screenPos);
+      const seg = ch && !(pdist <= POINT_AIMED_PX && pdist <= ch.d + 1.5) && !controller.multiRegion ? segmentCandidateAt(doc, view, screenPos) : null;
+      controller.pressHighlight = seg ? seg.keys : null;
+      if (seg) controller.notifyView();
+    }
+    const clearPress = () => {
+      if (!controller.pressHighlight) return;
+      controller.pressHighlight = null;
+      controller.notifyView();
+    };
     let holdTimer: ReturnType<typeof setTimeout> | null = setTimeout(
       () => {
         holdTimer = null;
-        if (ambiguous) {
-          openPrecision(controller, ambiguous, screenPos);
+        // Held on a crowded cluster of points (aimed at the points, or no line there) → the loupe.
+        const curveHere = pickCurveHit(doc, view, screenPos);
+        const nearestPt = ambiguous ? Math.min(...ambiguous.map((a) => dist(worldToScreen(view, a.at), screenPos))) : Infinity;
+        if (ambiguous && (!curveHere || (nearestPt <= POINT_AIMED_PX && nearestPt <= curveHere.d + 1.5))) {
+          clearPress();
+          openPrecision(controller, view, ambiguous, screenPos);
           return;
         }
         const region = pickRegionAt(doc, downWorld);
         if (!region) return;
+        clearPress();
         longPressed = true;
         controller.multiRegion = { fair: region.fair };
         controller.select([region]);
@@ -303,6 +401,7 @@ export const selectTool: ToolModule = {
           return;
         }
         if (dist(sp, screenPos) <= DRAG_START_PX && !sweep) return;
+        clearPress();
         clearHold();
         if (longPressed) return;
         if (!sweep) sweep = beginSweep(controller, view, screenPos);
@@ -310,6 +409,7 @@ export const selectTool: ToolModule = {
       },
       onUp(sp, wasDrag) {
         clearHold();
+        controller.pressHighlight = null;
         if (controller.precision) {
           const chosen = closePrecision(controller, true);
           controller.select(chosen && chosen.ref.kind === 'existing' ? [{ kind: 'point', id: chosen.ref.id }] : []);
@@ -338,15 +438,21 @@ export const selectTool: ToolModule = {
           }
         }
 
-        const point = candidates.find((c) => c.kind === 'point');
-        if (point) {
+        // Phase 5.9: in a dense drawing a point is almost always within reach — so a tap means the
+        // point only when it was aimed at the point itself, or when there is no line under the
+        // finger. Otherwise the line (its visible run) is what was meant.
+        const pointCand = candidates.find((c) => c.kind === 'point');
+        const pd = pointCand?.kind === 'point' ? dist(worldToScreen(view, resolvePoint(doc, pointCand.id)), sp) : Infinity;
+        const curve = pickCurveHit(doc, view, sp);
+        const point = pointCand && (!curve || (pd <= POINT_AIMED_PX && pd <= curve.d + 1.5)) ? pointCand : undefined;
+        if (point && point.kind === 'point') {
           const already = controller.selection.length === 1 && controller.selection[0]!.kind === 'point' && controller.selection[0]!.id === point.id;
           controller.select(already ? [] : [point]);
           return;
         }
         const curveTiers = candidates.filter((c) => c.kind === 'segment' || c.kind === 'entity' || c.kind === 'group');
         if (curveTiers.length > 0) {
-          tapCurve(controller, curveTiers);
+          tapCurve(controller, view, sp, curveTiers);
           return;
         }
         const region = pickRegionAt(doc, world);
@@ -359,6 +465,7 @@ export const selectTool: ToolModule = {
       },
       onCancel() {
         clearHold();
+        controller.pressHighlight = null;
         // Two fingers arriving hand off to pinch/pan: an open loupe or a half-finished sweep is
         // abandoned, not committed.
         if (controller.precision) closePrecision(controller, false);

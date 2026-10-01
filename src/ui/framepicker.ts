@@ -19,7 +19,7 @@ const PREVIEWS: Record<FrameKind, string> = {
 const ORDER: FrameKind[] = ['circle', 'triangle', 'square', 'hexagon'];
 const LABELS: Record<FrameKind, string> = { circle: 'Circle', triangle: 'Triangle', square: 'Square', hexagon: 'Hexagon' };
 
-export function openFramePicker(root: HTMLElement, opts: { dismissible: boolean; onChoose: (kind: FrameKind) => void; onCancel?: () => void; onMyArtworks?: () => void }): void {
+export function openFramePicker(root: HTMLElement, opts: { dismissible: boolean; onChoose: (kind: FrameKind) => void; onCancel?: () => void; onMyArtworks?: () => void; onGuide?: () => void }): void {
   const scrim = document.createElement('div');
   scrim.className = 'sheet-scrim';
 
@@ -68,7 +68,21 @@ export function openFramePicker(root: HTMLElement, opts: { dismissible: boolean;
   sheet.appendChild(handle);
   sheet.appendChild(head);
   sheet.appendChild(grid);
-  if (opts.onMyArtworks) sheet.appendChild(artworksBtn);
+  // Phase 5.7: the Beginner Guide is reachable before any artwork exists, too.
+  const extras = document.createElement('div');
+  extras.className = 'sheet-actions';
+  if (opts.onMyArtworks) extras.appendChild(artworksBtn);
+  if (opts.onGuide) {
+    const guideBtn = document.createElement('button');
+    guideBtn.className = 'btn-secondary compact';
+    guideBtn.textContent = 'Beginner Guide';
+    onTap(guideBtn, () => {
+      close();
+      opts.onGuide!();
+    });
+    extras.appendChild(guideBtn);
+  }
+  if (extras.hasChildNodes()) sheet.appendChild(extras);
 
   root.appendChild(scrim);
   root.appendChild(sheet);

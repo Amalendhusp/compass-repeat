@@ -1,11 +1,57 @@
 import type { Doc, EntityId, FaceSig, PointId, SegmentKey, SegmentState, Vec2 } from '../model/types.ts';
 import type { PointDependent } from '../model/doc.ts';
 import { cloneDoc } from '../model/doc.ts';
+import { invalidatePointFacts } from '../geometry/usage.ts';
 import type { PointRef } from '../interaction/pointref.ts';
+import type { EdgeCircle } from '../geometry/incircle.ts';
 
 /** Phase 5.2 item 1: Polygon is no longer a creation tool (connected Lines make any polygon);
  * existing polygon groups stay fully supported as data and as Select targets. */
 export type ToolId = 'select' | 'circle' | 'line' | 'arc' | 'divide' | 'fair' | 'fill';
+
+/** Circle's three ways of making a circle (Phase 5.13 labels: By radius · Between edges · Copy circle). */
+export type CircleVariant = 'centre-radius' | 'three-lines' | 'copy-radius';
+
+/** Phase 5.12d/5.13: Circle → Copy circle. `sourceId`/`radius` once a circle has been tapped (the
+ * radius read exactly from its stored geometry); `centreAt` is where the ghost copy is while a finger
+ * is placing it. */
+export interface CopyRadiusState {
+  sourceId: EntityId | null;
+  radius: number | null;
+  /** The source is shown strongly until this time (ms, performance.now), then quietly. */
+  flashUntil: number;
+  centreAt: Vec2 | null;
+}
+
+/** Phase 5.12b/c → 5.13b: one edge chosen for Circle → Between edges. It stands for its whole
+ * supporting line (the entity's infinite line); `tapT`/`tap` are where it was tapped, and the run
+ * `t0`–`t1` (world ends `a`–`b`) is the piece tapped — between the nearest genuine crossings. */
+export interface IncircleLine {
+  entityId: EntityId;
+  t0: number;
+  t1: number;
+  a: Vec2;
+  b: Vec2;
+  tapT: number;
+  tap: Vec2;
+}
+
+export interface IncircleState {
+  /** The chosen edges, in the order chosen: that order is the polygon's (L1∩L2, L2∩L3, …). */
+  lines: IncircleLine[];
+  /** Each chosen edge's whole supporting line (two points on it), in chain order — previewed as a
+   * light dashed line through the solid piece that was tapped; never real geometry. */
+  supports: { a: Vec2; b: Vec2 }[];
+  /** The chain's corners so far that are really reached along drawn geometry (L1∩L2, L2∩L3, …). */
+  corners: Vec2[];
+  /** 'open': a consistent chain · 'invalid': the chain is inconsistent (parallel neighbours, a
+   * corner not reached along drawn geometry, a tap outside its corners, bending both ways). */
+  status: 'open' | 'invalid';
+  /** The polygon the chosen lines complete (Ln∩L1 closing it), whenever that is valid. */
+  polygon: Vec2[] | null;
+  /** Its exact circle, when it has one — shown while the finger is down, made when it lifts. */
+  result: EdgeCircle | null;
+}
 
 /** Tools implemented in this pass; the rest render in the dock but are inert (§ "do not attempt the entire app in one pass"). */
 export const LIVE_TOOLS: ReadonlySet<ToolId> = new Set(['select', 'circle', 'line', 'arc', 'divide', 'fair', 'fill']);
@@ -29,7 +75,9 @@ export type PendingStep =
  * can apply itself to all of them atomically while segment STATE STORAGE stays keyed granularly. */
 export type SelectCandidate =
   | { kind: 'point'; id: PointId }
-  | { kind: 'segment'; entityId: EntityId; from: PointId; to: PointId; fromParam: number; toParam: number; keys: SegmentKey[] }
+  // Phase 5.10: `scope` says what a tap chose — one 'segment' (between the split points around the
+  // tap) or its visually continuous 'run'. Absent for older/other sources (sweeps treat it as segment).
+  | { kind: 'segment'; entityId: EntityId; from: PointId; to: PointId; fromParam: number; toParam: number; keys: SegmentKey[]; scope?: 'segment' | 'run' }
   | { kind: 'entity'; entityId: EntityId }
   | { kind: 'group'; groupId: string; entityIds: EntityId[] }
   // Phase 5.2 items 9–11: a closed region picked by tapping inside it — stands for its whole
@@ -53,6 +101,8 @@ export type Preview =
 export interface PrecisionCandidate {
   ref: PointRef;
   at: Vec2; // world position
+  /** Phase 5.9: what the location is (merged, e.g. "Centre · 2 intersections"), shown for the active one. */
+  label?: string;
 }
 export interface PrecisionSession {
   candidates: PrecisionCandidate[];
@@ -61,6 +111,13 @@ export interface PrecisionSession {
   anchorScreen: Vec2; // the finger position precision mode opened at, for loupe placement + delta tracking
   reticleWorld: Vec2; // world-space reticle position; starts at anchorWorld, drifts at 1/4 finger speed
   lastFingerScreen: Vec2; // updated every move, to compute this sample's incremental delta
+  /** Phase 5.9: the loupe (screen), its magnification and the screen point it magnifies. */
+  loupe: { x: number; y: number; r: number; mag: number; centreScreen: Vec2 };
+  /** One spread marker per candidate (screen, inside the loupe), and the finger's cursor there. */
+  markers: Vec2[];
+  cursor: Vec2;
+  holdStart: Vec2;
+  cursorStart: Vec2;
 }
 
 export interface ExtendChip {
@@ -115,6 +172,8 @@ export interface FairTraceState {
   draft: Map<SegmentKey, SegmentState | null>;
   preview: { leaderKey: SegmentKey; runnerUpKey: SegmentKey | null } | null;
   relevantPoints: Set<PointId>;
+  /** Phase 5.9: an untouched circle a tap would Fair whole (it has no pieces to draft yet). */
+  whole?: EntityId | null;
 }
 
 /** Phase 5.2 items 13–15: Select's point editing. `move` drags a hand-placed point freely;
@@ -142,9 +201,83 @@ export interface NodeInsetState {
   anchorScreen: Vec2; // finger position, for loupe placement away from it
   activeAt: Vec2; // world position of the chosen candidate — the magnification centre
   candidates: Vec2[]; // other nearby points, world space, excluding activeAt
+  /** Smart Snap: what each point in the loupe is (Centre, Division point…) — the chosen one, and
+   * whether the choice is currently too close to call. */
+  labels?: { at: Vec2; label: string; active: boolean }[];
+  ambiguous?: boolean;
+}
+
+/** Phase 5.8: a tap that landed on a curve where no point exists yet — said plainly instead of
+ * quietly snapping to a neighbouring point. `divide` is set when the tap sat near the middle of a
+ * segment: an optional shortcut to the ordinary Divide ÷2 of that segment. */
+export interface NoPointHint {
+  anchorScreen: Vec2;
+  at: Vec2;
+  divide: { label: 'Segment'; scope: 'segment'; entityId: EntityId; kind: 'segment'; from: PointId; to: PointId; fromParam: number; toParam: number } | null;
+  midAt: Vec2 | null;
+  until: number;
+}
+
+/** Phase 5.8: one complete Fair run a tap could mean — what "Which line?" offers, and what a
+ * Fair preview shows before it is confirmed. `whole` marks an untouched circle (no pieces yet). */
+export interface FairRun {
+  label: string;
+  detail: string;
+  keys: SegmentKey[];
+  draft: Map<SegmentKey, SegmentState | null>;
+  fairing: boolean;
+  whole: EntityId | null;
+  /** World positions of the run's open ends (none for a closed loop). */
+  ends: Vec2[];
+  /** A world point on the run, near the tap, where its number badge is anchored. */
+  badgeAt: Vec2;
+}
+
+export interface LineChoice {
+  anchorScreen: Vec2;
+  candidates: FairRun[];
+  focus: number | null;
+  resolve: (index: number | null) => void;
 }
 
 type Listener = () => void;
+
+/** Phase 5.12a: what AppController.captureGestureState() records (see there). */
+type GestureTransientKey =
+  | 'pending'
+  | 'selection'
+  | 'extendChip'
+  | 'fairPromoteChip'
+  | 'pendingMerge'
+  | 'preview'
+  | 'nodeInset'
+  | 'snapConfirm'
+  | 'noPoint'
+  | 'pressHighlight'
+  | 'lineChoice'
+  | 'cue'
+  | 'focusWorld'
+  | 'sweep'
+  | 'multiRegion'
+  | 'pointEdit'
+  | 'divide'
+  | 'precision'
+  | 'dividePreview'
+  | 'recentPoints'
+  | 'fairTrace'
+  | 'fillPreview'
+  | 'fillDiagnostic'
+  | 'repeatDrag'
+  | 'repeatContactFlash'
+  | 'repeatRotateDrag'
+  | 'incircle'
+  | 'copyRadius';
+export interface GestureSnapshot {
+  doc: Doc;
+  undo: Doc[];
+  redo: Doc[];
+  transient: Pick<AppController, GestureTransientKey>;
+}
 
 export class AppController {
   doc: Doc;
@@ -160,6 +293,16 @@ export class AppController {
    * and its local geometry, away from the fingertip that's occluding it. Set by the active
    * tool's onMove, null when nothing is snapped. */
   nodeInset: NodeInsetState | null = null;
+  /** Smart Snap: the brief label shown on the point just used (Phase 5.9: with an optional hint
+   * line, e.g. after a tap in a crowded spot). */
+  snapConfirm: { at: Vec2; label: string; hint?: string; until: number } | null = null;
+  /** Phase 5.8/5.9: "No point here yet" feedback; the advanced "Which line?" chooser (Fair
+   * long-press only); a brief canvas cue such as "Trace the line you want". Never history. */
+  noPoint: NoPointHint | null = null;
+  /** Phase 5.10: the segment under a finger that is still down (Select) — emphasised before release. */
+  pressHighlight: SegmentKey[] | null = null;
+  lineChoice: LineChoice | null = null;
+  cue: { at: Vec2; text: string; until: number } | null = null;
   /** Phase 3.4 item 2: Line's own creation mode — every new line commits as either a finite
    * Construction line or a through-both-points Extension line (spec's extension-line logic,
    * dashed/subdued). Sticky across gestures, like Fair's old stroke default was. */
@@ -167,6 +310,19 @@ export class AppController {
   /** Phase 5.6 item 19: Repeat's Space action — while on, a one-finger tap colours negative-space
    * classes instead of reaching the lattice handles. Session state, never saved. */
   spaceMode = false;
+  /** Mobile performance: true while two fingers pan/zoom — renderers may draw a lighter version and
+   * restore full quality on release. Session state only. */
+  viewGesture = false;
+  /** Focus construction: the beginner display mode (fade construction far from the current work),
+   * and where the work is — updated from the finger and the pending anchor. */
+  focusConstruction = (() => {
+    try {
+      return localStorage.getItem('cr.focusConstruction') === '1';
+    } catch {
+      return false;
+    }
+  })();
+  focusWorld: Vec2 | null = null;
   pointVisibility: PointVisibility = 'near-finger';
   /** Screen position of the single active pointer, for "near finger" reveal; null when no
    * pointer is down. Updated by PointerManager, read by the renderer only. */
@@ -192,6 +348,12 @@ export class AppController {
   recentPoints: { ids: Set<PointId> } | null = null;
   /** Phase 3C/3D: non-null while a Fair tap/trace gesture is in progress. */
   fairTrace: FairTraceState | null = null;
+  /** Phase 5.12b: which Circle mode is active (a session preference, like Line's mode). */
+  circleVariant: CircleVariant = 'centre-radius';
+  /** Phase 5.12b: the lines chosen so far in Circle → Between 3 Lines, and what they give. */
+  incircle: IncircleState | null = null;
+  /** Phase 5.12d: Circle → Copy Radius — the source circle and the next centre. */
+  copyRadius: CopyRadiusState | null = null;
   /** Phase 4 item 2/6: non-null while a Fill tap is held down on a resolvable region — a
    * translucent preview only, cleared on release either way (commit happens separately). */
   fillPreview: { sig: FaceSig; colour: string } | null = null;
@@ -251,6 +413,10 @@ export class AppController {
     const before = cloneDoc(this.doc);
     const next = cloneDoc(this.doc);
     mutate(next);
+    // Phase 5.11: point facts read while `mutate` was still editing `next` (a Trim can change a
+    // segment's state without changing any count the cache guards on) are dropped here, so the
+    // committed document always derives them fresh.
+    invalidatePointFacts(next);
     next.updatedAt = Date.now();
     this.undoStack.push(before);
     this.redoStack = [];
@@ -274,6 +440,58 @@ export class AppController {
   restoreHistory(undo: Doc[], redo: Doc[]): void {
     this.undoStack = undo.slice();
     this.redoStack = redo.slice();
+  }
+
+  /** Phase 5.12a: everything one single-finger gesture can change — the document and its history
+   * (a gesture only ever edits through commit()) and every transient tool, selection and feedback
+   * state — taken at pointerdown so a pointercancel can abandon the gesture without a trace. */
+  captureGestureState(): GestureSnapshot {
+    return {
+      doc: this.doc,
+      undo: this.undoStack.slice(),
+      redo: this.redoStack.slice(),
+      transient: {
+        pending: this.pending,
+        selection: this.selection,
+        extendChip: this.extendChip,
+        fairPromoteChip: this.fairPromoteChip,
+        pendingMerge: this.pendingMerge,
+        preview: this.preview,
+        nodeInset: this.nodeInset,
+        snapConfirm: this.snapConfirm,
+        noPoint: this.noPoint,
+        pressHighlight: this.pressHighlight,
+        lineChoice: this.lineChoice,
+        cue: this.cue,
+        focusWorld: this.focusWorld,
+        sweep: this.sweep,
+        multiRegion: this.multiRegion,
+        pointEdit: this.pointEdit,
+        divide: this.divide,
+        precision: this.precision,
+        dividePreview: this.dividePreview,
+        recentPoints: this.recentPoints,
+        fairTrace: this.fairTrace,
+        fillPreview: this.fillPreview,
+        fillDiagnostic: this.fillDiagnostic,
+        repeatDrag: this.repeatDrag,
+        repeatContactFlash: this.repeatContactFlash,
+        repeatRotateDrag: this.repeatRotateDrag,
+        incircle: this.incircle,
+        copyRadius: this.copyRadius,
+      },
+    };
+  }
+
+  /** Puts back a captureGestureState() snapshot. A commit made during the gesture is dropped like
+   * an undo (camera and preferences stay live — see swapTo), and the history is restored exactly,
+   * so no undo or redo entry is gained or lost. */
+  restoreGestureState(snapshot: GestureSnapshot): void {
+    if (this.doc !== snapshot.doc) this.swapTo(snapshot.doc);
+    this.undoStack = snapshot.undo;
+    this.redoStack = snapshot.redo;
+    Object.assign(this, snapshot.transient);
+    this.notify();
   }
 
   /** Phase 3.6 item 2: `view` (zoom/pan) rides inside every snapshot for cloning convenience, but
@@ -315,6 +533,11 @@ export class AppController {
     this.pointEdit = null;
     this.divide = null;
     this.dividePreview = null;
+    this.lineChoice = null;
+    // Phase 5.12b: chosen lines may not exist in the other snapshot — choose again.
+    this.incircle = null;
+    // Phase 5.12d: keep copying the same radius after an Undo.
+    if (this.copyRadius) this.copyRadius = { ...this.copyRadius, centreAt: null };
     this.notify();
   }
 
@@ -356,6 +579,12 @@ export class AppController {
   /** §1.3: tapping the lit tool, or Select, returns to Select. */
   setTool(tool: ToolId): void {
     if (!LIVE_TOOLS.has(tool)) return;
+    this.lineChoice = null;
+    this.incircle = null;
+    this.copyRadius = null;
+    this.noPoint = null;
+    this.cue = null;
+    this.pressHighlight = null;
     this.pending = null;
     this.preview = null;
     this.nodeInset = null;

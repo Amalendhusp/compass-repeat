@@ -30,6 +30,8 @@ import { color, fairPalette } from '../render/tokens.ts';
 import { defaultLatticeVectors, isSixtyDegreeFamily, type LatticeFamily } from '../geometry/lattice.ts';
 import { rotationFractionLabel } from '../render/repeatRenderer.ts';
 import { CAPTURED_CUE_MS } from '../interaction/tools/arc.ts';
+import { syncSnapChooser } from './snapchooser.ts';
+import { deriveSelectableGroups } from '../geometry/segments.ts';
 import { deliverFile, exportVisibleView, fileShareSupport, type ExportSettings } from '../render/export.ts';
 import type { RepeatDisplay, RepeatSystem } from '../model/types.ts';
 
@@ -384,6 +386,23 @@ function showPointsPanel(anchor: HTMLElement, controller: AppController, remembe
         'Which points',
       );
       refreshModes();
+      // Beginner display: construction near the current work stays clear, the rest fades right
+      // back — nothing in the drawing changes, only how strongly it's shown.
+      popoverToggleRow(
+        menu,
+        'Focus construction',
+        () => controller.focusConstruction,
+        (on) => {
+          controller.focusConstruction = on;
+          try {
+            localStorage.setItem('cr.focusConstruction', on ? '1' : '0');
+          } catch {
+            // Not remembered in a private window; still applies now.
+          }
+          controller.notifyView();
+        },
+        'Keep construction near your work clear and fade the rest. Fair lines stay strong.',
+      );
     },
     { shieldCanvas: true, panel: true },
   );
@@ -671,6 +690,7 @@ export function buildShell(
   opts: {
     onFit: () => void;
     onMyArtworks: () => void;
+    onBeginnerGuide: () => void;
     onSave: () => void;
     onSaveAsNew: () => void;
     onNewArtwork: () => void;
@@ -701,6 +721,7 @@ export function buildShell(
         { label: 'Save as new…', onSelect: () => opts.onSaveAsNew() },
         { label: 'New artwork…', onSelect: () => opts.onNewArtwork() },
         { label: 'Clear drawing…', onSelect: () => opts.onClearDrawing() },
+        { label: 'Beginner Guide', onSelect: () => opts.onBeginnerGuide() },
       ], controller.doc.named ? controller.doc.name : 'Untitled artwork'),
     ),
   );
@@ -1156,10 +1177,63 @@ export function buildShell(
 
     const keys = selectionKeys(doc, sel);
     const regions = sel.filter((c): c is Extract<SelectCandidate, { kind: 'region' }> => c.kind === 'region');
+    // Phase 5.10: the scope is always stated, and every action names it and acts on exactly it.
+    const scope = selectionScope(doc, sel, keys);
+    if (scope.label) cue(scope.label);
     const fair = regions.length > 0 ? regions[0]!.fair : isUniformlyFair(doc, keys);
     const entityIds = selectionEntityIds(doc, sel, keys);
     const allLocked = entityIds.every((id) => doc.entities.find((e) => e.id === id)?.locked);
     if (controller.multiRegion) cue(`${regions.length} region${regions.length === 1 ? '' : 's'}`);
+
+    // Phase 5.10: the actions that change WHAT is Fair or present come first (scope-named), so on
+    // a phone they are never scrolled out of sight; styling follows.
+    if (fair) {
+      chip(`Un-Fair ${scope.noun}`, () => {
+        controller.commit((d) => {
+          for (const k of keys) setSegmentFair(d, k, false);
+        });
+        flipRegionTypes();
+        controller.notify();
+      });
+    } else {
+      chip(`Fair ${scope.noun}`, () => {
+        controller.commit((d) => {
+          for (const id of entityIds) ensureCircleSegments(d, id);
+          const fresh = selectionKeys(d, sel);
+          for (const k of fresh.length > 0 ? fresh : keys) setSegmentFair(d, k, true);
+        });
+        flipRegionTypes();
+        controller.notify();
+      });
+    }
+
+    if (!scope.whole) {
+      // A segment, a run, swept segments or a region's boundary — Delete removes exactly those
+      // pieces (true Trim), never the rest of the line they belong to.
+      if (keys.length > 0 && !allLocked) {
+        chip(`Delete ${scope.noun}`, () => {
+          controller.commit((d) => {
+            for (const k of keys) trimSegment(d, k.split(':')[0]!, k);
+          });
+          controller.select([]);
+        });
+      }
+    } else {
+      const plan = computeEntitiesDeletionPlan(doc, entityIds);
+      if (plan && !allLocked) {
+        const roots = entityIds.filter((id) => !doc.entities.find((e) => e.id === id)?.locked).length;
+        const noun = roots === 1 ? (doc.entities.find((e) => e.id === plan.rootEntityId)?.kind === 'circle' ? 'this circle' : 'this line') : `${roots} shapes`;
+        chip(`Delete ${scope.noun}`, () => confirmDelete(plan, roots, noun, () => controller.select([])));
+      }
+      if (!fair && keys.length > 0 && !allLocked) {
+        chip('Trim', () => {
+          controller.commit((d) => {
+            for (const k of keys) trimSegment(d, k.split(':')[0]!, k);
+          });
+          controller.select([]);
+        });
+      }
+    }
 
     if (fair) {
       const firstStroke = doc.segmentStates.get(keys[0]!)?.stroke ?? doc.fairDefaults;
@@ -1215,42 +1289,38 @@ export function buildShell(
             }),
         }),
       );
-      chip('Construction', () => {
-        controller.commit((d) => {
-          for (const k of keys) setSegmentFair(d, k, false);
-        });
-        flipRegionTypes();
-        controller.notify();
-      });
-    } else {
-      chip('Fair', () => {
-        controller.commit((d) => {
-          for (const id of entityIds) ensureCircleSegments(d, id);
-          const fresh = selectionKeys(d, sel);
-          for (const k of fresh.length > 0 ? fresh : keys) setSegmentFair(d, k, true);
-        });
-        flipRegionTypes();
-        controller.notify();
-      });
-      if (keys.length > 0 && !allLocked) {
-        chip('Trim', () => {
-          controller.commit((d) => {
-            for (const k of keys) {
-              const entityId = k.split(':')[0]!;
-              trimSegment(d, entityId, k);
-            }
-          });
-          controller.select([]);
-        });
-      }
     }
+  }
 
-    const plan = computeEntitiesDeletionPlan(doc, entityIds);
-    if (plan && !allLocked) {
-      const roots = entityIds.filter((id) => !doc.entities.find((e) => e.id === id)?.locked).length;
-      const noun = roots === 1 ? (doc.entities.find((e) => e.id === plan.rootEntityId)?.kind === 'circle' ? 'this circle' : 'this line') : `${roots} shapes`;
-      chip('Delete', () => confirmDelete(plan, roots, noun, () => controller.select([])));
+  /** Phase 5.10: what the selection covers, in words — for the ribbon label and action names. */
+  function selectionScope(doc: Doc, sel: SelectCandidate[], keys: SegmentKey[]): { label: string; noun: string; whole: boolean } {
+    const count = segmentCount(doc, keys);
+    const n = `${count} segment${count === 1 ? '' : 's'}`;
+    if (sel.length === 1) {
+      const c = sel[0]!;
+      if (c.kind === 'segment') return c.scope === 'run' ? { label: `Run · ${n}`, noun: 'run', whole: false } : { label: '1 segment', noun: 'segment', whole: false };
+      if (c.kind === 'entity') {
+        const kind = doc.entities.find((e) => e.id === c.entityId)?.kind === 'circle' ? 'circle' : 'line';
+        return { label: `Whole ${kind} · ${n}`, noun: kind, whole: true };
+      }
+      if (c.kind === 'group') return { label: `Whole shape · ${n}`, noun: 'shape', whole: true };
+      if (c.kind === 'region') return { label: `Region · ${n}`, noun: 'region edges', whole: false };
     }
+    if (sel.every((c) => c.kind === 'segment')) return { label: n, noun: n, whole: false };
+    if (sel.every((c) => c.kind === 'region')) return { label: '', noun: 'region edges', whole: false };
+    return { label: n, noun: 'selection', whole: sel.some((c) => c.kind === 'entity' || c.kind === 'group') };
+  }
+
+  /** Visible segments (selectable groups) wholly covered by `keys`. */
+  function segmentCount(doc: Doc, keys: SegmentKey[]): number {
+    const set = new Set(keys);
+    let n = 0;
+    for (const id of new Set(keys.map((k) => k.split(':')[0]!))) {
+      const e = doc.entities.find((x) => x.id === id);
+      if (!e) continue;
+      n += deriveSelectableGroups(doc, e).filter((g) => g.segments.every((sg) => set.has(sg.key))).length;
+    }
+    return n;
   }
 
   // ---- tools ----
@@ -1321,19 +1391,23 @@ export function buildShell(
     const pending = controller.pending;
 
     if (tool === 'circle') {
+      // Phase 5.13: three choices and nothing else — the canvas shows the state (chosen edges, the
+      // ghost circle, its centre and tangency points), release makes the circle, Undo corrects.
       modeToggle(
         [
-          { id: 'set', label: 'Set radius' },
-          { id: 'same', label: 'Same radius', disabled: !prefs.lastRadius },
+          { id: 'centre-radius', label: 'By radius' },
+          { id: 'three-lines', label: 'Between edges' },
+          { id: 'copy-radius', label: 'Copy circle' },
         ],
-        prefs.circleMode === 'same' && prefs.lastRadius ? 'same' : 'set',
-        (mode) => {
+        controller.circleVariant,
+        (variant) => {
           controller.cancelPending();
-          prefs.circleMode = mode;
+          controller.circleVariant = variant;
+          controller.incircle = null;
+          controller.copyRadius = null;
           controller.notify();
         },
       );
-      if (pending?.kind === 'circle') cue('Centre selected → choose radius');
     } else if (tool === 'line') {
       modeToggle(
         [
@@ -1433,6 +1507,7 @@ export function buildShell(
    * otherwise it hides — but its slot keeps its height, so Undo/Redo and the dock never move. */
   function renderRibbon(): void {
     contextBar.innerHTML = '';
+    contextBar.classList.toggle('circle-bar', controller.tool === 'circle' && controller.doc.view.workspace !== 'repeat');
     if (controller.tool === 'select') renderSelectRibbon();
     else renderToolRibbon(controller.tool);
     contextBar.classList.toggle('hidden', !contextBar.hasChildNodes());
@@ -1452,6 +1527,7 @@ export function buildShell(
   let shownWorkspace = controller.doc.view.workspace;
 
   function update(): void {
+    syncSnapChooser(controller, canvas, opts.getView);
     const inRepeat = controller.doc.view.workspace === 'repeat';
     // Phase 5.3 item 1: a panel never outlives the workspace it belongs to.
     if (controller.doc.view.workspace !== shownWorkspace) {

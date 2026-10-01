@@ -13,8 +13,9 @@ import type { AppController, ViewTransform } from '../../app/controller.ts';
 import { screenToWorld } from '../../app/controller.ts';
 import { epsilon, resolveEntityGeom, resolvePoint } from '../../geometry/kernel.ts';
 import { defaultSegmentKind, deriveSegments, effectiveSegmentKind } from '../../geometry/segments.ts';
-import { isNearAnyCurve, pickPointTarget } from '../hittest.ts';
+import { isNearAnyCurve } from '../hittest.ts';
 import { buildNodeInset } from '../nodeinset.ts';
+import { confirmSnap, noPointGesture, PointHold, resolveTap, showNoPoint, SnapTracker } from '../snap.ts';
 import { materializeRef, refFromHit, refLocation, type PointRef } from '../pointref.ts';
 import { showToast } from '../../ui/toast.ts';
 import type { Gesture, ToolModule } from './types.ts';
@@ -38,23 +39,29 @@ export function beginLineLikeGesture(
   intercept?: (aRef: PointRef, bRef: PointRef) => boolean,
 ): Gesture | null {
   const doc = controller.doc;
+  const tracker = new SnapTracker(doc);
   let aRef: PointRef;
   // See circle.ts: only gates onUp's tap-vs-plant distinction, never onCancel.
   let justSetA = false;
+  let aHit: ReturnType<SnapTracker['pick']> = null;
 
   if (controller.pending?.kind === 'line') {
     aRef = controller.pending.a;
   } else {
-    const hit = pickPointTarget(doc, view, screenPos);
-    if (!hit) return null;
+    const hit = tracker.pick(view, screenPos);
+    if (!hit) return tracker.noPoint ? noPointGesture(controller, tracker.noPoint) : null;
+    aHit = hit;
     aRef = refFromHit(hit);
     controller.pending = { kind: 'line', a: aRef };
     justSetA = true;
   }
 
-  const aAt = refLocation(doc, aRef);
+  let aAt = refLocation(doc, aRef);
   controller.preview = { kind: 'line', a: aAt, b: aAt };
   controller.notify();
+  // Phase 5.9: holding still on a crowded spot opens the precision loupe (for A or for B).
+  if (!justSetA) tracker.pick(view, screenPos);
+  const hold = new PointHold(controller, view, tracker, screenPos);
 
   const finish = (bRef: PointRef) => {
     if (!sameExisting(aRef, bRef) && intercept?.(aRef, bRef)) {
@@ -67,7 +74,8 @@ export function beginLineLikeGesture(
     }
     // Phase 5.5: the exact same line again is never useful — and a doubled edge used to merge the
     // regions on either side of it. Nothing is created (and no undo step).
-    if (aRef.kind === 'existing' && bRef.kind === 'existing' && doc.entities.some((e) => e.kind === 'line' && ((e.a === aRef.id && e.b === bRef.id) || (e.a === bRef.id && e.b === aRef.id)))) {
+    const a0 = aRef;
+    if (a0.kind === 'existing' && bRef.kind === 'existing' && doc.entities.some((e) => e.kind === 'line' && ((e.a === a0.id && e.b === bRef.id) || (e.a === bRef.id && e.b === a0.id)))) {
       showToast('Already drawn');
       controller.cancelPending();
       controller.nodeInset = null;
@@ -96,10 +104,22 @@ export function beginLineLikeGesture(
 
   return {
     onMove(sp) {
-      const hit = pickPointTarget(doc, view, sp);
+      const held = hold.move(sp);
+      if (held !== undefined) {
+        if (justSetA) {
+          aRef = refFromHit(held);
+          aAt = held.at;
+          controller.pending = { kind: 'line', a: aRef };
+          controller.preview = null;
+        } else controller.preview = { kind: 'line', a: aAt, b: held.at };
+        controller.notifyView();
+        return;
+      }
+      if (hold.open) return;
+      const hit = tracker.pick(view, sp);
       const b = hit ? hit.at : screenToWorld(view, sp);
       controller.preview = { kind: 'line', a: aAt, b };
-      controller.nodeInset = hit ? buildNodeInset(doc, view, sp, hit.at) : null;
+      controller.nodeInset = hit ? buildNodeInset(doc, view, sp, hit.at, tracker) : null;
       const lockedOut = !doc.pointTargets.free && !hit && isNearAnyCurve(doc, view, sp);
       const transitioned = lockedOut !== controller.pointLockHint;
       controller.pointLockHint = lockedOut;
@@ -108,20 +128,44 @@ export function beginLineLikeGesture(
       else controller.notifyView();
     },
     onUp(sp, wasDrag) {
+      const held = hold.release();
+      if (held) {
+        // The loupe chose: A stays armed for B, or B completes the line.
+        confirmSnap(controller, held);
+        if (justSetA) {
+          aRef = refFromHit(held);
+          controller.pending = { kind: 'line', a: aRef };
+          controller.preview = null;
+          controller.nodeInset = null;
+          controller.notify();
+        } else finish(refFromHit(held));
+        return;
+      }
       if (!wasDrag && justSetA) {
         controller.preview = null;
         controller.nodeInset = null;
+        resolveTap(controller, tracker, aHit, (h) => {
+          aRef = refFromHit(h);
+          aAt = refLocation(doc, aRef);
+          controller.pending = { kind: 'line', a: aRef };
+        });
         controller.notify();
         return;
       }
-      const hit = pickPointTarget(doc, view, sp);
+      const hit = tracker.pick(view, sp);
       if (hit) {
-        finish(refFromHit(hit));
+        if (wasDrag) {
+          confirmSnap(controller, hit);
+          finish(refFromHit(hit));
+        } else {
+          resolveTap(controller, tracker, hit, (h) => finish(refFromHit(h)));
+        }
         return;
       }
       if (!doc.pointTargets.free && isNearAnyCurve(doc, view, sp)) {
         // Point Lock: touched a curve with no explicit point there — stay armed for a fresh
         // attempt at B rather than cancelling A (§Phase 1.2a acceptance: A survives).
+        if (tracker.noPoint && !wasDrag) showNoPoint(controller, tracker.noPoint);
         controller.preview = { kind: 'line', a: aAt, b: aAt };
         controller.nodeInset = null;
         controller.pointLockHint = true;
@@ -137,6 +181,7 @@ export function beginLineLikeGesture(
       // wanted now that the node inset exists to disambiguate a finger-occluded target, so a
       // pinch/pan is free to mean "start over" instead. The tool itself stays active; the next
       // tap after the view gesture is a fresh point A. No geometry is created or committed here.
+      hold.cancel();
       controller.cancelPending();
     },
   };
