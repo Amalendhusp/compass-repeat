@@ -48,3 +48,15 @@ export async function stateAt(docId: string, seq: number): Promise<ArtworkState 
   for (const e of events.slice(from + 1)) applyPatch(state, e.patch!);
   return state;
 }
+
+/** vNext Phase 4B: the history's states one by one, built incrementally (one working state,
+ * patched in place — the caller must use each before asking for the next). For Timelapse. */
+export function* walkProcess(events: ProcessEvent[]): Generator<{ event: ProcessEvent; state: ArtworkState }> {
+  let state: ArtworkState | null = null;
+  for (const event of [...events].sort((a, b) => a.seq - b.seq)) {
+    if (event.keyframe) state = structuredClone(event.keyframe);
+    else if (state && event.patch) applyPatch(state, event.patch);
+    else throw new Error(`history has no keyframe before moment ${event.seq}`);
+    yield { event, state };
+  }
+}

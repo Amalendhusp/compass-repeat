@@ -33,6 +33,7 @@ import { CAPTURED_CUE_MS } from '../interaction/tools/arc.ts';
 import { syncSnapChooser } from './snapchooser.ts';
 import { deriveSelectableGroups } from '../geometry/segments.ts';
 import { deliverFile, exportVisibleView, fileShareSupport, type ExportSettings } from '../render/export.ts';
+import { createTimelapse, timelapseInfo, videoType, type TimelapseInfo, type TimelapseResult } from '../render/timelapse.ts';
 import type { RepeatDisplay, RepeatSystem } from '../model/types.ts';
 
 /** Phase 5.2 item 1: the final Construct dock. */
@@ -542,7 +543,13 @@ function showRepeatGuidesPanel(anchor: HTMLElement, controller: AppController, o
 }
 
 /** Session-sticky share choices — construction/guides are re-read from what's visible each time. */
-const exportChoice: Pick<ExportSettings, 'format' | 'scale' | 'transparent'> = { format: 'png', scale: 2, transparent: false };
+const exportChoice: { format: 'png' | 'svg' | 'timelapse'; scale: ExportSettings['scale']; transparent: boolean } = { format: 'png', scale: 2, transparent: false };
+
+/** vNext Phase 4B: what the Share panel needs for Timelapse — absent for the Beginner Guide's practice
+ * artwork, which has no history. `prepare` makes sure every change is recorded before reading. */
+export interface TimelapseSupport {
+  prepare: () => Promise<void>;
+}
 
 /**
  * Phase 5.3 items 7–19 / Phase 5.4 items 1–3: Share — always the current view (zoom, pan, crop,
@@ -552,20 +559,27 @@ const exportChoice: Pick<ExportSettings, 'format' | 'scale' | 'transparent'> = {
  * The file is rendered ahead of the tap (on open, and again whenever a choice changes), so the
  * Share tap hands the operating system a ready file straight away: iOS only opens its share sheet
  * from within the tap itself. The view can't change meanwhile — touching the canvas closes this.
+ *
+ * vNext Phase 4B: Timelapse is the third format. It takes seconds to make (the video is recorded
+ * in real time), so it is made on a first tap and handed over on a second — the share sheet needs
+ * a fresh tap of its own. Closing the panel or Cancel stops it; nothing in the artwork changes.
  */
-function showExportPanel(anchor: HTMLElement, controller: AppController, getView: () => ViewTransform): void {
+function showExportPanel(anchor: HTMLElement, controller: AppController, getView: () => ViewTransform, timelapse: TimelapseSupport | null): void {
   const inRepeat = controller.doc.view.workspace === 'repeat';
   const display = controller.doc.repeatDisplay;
-  const settings: ExportSettings = {
+  if (exportChoice.format === 'timelapse' && !timelapse) exportChoice.format = 'png';
+  const settings = {
     ...exportChoice,
     construction: inRepeat ? display.constructionOverlay : true,
     guides: inRepeat ? display.grid : false,
   };
+  const still = (): ExportSettings => ({ ...settings, format: settings.format === 'svg' ? 'svg' : 'png' });
   let ready: Promise<{ blob: Blob; filename: string }> | null = null;
   let readyFile: { blob: Blob; filename: string } | null = null;
   const prepare = () => {
     readyFile = null;
-    const job = exportVisibleView(controller, getView(), { ...settings });
+    if (settings.format === 'timelapse') return;
+    const job = exportVisibleView(controller, getView(), still());
     ready = job;
     job.then((f) => {
       if (ready === job) readyFile = f;
@@ -580,16 +594,20 @@ function showExportPanel(anchor: HTMLElement, controller: AppController, getView
       formatRow.className = 'panel-inline-row';
       menu.appendChild(formatRow);
       let scale: { buttons: HTMLButtonElement[] } | null = null;
-      panelSegmented(
+      let background: { refresh: () => void; buttons: HTMLButtonElement[] } | null = null;
+      const formats: { id: 'png' | 'svg' | 'timelapse'; label: string }[] = [
+        { id: 'png', label: 'PNG' },
+        { id: 'svg', label: 'SVG' },
+      ];
+      if (timelapse) formats.push({ id: 'timelapse', label: 'Timelapse' });
+      const format = panelSegmented(
         formatRow,
-        [
-          { id: 'png', label: 'PNG' },
-          { id: 'svg', label: 'SVG' },
-        ],
+        formats,
         () => settings.format,
         (id) => {
+          if (making) return;
           settings.format = exportChoice.format = id;
-          scale?.buttons.forEach((b) => (b.disabled = id === 'svg'));
+          refreshFormat();
           prepare();
         },
         'Format',
@@ -608,7 +626,6 @@ function showExportPanel(anchor: HTMLElement, controller: AppController, getView
         },
         'Resolution',
       );
-      scale.buttons.forEach((b) => (b.disabled = settings.format === 'svg'));
 
       const bgRow = document.createElement('div');
       bgRow.className = 'popover-toggle-row';
@@ -616,14 +633,15 @@ function showExportPanel(anchor: HTMLElement, controller: AppController, getView
       bgLabel.className = 'popover-row-label';
       bgLabel.textContent = 'Background';
       bgRow.appendChild(bgLabel);
-      panelSegmented(
+      background = panelSegmented(
         bgRow,
         [
           { id: 'current', label: 'Current' },
           { id: 'transparent', label: 'Transparent' },
         ],
-        () => (settings.transparent ? 'transparent' : 'current'),
+        () => (settings.transparent && settings.format !== 'timelapse' ? 'transparent' : 'current'),
         (id) => {
+          if (settings.format === 'timelapse') return; // a video always has its background
           settings.transparent = exportChoice.transparent = id === 'transparent';
           prepare();
         },
@@ -652,13 +670,124 @@ function showExportPanel(anchor: HTMLElement, controller: AppController, getView
         );
       }
 
+      // vNext Phase 4B: one short line, only for Timelapse, only when there's something to say.
+      const note = document.createElement('div');
+      note.className = 'panel-note';
+      menu.appendChild(note);
+
       // Phase 5.5 item 12: the button says what will really happen here — the system share sheet
       // where this page can share files, otherwise a file saved by the browser.
       const canShareFiles = fileShareSupport().files;
+      const actions = document.createElement('div');
+      actions.className = 'panel-actions';
       const go = document.createElement('button');
       go.className = 'panel-primary';
-      go.textContent = canShareFiles ? 'Share' : 'Save file';
+      const cancel = document.createElement('button');
+      cancel.className = 'panel-secondary';
+      cancel.textContent = 'Cancel';
+      actions.appendChild(go);
+      actions.appendChild(cancel);
+      menu.appendChild(actions);
+
+      let info: TimelapseInfo | null = null;
+      let making = false;
+      /** Each making of a video has its own stop flag, so a cancelled one can never resume. */
+      let run: { stopped: boolean } | null = null;
+      let video: TimelapseResult | null = null;
+      const vType = videoType();
+
+      function refreshFormat(): void {
+        const isVideo = settings.format === 'timelapse';
+        scale?.buttons.forEach((b) => (b.disabled = settings.format !== 'png' || making));
+        background?.buttons.forEach((b) => (b.disabled = isVideo));
+        background?.refresh();
+        format.buttons.forEach((b) => (b.disabled = making && b.textContent !== 'Timelapse'));
+        cancel.hidden = !making;
+        note.textContent = !isVideo
+          ? ''
+          : !vType
+            ? 'This browser can’t make video.'
+            : info && !info.available
+              ? 'Make some changes to create a timelapse.'
+              : info?.partial
+                ? 'Timelapse starts from recorded history.'
+                : '';
+        note.hidden = note.textContent === '';
+        if (!isVideo) {
+          go.textContent = canShareFiles ? 'Share' : 'Save file';
+          go.disabled = false;
+        } else if (video) {
+          go.textContent = canShareFiles ? 'Share video' : 'Save video';
+          go.disabled = false;
+        } else if (!making) {
+          go.textContent = 'Create timelapse';
+          go.disabled = !vType || !info?.available;
+        }
+      }
+
+      if (timelapse) {
+        void timelapse.prepare().then(() => timelapseInfo(controller.doc.id)).then((i) => {
+          info = i;
+          refreshFormat();
+        });
+      }
+
+      const makeVideo = () => {
+        making = true;
+        const thisRun = { stopped: false };
+        run = thisRun;
+        go.disabled = true;
+        go.textContent = 'Creating timelapse… 0%';
+        refreshFormat();
+        const view = getView();
+        void timelapse!
+          .prepare()
+          .then(() =>
+            createTimelapse(
+              controller,
+              view,
+              { construction: settings.construction, guides: settings.guides },
+              (f) => {
+                if (run === thisRun && !thisRun.stopped) go.textContent = `Creating timelapse… ${Math.round(f * 100)}%`;
+              },
+              () => thisRun.stopped || !menu.isConnected,
+            ),
+          )
+          .then((result) => {
+            if (run !== thisRun || thisRun.stopped) return;
+            making = false;
+            video = result;
+            refreshFormat();
+          })
+          .catch((e: Error) => {
+            if (run !== thisRun || thisRun.stopped) return;
+            making = false;
+            refreshFormat();
+            if (e.message === 'hidden') showToast('Timelapse stopped — keep the app open while it’s made');
+            else if (menu.isConnected) showToast('Couldn’t create the timelapse');
+          });
+      };
+
+      onTap(cancel, () => {
+        if (run) run.stopped = true;
+        making = false;
+        refreshFormat();
+      });
+
       onTap(go, () => {
+        if (settings.format === 'timelapse') {
+          if (making) return;
+          if (!video) return makeVideo();
+          const v = video;
+          go.disabled = true;
+          deliverFile(v.blob, v.filename)
+            .then((result) => {
+              if (result === 'saved') showToast(canShareFiles ? `Share sheet unavailable · saved ${v.filename}` : `Saved ${v.filename}`);
+            })
+            .catch(() => showToast('Couldn’t share the video'))
+            .finally(() => close());
+          return;
+        }
         go.disabled = true;
         const file = readyFile;
         const delivered = file ? deliverFile(file.blob, file.filename) : ready!.then((f) => deliverFile(f.blob, f.filename));
@@ -671,7 +800,7 @@ function showExportPanel(anchor: HTMLElement, controller: AppController, getView
           .catch(() => showToast('Couldn’t create the file'))
           .finally(() => close());
       });
-      menu.appendChild(go);
+      refreshFormat();
     },
     { shieldCanvas: true, panel: true },
   );
@@ -696,6 +825,8 @@ export function buildShell(
     onSaveAs: () => void;
     onSwitchWorkspace: (ws: 'construct' | 'repeat') => void;
     getView: () => ViewTransform;
+    /** vNext Phase 4B: null for the Beginner Guide's practice artwork (no history, no Timelapse). */
+    timelapse: TimelapseSupport | null;
   },
 ): ShellHandles {
   root.innerHTML = '';
@@ -791,7 +922,7 @@ export function buildShell(
   exportBtn.className = 'icon-btn';
   exportBtn.setAttribute('aria-label', 'Share');
   exportBtn.innerHTML = iconSvg('share');
-  onTap(exportBtn, () => togglePanel(exportBtn, () => showExportPanel(exportBtn, controller, opts.getView)));
+  onTap(exportBtn, () => togglePanel(exportBtn, () => showExportPanel(exportBtn, controller, opts.getView, opts.timelapse)));
   const guidesBtn = document.createElement('button');
   guidesBtn.className = 'icon-btn';
   guidesBtn.setAttribute('aria-label', 'Grid and guides');

@@ -81,8 +81,8 @@ export function filenameStem(name: string): string {
 
 /** The artwork's own name (or Construct-Repeat-<date> while it has none); a name already handed
  * out gains the date and time, e.g. Eight-Point-Star_2026-09-24_0148.png. */
-export function shareFilename(doc: { name: string; named: boolean }, ext: 'png' | 'svg', now = new Date()): string {
-  const stem = (doc.named && filenameStem(doc.name)) || `Construct-Repeat-${dateStamp(now)}`;
+export function shareFilename(doc: { name: string; named: boolean }, ext: 'png' | 'svg' | 'mp4' | 'webm', now = new Date(), suffix = ''): string {
+  const stem = ((doc.named && filenameStem(doc.name)) || `Construct-Repeat-${dateStamp(now)}`) + suffix;
   const used = usedFilenames();
   const candidates = doc.named && filenameStem(doc.name)
     ? [stem, `${stem}_${dateStamp(now)}_${timeStamp(now)}`]

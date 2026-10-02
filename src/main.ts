@@ -24,7 +24,7 @@ import { resolvePoint } from './geometry/kernel.ts';
 import { worldToScreen } from './app/controller.ts';
 import { attachAutosave, type AutosaveHandle } from './persist/autosave.ts';
 import { attachProcessRecorder, type ProcessHandle } from './persist/processRecorder.ts';
-import { copyProcess, listProcesses, loadEvents, loadMeta } from './persist/processStore.ts';
+import { copyProcess, enqueue, listProcesses, loadEvents, loadMeta } from './persist/processStore.ts';
 import { replayProcess, stateAt } from './persist/processReplay.ts';
 import { captureState, stateHash, stateToDoc } from './persist/processState.ts';
 import { makeThumbnail } from './persist/thumbnail.ts';
@@ -157,6 +157,15 @@ function boot(doc: Doc, opts: { fitToScreen: boolean; history?: { undo: Doc[]; r
     onSave: () => saveArtwork(),
     onSaveAs: () => saveAsNewArtwork(),
     getView: () => getView(),
+    // vNext Phase 4B: Timelapse reads the history after every change so far is recorded.
+    timelapse: guideReturn
+      ? null
+      : {
+          prepare: async () => {
+            process?.flush();
+            await enqueue(async () => {});
+          },
+        },
     onSwitchWorkspace: (ws) => {
       if (controller.doc.view.workspace === ws) return;
       // Phase 5 item 2: the frame only ever SUGGESTS a lattice, and only the very first time —
@@ -496,6 +505,8 @@ if (import.meta.env.DEV) {
     toDoc: stateToDoc,
     thumbnail: makeThumbnail,
     current: () => session?.controller.doc ?? null,
+    controller: () => session?.controller ?? null,
+    view: () => session?.getView() ?? null,
   };
 }
 
