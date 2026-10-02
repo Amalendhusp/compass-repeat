@@ -372,6 +372,9 @@ export class AppController {
 
   private undoStack: Doc[] = [];
   private redoStack: Doc[] = [];
+  /** vNext Phase 4A: what last replaced `doc` — read by the process recorder only, so it can tell
+   * a commit from an Undo, a Redo, or a cancelled gesture taking its commit back. */
+  lastChange: 'commit' | 'undo' | 'redo' | 'cancel' = 'commit';
   private listeners = new Set<Listener>();
   /** Cheap channel for view-only (pan/zoom) changes — redraw + autosave-debounce only, never
    * the dock/context-bar DOM rebuild (Phase 1.1 item 2: that rebuild was the real-device stagger). */
@@ -418,6 +421,7 @@ export class AppController {
     // committed document always derives them fresh.
     invalidatePointFacts(next);
     next.updatedAt = Date.now();
+    this.lastChange = 'commit';
     this.undoStack.push(before);
     this.redoStack = [];
     this.doc = next;
@@ -487,7 +491,10 @@ export class AppController {
    * an undo (camera and preferences stay live — see swapTo), and the history is restored exactly,
    * so no undo or redo entry is gained or lost. */
   restoreGestureState(snapshot: GestureSnapshot): void {
-    if (this.doc !== snapshot.doc) this.swapTo(snapshot.doc);
+    if (this.doc !== snapshot.doc) {
+      this.lastChange = 'cancel';
+      this.swapTo(snapshot.doc);
+    }
     this.undoStack = snapshot.undo;
     this.redoStack = snapshot.redo;
     Object.assign(this, snapshot.transient);
@@ -501,6 +508,7 @@ export class AppController {
   undo(): void {
     const prev = this.undoStack.pop();
     if (!prev) return;
+    this.lastChange = 'undo';
     this.redoStack.push(this.doc);
     this.swapTo(prev);
   }
@@ -508,6 +516,7 @@ export class AppController {
   redo(): void {
     const next = this.redoStack.pop();
     if (!next) return;
+    this.lastChange = 'redo';
     this.undoStack.push(this.doc);
     this.swapTo(next);
   }

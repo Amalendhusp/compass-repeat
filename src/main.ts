@@ -1,6 +1,6 @@
 import './style.css';
-import { clearDrawing, cloneDoc, createDoc, defaultRepeatDisplay, placeFrame } from './model/doc.ts';
-import { AppController, type ViewTransform } from './app/controller.ts';
+import { cloneDoc, createDoc, defaultRepeatDisplay, placeFrame } from './model/doc.ts';
+import { AppController, type ToolId, type ViewTransform } from './app/controller.ts';
 import { PointerManager } from './interaction/pointer.ts';
 import { selectTool } from './interaction/tools/select.ts';
 import { circleTool } from './interaction/tools/circle.ts';
@@ -13,10 +13,9 @@ import { repeatTool } from './interaction/tools/repeatTool.ts';
 import { render } from './render/renderer.ts';
 import { renderRepeat } from './render/repeatRenderer.ts';
 import { buildShell, closeAnyPopover } from './ui/shell.ts';
-import { openGuide, type GuideHost, type GuideState } from './tutorial/engine.ts';
-import { squareGuide } from './tutorial/guides/square.ts';
-import { openFramePicker } from './ui/framepicker.ts';
-import { openConfirmSheet } from './ui/confirmsheet.ts';
+import { openGuide, type CoachHost } from './tutorial/engine.ts';
+import { beginnerGuide } from './tutorial/guides/beginner.ts';
+import { openStartScreen } from './ui/startscreen.ts';
 import { buildDrawFrameHud } from './ui/drawframehud.ts';
 import { attachDrawFrame } from './interaction/drawframe.ts';
 import { initToast } from './ui/toast.ts';
@@ -24,8 +23,13 @@ import type { Doc, FrameKind } from './model/types.ts';
 import { resolvePoint } from './geometry/kernel.ts';
 import { worldToScreen } from './app/controller.ts';
 import { attachAutosave, type AutosaveHandle } from './persist/autosave.ts';
-import { deleteArtwork, getMeta, listArtworks, loadDocument, loadHistory } from './persist/db.ts';
-import { openArtworksSheet, openNameSheet } from './ui/artworks.ts';
+import { attachProcessRecorder, type ProcessHandle } from './persist/processRecorder.ts';
+import { copyProcess, enqueue, listProcesses, loadEvents, loadMeta } from './persist/processStore.ts';
+import { replayProcess, stateAt } from './persist/processReplay.ts';
+import { captureState, stateHash, stateToDoc } from './persist/processState.ts';
+import { makeThumbnail } from './persist/thumbnail.ts';
+import { getMeta, listArtworks, loadDocument, loadHistory } from './persist/db.ts';
+import { openNameSheet } from './ui/artworks.ts';
 import { showToast } from './ui/toast.ts';
 import { genId } from './model/id.ts';
 import { setupCanvasDPR } from './render/canvasSetup.ts';
@@ -44,7 +48,7 @@ const tools = { select: selectTool, circle: circleTool, line: lineTool, arc: arc
 
 /** Phase 5.5: the artwork currently open. Tearing it down stops its render loop, resize observer
  * and autosave, so switching artworks never leaves an old one drawing or saving in the background. */
-let session: { controller: AppController; autosave: AutosaveHandle; getView: () => ViewTransform; teardown: () => void } | null = null;
+let session: { controller: AppController; autosave: AutosaveHandle; process: ProcessHandle | null; getView: () => ViewTransform; fit: () => void; teardown: () => void } | null = null;
 
 /** Phase 5.7: the draw-frame gesture's own listeners and render loop, while it's armed. */
 let detachFrameDrawing: (() => void) | null = null;
@@ -56,9 +60,9 @@ function endSession(): void {
   detachFrameDrawing = null;
 }
 
-/** Phase 5.7: while a Beginner Guide runs, every artwork shown is a throwaway demonstration —
- * never autosaved, never listed, never the "last open" artwork. What was open before is saved as
- * it stands on entry and reopened, untouched, when the guide closes. */
+/** Phase 5.7 / vNext Phase 3: while the Beginner Guide runs, the artwork shown is a throwaway
+ * practice artwork — never autosaved, never listed, never the "last open" artwork. What was open
+ * before is saved as it stands on entry and reopened, untouched, when the guide closes. */
 let guideReturn: { artworkId: string | null } | null = null;
 const inertAutosave: AutosaveHandle = { detach: () => {}, flush: () => {} };
 
@@ -74,8 +78,11 @@ function fitViewState(viewState: { zoom: number; pan: { x: number; y: number } }
   const canvasRect = canvas.getBoundingClientRect();
   const overlayRect = overlay.getBoundingClientRect();
   const usableBottom = overlayRect.top > canvasRect.top ? overlayRect.top - canvasRect.top : canvasH;
+  // vNext Phase 3: while the Beginner Guide's strip sits over the top of the canvas, fit below it.
+  const strip = document.querySelector('.coach-strip.at-top')?.getBoundingClientRect();
+  const usableTop = strip ? Math.min(Math.max(strip.bottom + 8 - canvasRect.top, 0), usableBottom * 0.5) : 0;
   const usableW = canvasW;
-  const usableH = Math.min(Math.max(usableBottom, canvasH * 0.25), canvasH);
+  const usableH = Math.min(Math.max(usableBottom - usableTop, canvasH * 0.25), canvasH);
 
   let zoom: number;
   let centre: { x: number; y: number };
@@ -95,7 +102,7 @@ function fitViewState(viewState: { zoom: number; pan: { x: number; y: number } }
   // usable rectangle's centre (canvas-local coordinates) rather than the full canvas's centre.
   viewState.pan = {
     x: (usableW / 2 - canvasW / 2) / zoom - centre.x,
-    y: (usableH / 2 - canvasH / 2) / zoom - centre.y,
+    y: (usableTop + usableH / 2 - canvasH / 2) / zoom - centre.y,
   };
 }
 
@@ -136,35 +143,29 @@ function fitRepeatFirstEntry(controller: AppController, canvas: HTMLCanvasElemen
 /** Boots the app on a document. `fitToScreen: false` preserves a drawn/restored viewport. */
 const KEY_ZOOM_STEP = 1.25;
 
-function boot(doc: Doc, opts: { fitToScreen: boolean; history?: { undo: Doc[]; redo: Doc[] } }): void {
+function boot(doc: Doc, opts: { fitToScreen: boolean; history?: { undo: Doc[]; redo: Doc[] }; fresh?: boolean }): void {
   endSession();
   const controller = new AppController(doc);
   // §9 restore: "the tool reset to Select" — AppController already defaults tool to 'select'.
   if (opts.history) controller.restoreHistory(opts.history.undo, opts.history.redo);
 
+  const fit = () => (controller.doc.view.workspace === 'repeat' ? fitRepeatView(controller, canvas, overlay) : fitView(controller, canvas, overlay));
   const { canvas, overlay } = buildShell(root!, controller, {
-    onFit: () => (controller.doc.view.workspace === 'repeat' ? fitRepeatView(controller, canvas, overlay) : fitView(controller, canvas, overlay)),
-    onNewArtwork: () => {
-      // The artwork being left is saved as it stands; a new one never overwrites it.
-      session?.autosave.flush({ thumbnail: true });
-      openFramePicker(root!, { dismissible: true, onChoose: (k) => armDrawFrame(k), onMyArtworks: () => void showMyArtworks() });
-    },
-    onMyArtworks: () => void showMyArtworks(),
-    onBeginnerGuide: () => startGuide(),
+    onFit: () => fit(),
+    onNew: () => showStart('frames'),
+    onOpen: () => showStart('artworks'),
     onSave: () => saveArtwork(),
-    onSaveAsNew: () => saveAsNewArtwork(),
-    onClearDrawing: () => {
-      openConfirmSheet(root!, {
-        title: 'Clear drawing?',
-        body: 'Removes everything except the frame. Undo will bring it back.',
-        confirmLabel: 'Clear drawing',
-        onConfirm: () => {
-          controller.commit((d) => clearDrawing(d));
-          controller.setTool('select');
-        },
-      });
-    },
+    onSaveAs: () => saveAsNewArtwork(),
     getView: () => getView(),
+    // vNext Phase 4B: Timelapse reads the history after every change so far is recorded.
+    timelapse: guideReturn
+      ? null
+      : {
+          prepare: async () => {
+            process?.flush();
+            await enqueue(async () => {});
+          },
+        },
     onSwitchWorkspace: (ws) => {
       if (controller.doc.view.workspace === ws) return;
       // Phase 5 item 2: the frame only ever SUGGESTS a lattice, and only the very first time —
@@ -181,6 +182,9 @@ function boot(doc: Doc, opts: { fitToScreen: boolean; history?: { undo: Doc[]; r
       controller.notify();
     },
   });
+  // vNext Phase 3: the practice artwork has no file menu — nothing in it is saved, and the guide's
+  // own Exit is the way back.
+  if (guideReturn) root!.querySelector<HTMLElement>('[aria-label="Menu"]')?.style.setProperty('visibility', 'hidden');
   // Phase 4: buildShell() clears `root` (`root.innerHTML = ''`) to rebuild the whole shell DOM
   // on every boot — a toast mounted before that point, as this used to be at module scope, ends
   // up appended then immediately detached, so showToast() would set text on an orphaned node no
@@ -203,6 +207,9 @@ function boot(doc: Doc, opts: { fitToScreen: boolean; history?: { undo: Doc[]; r
     () => (controller.doc.view.workspace === 'repeat' ? controller.doc.repeatView : controller.doc.view),
   );
   const autosave = guideReturn ? inertAutosave : attachAutosave(controller);
+  // vNext Phase 4A: the artwork's process history — never for the Beginner Guide's practice artwork.
+  // A brand-new artwork's history starts at its frame; an existing one at its first real change.
+  const process = guideReturn ? null : attachProcessRecorder(controller, { fresh: opts.fresh === true });
 
   if (import.meta.env.DEV) {
     (window as unknown as { __app: unknown }).__app = {
@@ -252,6 +259,7 @@ function boot(doc: Doc, opts: { fitToScreen: boolean; history?: { undo: Doc[]; r
   // only (⌘/Ctrl + keeps the browser's own meaning), and never while typing into a field.
   const onKey = (e: KeyboardEvent) => {
     if (e.metaKey || e.ctrlKey || e.altKey) return;
+    if (document.querySelector('.start-screen')) return; // the artwork is covered — leave it be
     const t = e.target as HTMLElement | null;
     if (t && (t.isContentEditable || /^(INPUT|TEXTAREA|SELECT)$/.test(t.tagName))) return;
     const centre = { x: canvas.clientWidth / 2, y: canvas.clientHeight / 2 };
@@ -270,7 +278,9 @@ function boot(doc: Doc, opts: { fitToScreen: boolean; history?: { undo: Doc[]; r
   session = {
     controller,
     autosave,
+    process,
     getView,
+    fit,
     teardown: () => {
       running = false;
       stopResizing();
@@ -278,6 +288,7 @@ function boot(doc: Doc, opts: { fitToScreen: boolean; history?: { undo: Doc[]; r
       window.removeEventListener('keydown', onKey);
       diagnostics?.detach();
       autosave.detach();
+      process?.detach();
     },
   };
 }
@@ -321,6 +332,9 @@ function saveAsNewArtwork(): void {
       const copy = structuredClone(s.controller.doc);
       const now = Date.now();
       copy.id = genId('doc');
+      // vNext Phase 4A: the copy carries the process so far, then continues on its own.
+      s.process?.flush();
+      void copyProcess(s.controller.doc.id, copy.id);
       copy.name = name;
       copy.named = true;
       copy.createdAt = now;
@@ -331,34 +345,32 @@ function saveAsNewArtwork(): void {
   });
 }
 
-async function showMyArtworks(): Promise<void> {
-  // Reachable with no artwork open too (from the first-launch frame picker).
+// ---- vNext Phase 2: the Start screen (Choose a frame · Beginner Guide · My Artworks) ----
+
+/** New opens the Start screen at its frames, Open… at My Artworks. The artwork that was open is
+ * saved as it stands first — so its card is up to date, and nothing chosen next can overwrite it —
+ * and stays open underneath until something else is actually chosen. */
+function showStart(focus: 'frames' | 'artworks'): void {
+  closeAnyPopover();
   session?.autosave.flush({ thumbnail: true });
-  const artworks = await listArtworks();
-  if (artworks.length === 0) {
-    showToast('No saved artworks yet');
-    return;
-  }
-  openArtworksSheet(root!, {
-    currentId: session?.controller.doc.id ?? '',
-    artworks,
-    onOpen: (id) => void openArtwork(id),
-    onDelete: (id) => removeArtwork(id),
+  openStartScreen(root!, {
+    focus,
+    dismissible: session !== null,
+    currentId: session?.controller.doc.id ?? null,
+    artworks: listArtworks().catch((err) => {
+      console.warn('Listing artworks failed:', err);
+      return [];
+    }),
+    guide: { onStart: () => startGuide() },
+    onChooseFrame: (k) => armDrawFrame(k),
+    onOpenArtwork: (id) => void openFromStart(id),
   });
 }
 
-/** Phase 5.6 items 15–16: deleting another artwork touches only that one. Deleting the open one
- * stops its autosave FIRST (so nothing can write it back), removes it, then opens the most recently
- * edited artwork left — or, with none left, the ordinary new-artwork frame picker. */
-async function removeArtwork(id: string): Promise<void> {
-  const deletingOpen = session?.controller.doc.id === id;
-  if (deletingOpen) endSession();
-  await deleteArtwork(id);
-  if (!deletingOpen) return;
-  const remaining = await listArtworks();
-  for (const next of remaining) if (await openArtwork(next.id)) return;
-  root!.innerHTML = '';
-  openFramePicker(root!, { dismissible: false, onChoose: (k) => armDrawFrame(k), onMyArtworks: () => void showMyArtworks(), onGuide: () => startGuide() });
+async function openFromStart(id: string): Promise<void> {
+  if (await openArtwork(id)) return;
+  showToast('That artwork could not be opened');
+  if (!session) showStart('artworks');
 }
 
 /** Loads one saved artwork — its whole editable state, history included — and opens it. */
@@ -382,9 +394,7 @@ async function openArtwork(id: string): Promise<boolean> {
  * governs the resulting locked-frame metadata once it's built). */
 function armDrawFrame(kind: FrameKind): void {
   endSession();
-  const hud = buildDrawFrameHud(root!, kind, () => {
-    openFramePicker(root!, { dismissible: false, onChoose: (k) => armDrawFrame(k), onMyArtworks: () => void showMyArtworks() });
-  });
+  const hud = buildDrawFrameHud(root!, kind, () => showStart('frames'));
   detachFrameDrawing = attachDrawFrame(
     hud.canvas,
     kind,
@@ -392,52 +402,50 @@ function armDrawFrame(kind: FrameKind): void {
       const doc = createDoc(kind);
       placeFrame(doc, result.origin, result.radius, result.rotation);
       // The participant already placed, sized and oriented it on screen — keep that exact view.
-      boot(doc, { fitToScreen: false });
+      boot(doc, { fitToScreen: false, fresh: true });
     },
     hud.setHint,
   );
 }
 
-// ---- Phase 5.7: Beginner Guide host — the only door the guide engine has into the app ----
+// ---- vNext Phase 3: the Beginner Guide's host — the only door the guide has into the app ----
 
-const guideHost: GuideHost = {
-  root: root!,
-  enter() {
+/** Opens a practice state: never saved (guideReturn is set), points all shown so a first-timer can
+ * see what there is to start from. */
+function bootPractice(doc: Doc, history?: { undo: Doc[]; redo: Doc[] }, tool?: ToolId): void {
+  boot(doc, { fitToScreen: false, history });
+  const c = session!.controller;
+  c.pointVisibility = 'all';
+  if (tool) c.tool = tool;
+  c.notify();
+}
+
+const guideHost: CoachHost = {
+  begin(doc) {
+    closeAnyPopover();
     session?.autosave.flush({ thumbnail: true });
     guideReturn = { artworkId: session?.controller.doc.id ?? null };
+    bootPractice(doc);
   },
-  async exit({ tryItYourself }) {
+  fit: () => session?.fit(),
+  capture() {
+    if (!session) return null;
+    const c = session.controller;
+    const { undo, redo } = c.getHistorySnapshot();
+    return { doc: cloneDoc(c.doc), undo, redo, tool: c.tool };
+  },
+  restore(state) {
+    closeAnyPopover();
+    bootPractice(cloneDoc(state.doc), { undo: state.undo, redo: state.redo }, state.tool);
+  },
+  async exit() {
     const back = guideReturn;
     guideReturn = null;
     closeAnyPopover();
     endSession();
     root!.innerHTML = '';
     const reopened = back?.artworkId ? await openArtwork(back.artworkId) : false;
-    if (!reopened) {
-      openFramePicker(root!, { dismissible: false, onChoose: (k) => armDrawFrame(k), onMyArtworks: () => void showMyArtworks(), onGuide: () => startGuide() });
-      return;
-    }
-    if (tryItYourself) openFramePicker(root!, { dismissible: true, onChoose: (k) => armDrawFrame(k), onMyArtworks: () => void showMyArtworks() });
-  },
-  capture(): GuideState {
-    if (!session) return { kind: 'picker' };
-    const c = session.controller;
-    return { kind: 'artwork', doc: cloneDoc(c.doc), tool: c.tool, lineMode: c.lineMode, pointVisibility: c.pointVisibility };
-  },
-  restore(state) {
-    closeAnyPopover();
-    if (state.kind === 'picker') {
-      endSession();
-      root!.innerHTML = '';
-      openFramePicker(root!, { dismissible: false, onChoose: (k) => armDrawFrame(k) });
-      return;
-    }
-    boot(cloneDoc(state.doc), { fitToScreen: false });
-    const c = session!.controller;
-    c.tool = state.tool;
-    c.lineMode = state.lineMode;
-    c.pointVisibility = state.pointVisibility;
-    c.notify();
+    if (!reopened) showStart('frames');
   },
   controller: () => session?.controller ?? null,
   view: () => session?.getView() ?? null,
@@ -445,7 +453,7 @@ const guideHost: GuideHost = {
 
 function startGuide(): void {
   if (guideReturn) return;
-  openGuide(squareGuide, guideHost);
+  openGuide(beginnerGuide, guideHost);
 }
 
 /** Brings a snapshot saved by any earlier version up to the current document shape. */
@@ -484,21 +492,34 @@ function upgradeSnapshot(doc: Doc, recordNamed: boolean | undefined): void {
   if (doc.named === undefined) doc.named = recordNamed ?? false;
 }
 
+// vNext Phase 4A: development/test access to process histories (no user-facing playback yet).
+if (import.meta.env.DEV) {
+  (window as unknown as { __process: unknown }).__process = {
+    meta: loadMeta,
+    events: loadEvents,
+    list: listProcesses,
+    replay: replayProcess,
+    stateAt,
+    capture: captureState,
+    hash: stateHash,
+    toDoc: stateToDoc,
+    thumbnail: makeThumbnail,
+    current: () => session?.controller.doc ?? null,
+    controller: () => session?.controller ?? null,
+    view: () => session?.getView() ?? null,
+  };
+}
+
 async function launch(): Promise<void> {
   try {
     const lastId = await getMeta<string>('lastOpenDocId');
     if (lastId && (await openArtwork(lastId))) return;
   } catch (err) {
     // §9: "If the snapshot fails schema validation, fall back to..." — fall through to the
-    // frame picker.
+    // Start screen.
     console.warn('Restore failed, starting fresh:', err);
   }
-  openFramePicker(root!, {
-    dismissible: false,
-    onChoose: (kind) => armDrawFrame(kind),
-    onMyArtworks: () => void showMyArtworks(),
-    onGuide: () => startGuide(),
-  });
+  showStart('frames');
 }
 
 void launch();

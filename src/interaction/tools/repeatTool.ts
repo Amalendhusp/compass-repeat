@@ -26,6 +26,9 @@ const CONTOUR_ENTER = 9;
 const CONTOUR_RELEASE = 28;
 const ATTRACT_RADIUS = 36; // magnetic approach begins here…
 const ATTRACT_MAX = 0.55; // …pulling at most this fraction of the way toward the detent before it snaps
+// vNext Phase 1: a press that stays within this of where it went down moves nothing — so a tap or
+// a resting finger never nudges the lattice — and beyond it, whatever is shown is what is kept.
+const DRAG_SLOP_PX = 6;
 
 type Snap = { kind: 'detent'; index: number } | { kind: 'contour' } | null;
 
@@ -113,9 +116,12 @@ function dragHandleGesture(controller: AppController, view: ViewTransform, dir: 
   const initial = stepSnap(model, null, start, view.zoom, { x: 1, y: 0 });
   let snap: Snap = initial.snap;
   let lastUnit = initial.unit;
+  let moving = false;
 
   return {
     onMove(sp) {
+      if (!moving && dist(sp, downScreen) <= DRAG_SLOP_PX) return;
+      moving = true;
       const step = stepSnap(model, snap, rawAt(sp), view.zoom, lastUnit);
       lastUnit = step.unit;
       if (step.snap && !sameSnap(step.snap, snap)) {
@@ -130,16 +136,20 @@ function dragHandleGesture(controller: AppController, view: ViewTransform, dir: 
       controller.repeatDrag = { dir, translate: step.shown, snapped: snap !== null };
       controller.notifyView();
     },
-    onUp(_sp, wasDrag) {
+    onUp() {
+      // vNext Phase 1: what was on screen when the finger lifted is exactly what's kept — the snapped
+      // (or freely dragged) translation itself, never recomputed from where the pointer came up,
+      // and kept however short the drag was: a small final push into contact is a real move, not a
+      // tap. (The pointer layer's tap/drag distinction used to throw such pushes away, springing the
+      // neighbour back to where it started.)
       const shown = controller.repeatDrag?.translate;
       controller.repeatDrag = null;
-      if (!wasDrag || !shown) {
+      if (!shown || (shown.x === start.x && shown.y === start.y)) {
         controller.notify();
         return;
       }
-      // What was on screen at release is exactly what's kept — no second, different snap.
       controller.commit((d) => {
-        d.repeat[dir] = shown;
+        d.repeat[dir] = { x: shown.x, y: shown.y };
       });
     },
     onCancel() {
@@ -149,24 +159,30 @@ function dragHandleGesture(controller: AppController, view: ViewTransform, dir: 
   };
 }
 
-function rotateRingGesture(controller: AppController, view: ViewTransform): Gesture {
+function rotateRingGesture(controller: AppController, view: ViewTransform, downScreen: Vec2): Gesture {
   const pivot = controller.doc.frame.origin;
+  const startRotation = controller.doc.repeat.motif.rotation;
   function angleAt(sp: Vec2): number {
     const centre = worldToScreen(view, pivot);
     return Math.atan2(sp.y - centre.y, sp.x - centre.x) + Math.PI / 2;
   }
+  let moving = false;
   return {
     onMove(sp) {
+      if (!moving && dist(sp, downScreen) <= DRAG_SLOP_PX) return;
+      moving = true;
       controller.repeatRotateDrag = { rawRotation: snapRotation(angleAt(sp)) };
       controller.notifyView();
     },
-    onUp(sp, wasDrag) {
+    onUp() {
+      // vNext Phase 1: as for the handles — keep the rotation shown at release (snapped or not),
+      // never one recomputed from the pointerup position.
+      const rotation = controller.repeatRotateDrag?.rawRotation;
       controller.repeatRotateDrag = null;
-      if (!wasDrag) {
+      if (rotation === undefined || rotation === startRotation) {
         controller.notify();
         return;
       }
-      const rotation = snapRotation(angleAt(sp));
       controller.commit((d) => {
         d.repeat.motif = { ...d.repeat.motif, rotation };
       });
@@ -227,7 +243,7 @@ export const repeatTool: ToolModule = {
 
     const centreScreen = worldToScreen(view, pivot);
     const ringRadius = motifRadius(doc) * view.zoom + 26;
-    if (Math.abs(dist(screenPos, centreScreen) - ringRadius) <= RING_HIT_BAND) return rotateRingGesture(controller, view);
+    if (Math.abs(dist(screenPos, centreScreen) - ringRadius) <= RING_HIT_BAND) return rotateRingGesture(controller, view, screenPos);
 
     return null;
   },
