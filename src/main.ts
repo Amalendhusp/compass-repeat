@@ -23,6 +23,11 @@ import type { Doc, FrameKind } from './model/types.ts';
 import { resolvePoint } from './geometry/kernel.ts';
 import { worldToScreen } from './app/controller.ts';
 import { attachAutosave, type AutosaveHandle } from './persist/autosave.ts';
+import { attachProcessRecorder, type ProcessHandle } from './persist/processRecorder.ts';
+import { copyProcess, listProcesses, loadEvents, loadMeta } from './persist/processStore.ts';
+import { replayProcess, stateAt } from './persist/processReplay.ts';
+import { captureState, stateHash, stateToDoc } from './persist/processState.ts';
+import { makeThumbnail } from './persist/thumbnail.ts';
 import { getMeta, listArtworks, loadDocument, loadHistory } from './persist/db.ts';
 import { openNameSheet } from './ui/artworks.ts';
 import { showToast } from './ui/toast.ts';
@@ -43,7 +48,7 @@ const tools = { select: selectTool, circle: circleTool, line: lineTool, arc: arc
 
 /** Phase 5.5: the artwork currently open. Tearing it down stops its render loop, resize observer
  * and autosave, so switching artworks never leaves an old one drawing or saving in the background. */
-let session: { controller: AppController; autosave: AutosaveHandle; getView: () => ViewTransform; fit: () => void; teardown: () => void } | null = null;
+let session: { controller: AppController; autosave: AutosaveHandle; process: ProcessHandle | null; getView: () => ViewTransform; fit: () => void; teardown: () => void } | null = null;
 
 /** Phase 5.7: the draw-frame gesture's own listeners and render loop, while it's armed. */
 let detachFrameDrawing: (() => void) | null = null;
@@ -138,7 +143,7 @@ function fitRepeatFirstEntry(controller: AppController, canvas: HTMLCanvasElemen
 /** Boots the app on a document. `fitToScreen: false` preserves a drawn/restored viewport. */
 const KEY_ZOOM_STEP = 1.25;
 
-function boot(doc: Doc, opts: { fitToScreen: boolean; history?: { undo: Doc[]; redo: Doc[] } }): void {
+function boot(doc: Doc, opts: { fitToScreen: boolean; history?: { undo: Doc[]; redo: Doc[] }; fresh?: boolean }): void {
   endSession();
   const controller = new AppController(doc);
   // §9 restore: "the tool reset to Select" — AppController already defaults tool to 'select'.
@@ -193,6 +198,9 @@ function boot(doc: Doc, opts: { fitToScreen: boolean; history?: { undo: Doc[]; r
     () => (controller.doc.view.workspace === 'repeat' ? controller.doc.repeatView : controller.doc.view),
   );
   const autosave = guideReturn ? inertAutosave : attachAutosave(controller);
+  // vNext Phase 4A: the artwork's process history — never for the Beginner Guide's practice artwork.
+  // A brand-new artwork's history starts at its frame; an existing one at its first real change.
+  const process = guideReturn ? null : attachProcessRecorder(controller, { fresh: opts.fresh === true });
 
   if (import.meta.env.DEV) {
     (window as unknown as { __app: unknown }).__app = {
@@ -261,6 +269,7 @@ function boot(doc: Doc, opts: { fitToScreen: boolean; history?: { undo: Doc[]; r
   session = {
     controller,
     autosave,
+    process,
     getView,
     fit,
     teardown: () => {
@@ -270,6 +279,7 @@ function boot(doc: Doc, opts: { fitToScreen: boolean; history?: { undo: Doc[]; r
       window.removeEventListener('keydown', onKey);
       diagnostics?.detach();
       autosave.detach();
+      process?.detach();
     },
   };
 }
@@ -313,6 +323,9 @@ function saveAsNewArtwork(): void {
       const copy = structuredClone(s.controller.doc);
       const now = Date.now();
       copy.id = genId('doc');
+      // vNext Phase 4A: the copy carries the process so far, then continues on its own.
+      s.process?.flush();
+      void copyProcess(s.controller.doc.id, copy.id);
       copy.name = name;
       copy.named = true;
       copy.createdAt = now;
@@ -380,7 +393,7 @@ function armDrawFrame(kind: FrameKind): void {
       const doc = createDoc(kind);
       placeFrame(doc, result.origin, result.radius, result.rotation);
       // The participant already placed, sized and oriented it on screen — keep that exact view.
-      boot(doc, { fitToScreen: false });
+      boot(doc, { fitToScreen: false, fresh: true });
     },
     hud.setHint,
   );
@@ -468,6 +481,22 @@ function upgradeSnapshot(doc: Doc, recordNamed: boolean | undefined): void {
   if (!(doc.repeat.gapFills instanceof Map)) doc.repeat.gapFills = new Map();
   // Phase 5.5: artworks saved before naming existed were never named by the participant.
   if (doc.named === undefined) doc.named = recordNamed ?? false;
+}
+
+// vNext Phase 4A: development/test access to process histories (no user-facing playback yet).
+if (import.meta.env.DEV) {
+  (window as unknown as { __process: unknown }).__process = {
+    meta: loadMeta,
+    events: loadEvents,
+    list: listProcesses,
+    replay: replayProcess,
+    stateAt,
+    capture: captureState,
+    hash: stateHash,
+    toDoc: stateToDoc,
+    thumbnail: makeThumbnail,
+    current: () => session?.controller.doc ?? null,
+  };
 }
 
 async function launch(): Promise<void> {

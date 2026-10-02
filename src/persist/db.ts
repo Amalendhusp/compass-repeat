@@ -10,6 +10,7 @@
 // survive reload either way; the op-log/compaction machinery is deferred.
 
 import type { Doc } from '../model/types.ts';
+import { deleteProcess } from './processStore.ts';
 
 const DB_NAME = 'construct-and-repeat';
 const DB_VERSION = 1;
@@ -97,8 +98,9 @@ export async function listArtworks(): Promise<ArtworkSummary[]> {
 }
 
 /** Phase 5.6 item 15: removes one artwork from this device — its document (with thumbnail) and its
- * undo history, in one transaction. */
+ * undo history, in one transaction (and, vNext Phase 4A, its process history beside it). */
 export async function deleteArtwork(id: string): Promise<void> {
+  void deleteProcess(id);
   const db = await openDb();
   await new Promise<void>((resolve, reject) => {
     const t = db.transaction(['documents', 'history'], 'readwrite');
