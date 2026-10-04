@@ -15,7 +15,7 @@ import { renderRepeat } from './render/repeatRenderer.ts';
 import { buildShell, closeAnyPopover } from './ui/shell.ts';
 import { openGuide, type CoachHost } from './tutorial/engine.ts';
 import { beginnerGuide } from './tutorial/guides/beginner.ts';
-import { openStartScreen } from './ui/startscreen.ts';
+import { openStartScreen, type CardActions } from './ui/startscreen.ts';
 import { buildDrawFrameHud } from './ui/drawframehud.ts';
 import { attachDrawFrame } from './interaction/drawframe.ts';
 import { initToast } from './ui/toast.ts';
@@ -28,8 +28,9 @@ import { copyProcess, enqueue, listProcesses, loadEvents, loadMeta } from './per
 import { replayProcess, stateAt } from './persist/processReplay.ts';
 import { captureState, stateHash, stateToDoc } from './persist/processState.ts';
 import { makeThumbnail } from './persist/thumbnail.ts';
-import { getMeta, listArtworks, loadDocument, loadHistory } from './persist/db.ts';
+import { deleteArtwork, getMeta, listArtworks, loadDocument, loadHistory, saveDocument, setMeta, type ArtworkSummary } from './persist/db.ts';
 import { openNameSheet } from './ui/artworks.ts';
+import { openConfirmSheet } from './ui/confirmsheet.ts';
 import { showToast } from './ui/toast.ts';
 import { genId } from './model/id.ts';
 import { setupCanvasDPR } from './render/canvasSetup.ts';
@@ -318,6 +319,19 @@ function saveArtwork(): void {
   });
 }
 
+/** A new, independent artwork with the same content as `doc`: its own id, the given name, and
+ * created/edited now. Shared by Save As and My Artworks' Duplicate. */
+function asNewArtwork(doc: Doc, name: string): Doc {
+  const copy = structuredClone(doc);
+  const now = Date.now();
+  copy.id = genId('doc');
+  copy.name = name;
+  copy.named = true;
+  copy.createdAt = now;
+  copy.updatedAt = now;
+  return copy;
+}
+
 /** Save as new: the current artwork (saved as it stands) is copied into a new artwork with its own
  * id and name, and that copy is what's open afterwards — the original is left exactly as it was. */
 function saveAsNewArtwork(): void {
@@ -329,16 +343,10 @@ function saveAsNewArtwork(): void {
     confirmLabel: 'Save',
     onConfirm: (name) => {
       s.autosave.flush({ thumbnail: true });
-      const copy = structuredClone(s.controller.doc);
-      const now = Date.now();
-      copy.id = genId('doc');
+      const copy = asNewArtwork(s.controller.doc, name);
       // vNext Phase 4A: the copy carries the process so far, then continues on its own.
       s.process?.flush();
       void copyProcess(s.controller.doc.id, copy.id);
-      copy.name = name;
-      copy.named = true;
-      copy.createdAt = now;
-      copy.updatedAt = now;
       boot(copy, { fitToScreen: false });
       showToast(`Saved as “${name}”`);
     },
@@ -357,14 +365,102 @@ function showStart(focus: 'frames' | 'artworks'): void {
     focus,
     dismissible: session !== null,
     currentId: session?.controller.doc.id ?? null,
-    artworks: listArtworks().catch((err) => {
-      console.warn('Listing artworks failed:', err);
-      return [];
-    }),
+    loadArtworks: () =>
+      listArtworks().catch((err) => {
+        console.warn('Listing artworks failed:', err);
+        return [];
+      }),
+    actions: cardActions,
     guide: { onStart: () => startGuide() },
     onChooseFrame: (k) => armDrawFrame(k),
     onOpenArtwork: (id) => void openFromStart(id),
   });
+}
+
+// ---- Patch: My Artworks card actions (⋮ → Rename / Duplicate / Delete) ----
+
+const displayName = (a: { name: string; named: boolean }) => (a.named ? a.name : 'Untitled');
+
+const cardActions: CardActions = {
+  rename(a, done) {
+    openNameSheet(root!, {
+      title: 'Rename artwork',
+      initial: a.named ? a.name : '',
+      confirmLabel: 'Rename',
+      onConfirm: (name) => void renameArtwork(a.id, name).then(done),
+    });
+  },
+  duplicate(a, done) {
+    void duplicateArtwork(a).then((name) => {
+      if (name) showToast(`Duplicated as “${name}”`);
+      done();
+    });
+  },
+  remove(a, done) {
+    openConfirmSheet(root!, {
+      title: `Delete “${displayName(a)}”?`,
+      body: 'This cannot be undone.',
+      confirmLabel: 'Delete',
+      onConfirm: () => void deleteFromStart(a.id).then(done),
+    });
+  },
+};
+
+/** Rename touches only the name: same id, geometry, thumbnail, last-edited time, Undo/Redo and
+ * process history (a name is not part of the recorded artwork, so no process moment either). */
+async function renameArtwork(id: string, name: string): Promise<void> {
+  const s = session;
+  if (s && s.controller.doc.id === id) {
+    // The open artwork: rename the live document, or its own autosave would write the old name back.
+    s.controller.doc.name = name;
+    s.controller.doc.named = true;
+    s.controller.notify();
+    s.autosave.flush();
+    return;
+  }
+  const record = await loadDocument(id);
+  if (!record?.snapshot) return;
+  await saveDocument({ ...record, name, named: true, snapshot: { ...record.snapshot, name, named: true } });
+}
+
+/** Duplicate works like Save As — the same copy, the same history copy — but from My Artworks, so
+ * the copy is listed rather than opened (Save As opens its copy because it's saving the work in
+ * hand). Like Save As, the copy starts with no Undo/Redo of its own. Returns the copy's name. */
+async function duplicateArtwork(a: ArtworkSummary): Promise<string | null> {
+  const s = session;
+  if (s && s.controller.doc.id === a.id) {
+    // The open artwork: copy it as it stands right now, thumbnail and process included.
+    s.autosave.flush({ thumbnail: true });
+    s.process?.flush();
+  }
+  const record = await loadDocument(a.id);
+  if (!record?.snapshot) return null;
+  const taken = new Set((await listArtworks()).map(displayName));
+  const base = `${displayName(a)} copy`;
+  let name = base;
+  for (let n = 2; taken.has(name); n++) name = `${base} ${n}`;
+  const copy = asNewArtwork(record.snapshot, name);
+  await copyProcess(a.id, copy.id);
+  await saveDocument({ id: copy.id, name, named: true, createdAt: copy.createdAt, updatedAt: copy.updatedAt, schemaVersion: record.schemaVersion, thumbnail: record.thumbnail, snapshot: copy });
+  return name;
+}
+
+/** Delete, after confirmation: the artwork, its Undo history and its process history. Deleting the
+ * artwork that's open closes it first — so nothing can save it again — and leaves the Start screen,
+ * with nothing open and no last-opened artwork to come back to. */
+async function deleteFromStart(id: string): Promise<void> {
+  const wasOpen = session?.controller.doc.id === id;
+  if (wasOpen) {
+    closeAnyPopover();
+    endSession();
+  }
+  await deleteArtwork(id);
+  await enqueue(async () => {}); // its process history is removed through the same queue
+  if ((await getMeta<string>('lastOpenDocId')) === id) await setMeta('lastOpenDocId', null);
+  if (wasOpen) {
+    root!.innerHTML = '';
+    showStart('artworks');
+  }
 }
 
 async function openFromStart(id: string): Promise<void> {

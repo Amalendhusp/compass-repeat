@@ -4,6 +4,10 @@
 // "Choose a frame"; Menu → Open… opens the same page scrolled to "My Artworks". Saved artworks are
 // shown as cards using the small thumbnail each artwork already stores when it is saved — nothing
 // new is persisted for this screen.
+//
+// Patch (card actions): each card has a quiet ⋮ in its corner — a separate button beside the card,
+// never inside it, so tapping it can't open the artwork — with one small menu: Rename, Duplicate,
+// Delete. The actions themselves live in main.ts; the page just re-lists the cards afterwards.
 
 import type { FrameKind } from '../model/types.ts';
 import type { ArtworkSummary } from '../persist/db.ts';
@@ -17,14 +21,24 @@ export interface StartScreenOptions {
   dismissible: boolean;
   /** The artwork open behind the page, if any (marked "Open now"). */
   currentId: string | null;
-  /** The saved artworks, newest first (may still be loading). */
-  artworks: Promise<ArtworkSummary[]>;
+  /** The saved artworks, newest first — asked for on opening, and again after a card action. */
+  loadArtworks: () => Promise<ArtworkSummary[]>;
+  /** Each card's ⋮ menu. `done` re-lists the cards (and is harmless if the page has gone). */
+  actions: CardActions;
   /** The Beginner Guide card: `onStart` absent shows it disabled; `note` is a small badge on it. */
   guide: { onStart?: () => void; note?: string };
   onChooseFrame: (kind: FrameKind) => void;
   onOpenArtwork: (id: string) => void;
   onClose?: () => void;
 }
+
+export interface CardActions {
+  rename(artwork: ArtworkSummary, done: () => void): void;
+  duplicate(artwork: ArtworkSummary, done: () => void): void;
+  remove(artwork: ArtworkSummary, done: () => void): void;
+}
+
+const MORE_ICON = '<svg width="18" height="18" viewBox="0 0 18 18" aria-hidden="true"><circle cx="9" cy="3.6" r="1.6" fill="currentColor"/><circle cx="9" cy="9" r="1.6" fill="currentColor"/><circle cx="9" cy="14.4" r="1.6" fill="currentColor"/></svg>';
 
 function edited(ts: number): string {
   return new Date(ts).toLocaleString([], { day: 'numeric', month: 'short', year: 'numeric', hour: '2-digit', minute: '2-digit' });
@@ -38,7 +52,10 @@ export function openStartScreen(root: HTMLElement, opts: StartScreenOptions): ()
   page.setAttribute('role', 'dialog');
   page.setAttribute('aria-label', 'Start');
 
-  const close = () => page.remove();
+  const close = () => {
+    closeMenu();
+    page.remove();
+  };
 
   // ---- header ----
   const header = document.createElement('div');
@@ -125,8 +142,75 @@ export function openStartScreen(root: HTMLElement, opts: StartScreenOptions): ()
   };
   scrollToFocus();
 
-  void opts.artworks.then((list) => {
-    if (!page.isConnected) return;
+  // ---- the cards' ⋮ menu: one at a time ----
+  let menu: { el: HTMLElement; button: HTMLElement } | null = null;
+  const closeMenu = () => {
+    if (!menu) return;
+    menu.button.setAttribute('aria-expanded', 'false');
+    menu.el.remove();
+    menu = null;
+    document.removeEventListener('pointerdown', onOutside, true);
+    document.removeEventListener('keydown', onKey, true);
+  };
+  /** A press anywhere else closes the menu and does nothing more — it never also opens a card or
+   * picks a frame. Another card's ⋮ is the exception: it opens its own menu straight away. Scrolling
+   * is untouched (nothing here prevents the browser's default). */
+  function onOutside(e: PointerEvent): void {
+    if (!menu || !menu.el.isConnected) return closeMenu();
+    const target = e.target as Node;
+    if (menu.el.contains(target) || menu.button.contains(target)) return;
+    const another = target instanceof Element && target.closest('.start-artwork-more');
+    closeMenu();
+    if (!another) e.stopPropagation();
+  }
+  function onKey(e: KeyboardEvent): void {
+    if (e.key !== 'Escape' || !menu) return;
+    e.stopPropagation();
+    const button = menu.button;
+    closeMenu();
+    button.focus();
+  }
+  const openMenu = (a: ArtworkSummary, button: HTMLElement) => {
+    const same = menu?.button === button;
+    closeMenu();
+    if (same) return; // the same ⋮ again just closes it
+    const el = document.createElement('div');
+    el.className = 'start-card-menu';
+    el.setAttribute('role', 'menu');
+    el.setAttribute('aria-label', `Actions for ${a.named ? a.name : 'Untitled'}`);
+    const item = (label: string, run: (a: ArtworkSummary, done: () => void) => void, danger = false) => {
+      const b = document.createElement('button');
+      b.setAttribute('role', 'menuitem');
+      b.textContent = label;
+      if (danger) b.className = 'danger';
+      onTap(b, () => {
+        closeMenu();
+        run(a, refresh);
+      });
+      el.appendChild(b);
+    };
+    item('Rename', opts.actions.rename);
+    item('Duplicate', opts.actions.duplicate);
+    item('Delete', opts.actions.remove, true);
+    page.appendChild(el);
+    // Anchored under the ⋮ (above it if there isn't room), inside the scrolling page so it moves with
+    // its card.
+    const pr = page.getBoundingClientRect();
+    const br = button.getBoundingClientRect();
+    const h = el.offsetHeight;
+    const below = br.bottom + h + 8 <= window.innerHeight;
+    el.style.top = `${(below ? br.bottom - 2 : br.top - h + 2) - pr.top + page.scrollTop}px`;
+    el.style.left = `${Math.max(8, Math.min(br.right - el.offsetWidth, pr.width - el.offsetWidth - 8))}px`;
+    button.setAttribute('aria-expanded', 'true');
+    menu = { el, button };
+    document.addEventListener('pointerdown', onOutside, true);
+    document.addEventListener('keydown', onKey, true);
+    (el.firstElementChild as HTMLElement | null)?.focus({ preventScroll: true });
+  };
+
+  const renderCards = (list: ArtworkSummary[]) => {
+    closeMenu();
+    grid.innerHTML = '';
     grid.removeAttribute('aria-busy');
     if (list.length === 0) {
       const empty = document.createElement('p');
@@ -135,6 +219,8 @@ export function openStartScreen(root: HTMLElement, opts: StartScreenOptions): ()
       grid.appendChild(empty);
     }
     for (const a of list) {
+      const item = document.createElement('div');
+      item.className = 'start-artwork-item';
       const card = document.createElement('button');
       card.className = 'start-artwork' + (a.id === opts.currentId ? ' current' : '');
       const thumb = document.createElement('div');
@@ -161,8 +247,33 @@ export function openStartScreen(root: HTMLElement, opts: StartScreenOptions): ()
         if (a.id === opts.currentId) opts.onClose?.();
         else opts.onOpenArtwork(a.id);
       });
-      grid.appendChild(card);
+      const more = document.createElement('button');
+      more.className = 'start-artwork-more';
+      more.setAttribute('aria-label', `More actions for ${a.named ? a.name : 'Untitled'}`);
+      more.setAttribute('aria-haspopup', 'menu');
+      more.setAttribute('aria-expanded', 'false');
+      more.innerHTML = `<span class="start-artwork-more-dots">${MORE_ICON}</span>`;
+      onTap(more, () => openMenu(a, more));
+      item.appendChild(card);
+      item.appendChild(more);
+      grid.appendChild(item);
     }
+  };
+
+  /** Re-lists the cards after a Rename, Duplicate or Delete, keeping the page where it was. */
+  function refresh(): void {
+    if (!page.isConnected) return;
+    const top = page.scrollTop;
+    void opts.loadArtworks().then((list) => {
+      if (!page.isConnected) return;
+      renderCards(list);
+      page.scrollTop = top;
+    });
+  }
+
+  void opts.loadArtworks().then((list) => {
+    if (!page.isConnected) return;
+    renderCards(list);
     // The section grew once the list arrived — keep Open… landing on its heading.
     scrollToFocus();
   });
