@@ -803,7 +803,14 @@ canvas.stage {
   grid-template-columns: repeat(2, minmax(0, 1fr));
   gap: 12px;
 }
+/* Patch (card actions): a card and its ⋮ sit side by side in one grid cell. */
+.start-artwork-item {
+  position: relative;
+  min-width: 0;
+  display: flex;
+}
 .start-artwork {
+  flex: 1 1 auto;
   min-width: 0;
   display: flex;
   flex-direction: column;
@@ -857,6 +864,83 @@ canvas.stage {
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
+}
+/* The ⋮: small, quiet dots on a soft disc over the thumbnail's corner, inside a full 44×44 target. */
+.start-artwork-more {
+  position: absolute;
+  top: 2px;
+  right: 2px;
+  width: 44px;
+  height: 44px;
+  padding: 0;
+  border: none;
+  border-radius: 12px;
+  background: transparent;
+  color: var(--ink);
+  display: grid;
+  place-items: center;
+  cursor: pointer;
+}
+.start-artwork-more-dots {
+  width: 28px;
+  height: 28px;
+  border-radius: 50%;
+  display: grid;
+  place-items: center;
+  background: color-mix(in srgb, var(--paper) 82%, transparent);
+  color: var(--muted);
+  transition: background 0.12s ease, color 0.12s ease;
+}
+.start-artwork-more:active .start-artwork-more-dots,
+.start-artwork-more[aria-expanded='true'] .start-artwork-more-dots {
+  background: var(--well);
+  color: var(--ink);
+}
+@media (hover: hover) {
+  .start-artwork-more:hover .start-artwork-more-dots {
+    background: var(--paper);
+    color: var(--ink);
+  }
+}
+.start-card-menu {
+  position: absolute;
+  z-index: 2;
+  min-width: 168px;
+  padding: 4px;
+  display: flex;
+  flex-direction: column;
+  background: var(--paper);
+  border: 1px solid var(--hairline);
+  border-radius: 12px;
+  box-shadow: 0 8px 24px rgba(30, 42, 54, 0.16);
+}
+.start-card-menu button {
+  min-height: 44px;
+  padding: 0 14px;
+  border: none;
+  border-radius: 9px;
+  background: transparent;
+  color: var(--ink);
+  font-family: var(--font-ui);
+  font-size: 15px;
+  font-weight: 500;
+  text-align: left;
+  cursor: pointer;
+}
+.start-card-menu button:active,
+.start-card-menu button:focus-visible {
+  background: var(--well);
+  outline: none;
+}
+.start-card-menu button.danger {
+  color: #a3341f;
+}
+/* Rename and Delete ask over the Start screen, not under it. */
+.start-screen ~ .sheet-scrim {
+  z-index: 9;
+}
+.start-screen ~ .sheet {
+  z-index: 10;
 }
 .start-empty {
   grid-column: 1 / -1;
