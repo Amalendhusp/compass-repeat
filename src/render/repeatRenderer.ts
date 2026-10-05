@@ -1,5 +1,6 @@
 // Phase 5: the Repeat workspace's own render path — deliberately separate from render/renderer.ts
-// (Construct's). Draws Fair strokes + fills only (item 14: construction/extension never repeat),
+// (Construct's). Draws Fair strokes + fills (item 14: construction never becomes repeated artwork —
+// the Construction overlay below is a drawn guide only, never geometry),
 // once per visible lattice instance, reusing Construct's already-cached segment/region derivation
 // (item 19: never recompute motif topology per copy — only its placement changes per instance).
 // Phase 5.1: everything Appearance and Grid/Guides control is applied here at draw time only —
@@ -24,7 +25,7 @@ import {
   type InstancePose,
 } from '../geometry/lattice.ts';
 import { color, stroke } from './tokens.ts';
-import { makePath } from './svgContext.ts';
+import { makePath, SvgContext, SvgPath } from './svgContext.ts';
 import type { ArtworkExport } from './renderer.ts';
 
 function appendTransformedLoop(path: Path2D, view: ViewTransform, pivot: Vec2, pose: InstancePose, worldPts: Vec2[]): void {
@@ -81,9 +82,9 @@ function collectFairStrokes(doc: Doc): FairStroke[] {
   return out;
 }
 
-/** Phase 5.1 item 4: the construction used to develop the motif, around the reference copy only
- * (repeating it across every tile is exactly the clutter Construct already has to fade). Thin,
- * muted and translucent — always visibly subordinate to Fair strokes, and never artwork. */
+/** Phase 5.1 item 4: the construction used to develop the motif, around the reference copy only.
+ * Thin, muted and translucent — always visibly subordinate to Fair strokes, and never artwork. Now
+ * used only where the overlay stays reference-only (a Timelapse — see ArtworkExport). */
 function drawConstructionOverlay(ctx: CanvasRenderingContext2D, view: ViewTransform, pivot: Vec2, pose: InstancePose, doc: Doc): void {
   ctx.save();
   ctx.strokeStyle = color.construction;
@@ -107,6 +108,285 @@ function drawConstructionOverlay(ctx: CanvasRenderingContext2D, view: ViewTransf
     }
   }
   ctx.restore();
+}
+
+// ---- The Construction overlay across the pattern: the reference motif's scaffold, repeated ----
+//
+// A drawn guide for decoding a pattern, never geometry: nothing here touches the document, so it
+// can't be selected, edited, Faired, filled, undone or recorded. Every copy's scaffold is drawn with
+// exactly the pose its motif copy has (lattice, spacing, rotation, Same / Alternate / Mirror), from
+// the same instancePose/transformPoint the copies themselves use.
+//
+// An extended line is drawn as what it is — an infinite line, dashed — not as pieces: the
+// transformed line of each copy whose artwork is in view, clipped to the view. Where lines from
+// neighbouring cells continue one another exactly they are the same line, drawn once, so a line that
+// runs on across cell boundaries reads as one line.
+
+type ScaffoldPiece =
+  | { kind: 'line'; a: Vec2; b: Vec2 }
+  | { kind: 'arc'; c: Vec2; r: number; from: number; to: number }
+  | { kind: 'circle'; c: Vec2; r: number };
+
+interface Scaffold {
+  solid: ScaffoldPiece[];
+  dashed: ScaffoldPiece[]; // Extension pieces of lines that aren't extended (rare)
+  /** Extended lines, as infinite lines: a point on each and its unit direction. */
+  infinite: { p: Vec2; u: Vec2 }[];
+  /** How far the finite pieces reach from the pivot — for choosing which copies to draw. */
+  reach: number;
+  paths?: { solid: Path2D; dashed: Path2D };
+}
+const scaffoldCache = new WeakMap<Doc, Scaffold>();
+const REFERENCE_CONSTRUCTION_ALPHA = 0.55; // as the overlay always was
+const COPY_CONSTRUCTION_ALPHA = 0.3; // the copies: quieter
+// Distinct infinite lines per frame, from the copies nearest the middle of the view outwards. Only
+// reached zoomed out on a dense scaffold (Plate 113 at fit: ~1,650), where the lines are a hatch a
+// pixel or two apart and the far ones add nothing readable — but cost a frame.
+const MAX_INFINITE_LINES = 600;
+
+/** The construction pieces of one document (a new Doc on every commit, so cached per Doc): every
+ * non-Fair, non-trimmed piece, with consecutive pieces of the same kind merged into one line or arc
+ * so a dense scaffold stays a few hundred strokes rather than thousands. */
+function motifScaffold(doc: Doc): Scaffold {
+  let sc = scaffoldCache.get(doc);
+  if (sc) return sc;
+  const solid: ScaffoldPiece[] = [];
+  const dashed: ScaffoldPiece[] = [];
+  const infinite: Scaffold['infinite'] = [];
+  const pivot = doc.frame.origin;
+  let reach = 0;
+  const grow = (p: Vec2, extra = 0) => {
+    reach = Math.max(reach, Math.hypot(p.x - pivot.x, p.y - pivot.y) + extra);
+  };
+  for (const entity of doc.entities) {
+    const g = resolveEntityGeom(doc, entity);
+    const extendedLine = g.kind === 'line' && entity.kind === 'line' && entity.extended;
+    if (extendedLine) infinite.push({ p: g.a, u: g.dir });
+    const segs = deriveSegments(doc, entity);
+    if (segs.length === 0) {
+      if (g.kind === 'circle') {
+        solid.push({ kind: 'circle', c: g.centre, r: g.radius });
+        grow(g.centre, g.radius);
+      } else if (!extendedLine) {
+        solid.push({ kind: 'line', a: g.a, b: g.b });
+        grow(g.a);
+        grow(g.b);
+      }
+      continue;
+    }
+    const sorted = [...segs].sort((p, q) => p.fromParam - q.fromParam);
+    let run: { dashed: boolean; from: number; to: number } | null = null;
+    const flush = () => {
+      if (!run) return;
+      const into = run.dashed ? dashed : solid;
+      if (g.kind === 'circle') {
+        into.push({ kind: 'arc', c: g.centre, r: g.radius, from: run.from, to: run.to });
+        grow(g.centre, g.radius);
+      } else {
+        const at = (t: number) => ({ x: g.a.x + (g.b.x - g.a.x) * t, y: g.a.y + (g.b.y - g.a.y) * t });
+        const a = at(run.from);
+        const b = at(run.to);
+        into.push({ kind: 'line', a, b });
+        grow(a);
+        grow(b);
+      }
+      run = null;
+    };
+    for (const seg of sorted) {
+      const kind = doc.segmentStates.get(seg.key)?.state ?? defaultSegmentKind(entity, seg);
+      // Fair is drawn as the artwork; trimmed is gone; an extended line's dashed parts are its
+      // infinite line, drawn separately.
+      if (kind === 'fair' || kind === 'trimmed' || (extendedLine && kind === 'extension')) {
+        flush();
+        continue;
+      }
+      const isDashed = kind === 'extension';
+      if (run && run.dashed === isDashed && Math.abs(run.to - seg.fromParam) < 1e-9) run.to = seg.toParam;
+      else {
+        flush();
+        run = { dashed: isDashed, from: seg.fromParam, to: seg.toParam };
+      }
+    }
+    flush();
+  }
+  sc = { solid, dashed, infinite, reach };
+  scaffoldCache.set(doc, sc);
+  return sc;
+}
+
+/** The pieces as one path: in the motif's own (world) coordinates for a canvas (drawn per copy under
+ * that copy's pose as a transform), or placed point by point for SVG. */
+function appendPieces(path: Path2D | SvgPath, pieces: ScaffoldPiece[], map?: (p: Vec2) => Vec2, pose?: InstancePose, zoom = 1): void {
+  for (const piece of pieces) {
+    if (piece.kind === 'line') {
+      const a = map ? map(piece.a) : piece.a;
+      const b = map ? map(piece.b) : piece.b;
+      path.moveTo(a.x, a.y);
+      path.lineTo(b.x, b.y);
+    } else {
+      const c = map ? map(piece.c) : piece.c;
+      const r = piece.r * zoom;
+      const from = piece.kind === 'arc' ? (pose ? poseArcAngle(pose, piece.from) : piece.from) : 0;
+      const to = piece.kind === 'arc' ? (pose ? poseArcAngle(pose, piece.to) : piece.to) : Math.PI * 2;
+      path.moveTo(c.x + r * Math.cos(from), c.y + r * Math.sin(from));
+      path.arc(c.x, c.y, r, from, to, piece.kind === 'arc' && !!pose?.mirror);
+    }
+  }
+}
+
+/** One infinite line clipped to the view, in screen px — or null if it misses the view. The start is
+ * moved back to a whole dash period from the world origin's foot on the line, so the dashes stay put
+ * on the line while the view pans. */
+function clipToView(view: ViewTransform, p: Vec2, u: Vec2, dashPeriod: number): [Vec2, Vec2] | null {
+  const s = worldToScreen(view, p);
+  const d = { x: u.x, y: u.y }; // unit screen direction (uniform zoom, no rotation): t is in px
+  let t0 = -Infinity;
+  let t1 = Infinity;
+  const pad = 4;
+  for (const [o, dir, lo, hi] of [[s.x, d.x, -pad, view.w + pad], [s.y, d.y, -pad, view.h + pad]] as const) {
+    if (Math.abs(dir) < 1e-12) {
+      if (o < lo || o > hi) return null;
+      continue;
+    }
+    const ta = (lo - o) / dir;
+    const tb = (hi - o) / dir;
+    t0 = Math.max(t0, Math.min(ta, tb));
+    t1 = Math.min(t1, Math.max(ta, tb));
+  }
+  if (t0 >= t1) return null;
+  const origin = worldToScreen(view, { x: 0, y: 0 });
+  const anchor = (origin.x - s.x) * d.x + (origin.y - s.y) * d.y;
+  if (dashPeriod > 0) t0 = anchor + Math.floor((t0 - anchor) / dashPeriod) * dashPeriod;
+  return [{ x: s.x + d.x * t0, y: s.y + d.y * t0 }, { x: s.x + d.x * t1, y: s.y + d.y * t1 }];
+}
+
+/** The scaffold of every copy that reaches the view — the reference a little stronger, as the
+ * overlay always was. Extended lines come from the copies whose artwork is in view (`lineCopies`). */
+function drawRepeatedConstruction(ctx: CanvasRenderingContext2D, doc: Doc, view: ViewTransform, poses: InstancePose[], lineCopies: InstancePose[]): void {
+  const sc = motifScaffold(doc);
+  if (sc.solid.length === 0 && sc.dashed.length === 0 && sc.infinite.length === 0) return;
+  const pivot = doc.frame.origin;
+  const isReference = (pose: InstancePose) => pose.i === 0 && pose.j === 0;
+  const svg = (ctx as unknown) instanceof SvgContext;
+  ctx.save();
+  ctx.strokeStyle = color.construction;
+  ctx.lineCap = 'butt';
+
+  // Finite construction, copy by copy.
+  if (sc.solid.length || sc.dashed.length) {
+    if (svg) {
+      ctx.lineWidth = 0.9;
+      for (const pose of poses) {
+        ctx.globalAlpha = isReference(pose) ? REFERENCE_CONSTRUCTION_ALPHA : COPY_CONSTRUCTION_ALPHA;
+        const map = (p: Vec2) => worldToScreen(view, transformPoint(pivot, pose, p));
+        for (const [pieces, dash] of [[sc.solid, []], [sc.dashed, stroke.extensionDash]] as const) {
+          if (pieces.length === 0) continue;
+          const path = new SvgPath();
+          appendPieces(path, pieces, map, pose, view.zoom);
+          ctx.setLineDash([...dash]);
+          (ctx as unknown as SvgContext).stroke(path);
+        }
+      }
+    } else {
+      if (!sc.paths) {
+        const solid = new Path2D();
+        const dashed = new Path2D();
+        appendPieces(solid, sc.solid);
+        appendPieces(dashed, sc.dashed);
+        sc.paths = { solid, dashed };
+      }
+      const z = view.zoom;
+      for (const pose of poses) {
+        // screen = zoom · (R·M·(p − pivot) + pivot + T + pan) + centre — transformPoint, then worldToScreen.
+        const cos = Math.cos(pose.rotation);
+        const sin = Math.sin(pose.rotation);
+        const m = pose.mirror ? -1 : 1;
+        const ox = pivot.x + pose.translate.x - (cos * pivot.x - sin * m * pivot.y);
+        const oy = pivot.y + pose.translate.y - (sin * pivot.x + cos * m * pivot.y);
+        ctx.save();
+        ctx.transform(z * cos, z * sin, -z * sin * m, z * cos * m, z * (ox + view.pan.x) + view.w / 2, z * (oy + view.pan.y) + view.h / 2);
+        ctx.globalAlpha = isReference(pose) ? REFERENCE_CONSTRUCTION_ALPHA : COPY_CONSTRUCTION_ALPHA;
+        ctx.lineWidth = 0.9 / z;
+        if (sc.solid.length) {
+          ctx.setLineDash([]);
+          ctx.stroke(sc.paths.solid);
+        }
+        if (sc.dashed.length) {
+          ctx.setLineDash(stroke.extensionDash.map((d) => d / z));
+          ctx.stroke(sc.paths.dashed);
+        }
+        ctx.restore();
+      }
+    }
+  }
+
+  // Extended lines: each copy's line, exactly transformed; coincident lines drawn once.
+  if (sc.infinite.length) {
+    const lines = new Map<string, { p: Vec2; u: Vec2; reference: boolean }>();
+    // Nearest the middle of the view first, so if the cap is reached it's the far lines that go.
+    const centre = { x: -view.pan.x, y: -view.pan.y };
+    const away = (pose: InstancePose) => Math.hypot(pivot.x + pose.translate.x - centre.x, pivot.y + pose.translate.y - centre.y);
+    for (const pose of [...lineCopies].sort((p1, p2) => away(p1) - away(p2))) {
+      for (const { p, u } of sc.infinite) {
+        const a = transformPoint(pivot, pose, p);
+        const b = transformPoint(pivot, pose, { x: p.x + u.x, y: p.y + u.y });
+        let dx = b.x - a.x;
+        let dy = b.y - a.y;
+        // One orientation per line, so the same line from two copies gets the same key.
+        if (dx < -1e-12 || (Math.abs(dx) <= 1e-12 && dy < 0)) {
+          dx = -dx;
+          dy = -dy;
+        }
+        const offset = a.x * dy - a.y * dx;
+        const key = `${Math.round(Math.atan2(dy, dx) * 1e7)}:${Math.round(offset * 1e4)}`;
+        const reference = isReference(pose);
+        const had = lines.get(key);
+        if (had) had.reference ||= reference;
+        else if (lines.size < MAX_INFINITE_LINES) lines.set(key, { p: a, u: { x: dx, y: dy }, reference });
+      }
+    }
+    ctx.lineWidth = 0.9;
+    ctx.setLineDash([...stroke.extensionDash]);
+    const period = stroke.extensionDash.reduce((sum, v) => sum + v, 0);
+    if (svg) {
+      // SVG: one path per strength.
+      for (const strength of [false, true]) {
+        const path = new SvgPath();
+        let any = false;
+        for (const l of lines.values()) {
+          const seg = l.reference === strength ? clipToView(view, l.p, l.u, period) : null;
+          if (!seg) continue;
+          path.moveTo(seg[0].x, seg[0].y);
+          path.lineTo(seg[1].x, seg[1].y);
+          any = true;
+        }
+        if (!any) continue;
+        ctx.globalAlpha = strength ? REFERENCE_CONSTRUCTION_ALPHA : COPY_CONSTRUCTION_ALPHA;
+        (ctx as unknown as SvgContext).stroke(path);
+      }
+    } else {
+      // Canvas: a stroke per line. Hundreds of long lines crossing one another in a single path are
+      // many times slower to rasterise (where the canvas isn't GPU-drawn) than the same lines apart.
+      for (const l of lines.values()) {
+        const seg = clipToView(view, l.p, l.u, period);
+        if (!seg) continue;
+        ctx.globalAlpha = l.reference ? REFERENCE_CONSTRUCTION_ALPHA : COPY_CONSTRUCTION_ALPHA;
+        ctx.beginPath();
+        ctx.moveTo(seg[0].x, seg[0].y);
+        ctx.lineTo(seg[1].x, seg[1].y);
+        ctx.stroke();
+      }
+    }
+  }
+  ctx.restore();
+}
+
+/** Which copies' scaffolds to draw: the same lattice culling as the copies — with the finite
+ * construction's own reach (it can extend past the artwork) — and, for extended lines, exactly the
+ * copies in view. */
+function drawConstructionAcross(ctx: CanvasRenderingContext2D, doc: Doc, draftDoc: Doc, view: ViewTransform, inView: InstancePose[]): void {
+  const reach = Math.max(motifExtent(doc), motifScaffold(doc).reach);
+  drawRepeatedConstruction(ctx, doc, view, visibleInstances(draftDoc, view, reach), inView);
 }
 
 function drawFrameOutline(ctx: CanvasRenderingContext2D, view: ViewTransform, pivot: Vec2, pose: InstancePose, doc: Doc, alpha: number): void {
@@ -497,9 +777,11 @@ export function renderRepeat(ctx: CanvasRenderingContext2D, controller: AppContr
   const detail = instances.length > LOD_COPIES ? 0.5 : 1;
   const bitmap = exp ? null : motifSprite(doc, display, view.zoom, detail, controller.viewGesture, showFills, showStrokes);
 
+  // A Timelapse keeps the overlay as it was: the reference copy's alone, under its Fair strokes.
+  const referenceOnly = showConstruction && !!exp?.referenceConstructionOnly;
   for (const pose of instances) {
     const isReference = pose.i === 0 && pose.j === 0;
-    const overlay = isReference && showConstruction ? () => drawConstructionOverlay(ctx, view, pivot, pose, doc) : undefined;
+    const overlay = isReference && referenceOnly ? () => drawConstructionOverlay(ctx, view, pivot, pose, doc) : undefined;
     if (bitmap && !overlay) {
       const at = worldToScreen(view, { x: pivot.x + pose.translate.x, y: pivot.y + pose.translate.y });
       const size = bitmap.cssSize * (view.zoom / bitmap.zoom);
@@ -513,6 +795,10 @@ export function renderRepeat(ctx: CanvasRenderingContext2D, controller: AppContr
       drawCopy(ctx, doc, view, pose, flat, display, showFills, showStrokes, 1, overlay);
     }
   }
+
+  // The Construction overlay across the pattern: every visible copy's scaffold, over the copies (so
+  // no neighbour's fill hides a line that continues into it), following any live drag too.
+  if (showConstruction && !referenceOnly) drawConstructionAcross(ctx, doc, draftDoc, view, instances);
 
   const showGuides = !exp || exp.guides;
   if (showGuides) {

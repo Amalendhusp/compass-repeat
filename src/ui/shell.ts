@@ -454,7 +454,7 @@ function showRepeatAppearancePanel(anchor: HTMLElement, controller: AppControlle
           display().constructionOverlay = on;
           changed();
         },
-        'Shows the construction around the reference motif only — a guide, not artwork',
+        'Shows the construction of the reference motif and its repeated copies — a guide, not artwork',
       );
 
       const swatchRow = document.createElement('div');

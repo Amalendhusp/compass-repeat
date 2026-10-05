@@ -99,7 +99,9 @@ export function inPlaceParts(doc: Doc): InPlaceParts {
   const d = doc.repeatDisplay;
   return {
     repeat: plain(repeat) as Record<string, unknown>,
-    appearance: { artwork: d.artwork, background: d.background, constructionOverlay: d.constructionOverlay, fillOpacity: d.fillOpacity },
+    // The Construction overlay is a viewing aid, not part of the artwork: never recorded as a change.
+    // The field stays (always false) so every stored state keeps the same shape and fingerprint.
+    appearance: { artwork: d.artwork, background: d.background, constructionOverlay: false, fillOpacity: d.fillOpacity },
   };
 }
 
@@ -139,7 +141,7 @@ export function capturedHash(state: ArtworkState): { hash: string; bytes: number
 export function inPlaceFingerprint(doc: Doc): string {
   const { gapFills: _gaps, ...repeat } = doc.repeat;
   const d = doc.repeatDisplay;
-  return JSON.stringify([repeat, d.artwork, d.constructionOverlay, d.background, d.fillOpacity]);
+  return JSON.stringify([repeat, d.artwork, d.background, d.fillOpacity]); // not the Construction overlay — a view aid
 }
 
 const toList = (c: Coll) => c.$o.map((k) => ({ id: k, ...(structuredClone(c.$v[k]) as object) }));

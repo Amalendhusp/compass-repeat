@@ -144,8 +144,7 @@ const MAX_INSTANCES = 400; // a hard safety cap — never render/iterate more th
 /** Phase 5 items 9/10: every (i, j) whose motif bound could touch the visible viewport (plus a
  * margin for the motif's own radius) — generated from the viewport itself, so pan/zoom reveals
  * more copies naturally and nothing needs to be pre-baked for "infinite" extent. */
-export function visibleInstances(doc: Doc, view: ViewTransform): InstancePose[] {
-  const reach = motifExtent(doc);
+export function visibleInstances(doc: Doc, view: ViewTransform, reach = motifExtent(doc)): InstancePose[] {
   const range = visibleLatticeRange(doc, view, reach);
   if (!range) return [instancePose(doc.repeat, 0, 0)]; // degenerate basis — just the reference
   const { i0, i1, j0, j1 } = range;

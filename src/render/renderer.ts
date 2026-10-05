@@ -1739,6 +1739,9 @@ export interface ArtworkExport {
   construction: boolean;
   /** Repeat only: the lattice grid, basis directions and motif boundary, as currently shown. */
   guides: boolean;
+  /** Repeat only: the Construction overlay around the reference motif alone, as before it repeated
+   * across the pattern — what a Timelapse keeps showing. */
+  referenceConstructionOnly?: boolean;
 }
 
 /** On screen, `exp` is absent and everything draws. With `exp` (Phase 5.3 export), only the

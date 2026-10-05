@@ -115,7 +115,8 @@ export function frameRenderer(liveDoc: Doc, view: ViewTransform, settings: { con
   canvas.width = W;
   canvas.height = H;
   const ctx = canvas.getContext('2d')!;
-  const exp: ArtworkExport = { background: true, construction: settings.construction, guides: settings.guides };
+  // A timelapse keeps the Construction overlay as it always was: the reference motif's only.
+  const exp: ArtworkExport = { background: true, construction: settings.construction, guides: settings.guides, referenceConstructionOnly: true };
   // Made from Repeat, the states before the pattern existed are the construction being built:
   // they show it, whatever the pattern's own Construction setting is.
   const building: ArtworkExport = asRepeat ? { ...exp, construction: true } : exp;
