@@ -91,7 +91,8 @@ interface Source {
   entityId: string;
 }
 
-class Arrangement {
+/** Vertices snapped together within `tol` (a grid lookup) — shared with Construction Space. */
+export class Arrangement {
   xs: number[] = [];
   ys: number[] = [];
   private grid = new Map<string, number[]>();

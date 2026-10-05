@@ -10,6 +10,8 @@ import type { Doc, Entity, RepeatDisplay, RepeatSystem, SegmentState, Vec2 } fro
 import type { AppController, ViewTransform } from '../app/controller.ts';
 import { screenToWorld, worldToScreen } from '../app/controller.ts';
 import { computeSpaces, spaceTranslations } from '../geometry/spaces.ts';
+import type { ConstructionFace } from '../geometry/constructionSpace.ts';
+import { withAlpha } from '../model/colour.ts';
 import { resolveEntityGeom } from '../geometry/kernel.ts';
 import { defaultSegmentKind, deriveSegments, type DerivedSegment } from '../geometry/segments.ts';
 import { computeDirectHoles, computeFairRegions, type FairRegion } from '../geometry/regions.ts';
@@ -387,6 +389,43 @@ function drawRepeatedConstruction(ctx: CanvasRenderingContext2D, doc: Doc, view:
 function drawConstructionAcross(ctx: CanvasRenderingContext2D, doc: Doc, draftDoc: Doc, view: ViewTransform, inView: InstancePose[]): void {
   const reach = Math.max(motifExtent(doc), motifScaffold(doc).reach);
   drawRepeatedConstruction(ctx, doc, view, visibleInstances(draftDoc, view, reach), inView);
+}
+
+/** The shown Construction Space regions, as one shape: each filled, and outlined only where it
+ * doesn't meet another shown region (so eight wedges of a star read as the star). */
+function drawConstructionSpace(ctx: CanvasRenderingContext2D, view: ViewTransform, faces: ConstructionFace[], tol: number): void {
+  const key = (p: Vec2) => `${Math.round(p.x / tol)},${Math.round(p.y / tol)}`;
+  const sides = new Map<string, number>();
+  const sideKey = (p: Vec2, q: Vec2) => [key(p), key(q)].sort().join('|');
+  const loopsOf = (f: ConstructionFace) => [f.loop, ...f.holes];
+  for (const f of faces) for (const loop of loopsOf(f)) loop.forEach((p, k) => sides.set(sideKey(p, loop[(k + 1) % loop.length]!), (sides.get(sideKey(p, loop[(k + 1) % loop.length]!)) ?? 0) + 1));
+  ctx.save();
+  ctx.fillStyle = withAlpha(color.signal, 0.2);
+  const outline = new Path2D();
+  for (const f of faces) {
+    const fill = new Path2D();
+    for (const loop of loopsOf(f)) {
+      loop.forEach((p, k) => {
+        const s = worldToScreen(view, p);
+        if (k === 0) fill.moveTo(s.x, s.y);
+        else fill.lineTo(s.x, s.y);
+        const q = loop[(k + 1) % loop.length]!;
+        if (sides.get(sideKey(p, q)) === 1) {
+          const e = worldToScreen(view, q);
+          outline.moveTo(s.x, s.y);
+          outline.lineTo(e.x, e.y);
+        }
+      });
+      fill.closePath();
+    }
+    ctx.fill(fill, 'evenodd');
+  }
+  ctx.strokeStyle = color.signal;
+  ctx.lineWidth = 1.6;
+  ctx.lineCap = 'round';
+  ctx.setLineDash([]);
+  ctx.stroke(outline);
+  ctx.restore();
 }
 
 function drawFrameOutline(ctx: CanvasRenderingContext2D, view: ViewTransform, pivot: Vec2, pose: InstancePose, doc: Doc, alpha: number): void {
@@ -799,6 +838,13 @@ export function renderRepeat(ctx: CanvasRenderingContext2D, controller: AppContr
   // The Construction overlay across the pattern: every visible copy's scaffold, over the copies (so
   // no neighbour's fill hides a line that continues into it), following any live drag too.
   if (showConstruction && !referenceOnly) drawConstructionAcross(ctx, doc, draftDoc, view, instances);
+
+  // Construction Space: a temporary highlight on screen only (never exported, thumbnailed or saved),
+  // shown only for the exact document it was found in — any change at all and it is gone.
+  const found = controller.constructionSpace;
+  if (!exp && found && found.doc === doc && !drag && !rotating && controller.spaceMode && controller.spaceBoundary === 'construction' && display.constructionOverlay) {
+    drawConstructionSpace(ctx, view, found.faces, motifRadius(doc) * 0.003);
+  }
 
   const showGuides = !exp || exp.guides;
   if (showGuides) {

@@ -298,6 +298,12 @@ canvas.stage {
   background: var(--ink);
   color: var(--paper);
 }
+.space-label {
+  font-size: 12px;
+  font-weight: 500;
+  color: var(--muted);
+  padding-left: 4px;
+}
 .repeat-panel > .repeat-status {
   position: absolute;
   left: 50%;
