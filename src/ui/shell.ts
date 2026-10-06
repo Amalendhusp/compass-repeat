@@ -443,8 +443,9 @@ function designStroke(doc: Doc): { colour: string; width: number } {
 /**
  * Phase 5.1 items 3–6 / Phase 5.3 items 2–5: Repeat's Appearance panel — how the repeated design is
  * drawn, never what it is. Every control writes only `doc.repeatDisplay` (a display preference:
- * not undo-tracked, persisted by autosave). One panel, two sections: Stroke (As constructed, or
- * Repeat's own colour and width) and Fill (the colour behind the pattern, and fill opacity). Swatch
+ * not undo-tracked, persisted by autosave). One panel, grouped by what each control affects: Stroke
+ * (As constructed, or Repeat's own colour and width), Background (the colour behind the pattern) and
+ * Fill (the opacity of the design's own fill regions). Swatch
  * rows scroll sideways if a narrow screen needs it.
  */
 function showRepeatAppearancePanel(anchor: HTMLElement, controller: AppController): void {
@@ -522,14 +523,13 @@ function showRepeatAppearancePanel(anchor: HTMLElement, controller: AppControlle
       };
       buildStrokeSection();
 
-      // Fill: the colour behind the pattern (what shows through and around the design) and how
-      // strongly the design's own fills are drawn.
-      popoverSectionLabel(menu, 'Fill');
+      // Background: the colour behind the repeated pattern (what shows through and around it).
+      popoverSectionLabel(menu, 'Background');
       const swatchRow = document.createElement('div');
       swatchRow.className = 'swatch-row panel-swatches';
       swatchRow.setAttribute('role', 'group');
-      swatchRow.setAttribute('aria-label', 'Fill colour (the background behind the pattern)');
-      swatchRow.title = 'The background behind the pattern';
+      swatchRow.setAttribute('aria-label', 'Background colour');
+      swatchRow.title = 'The colour behind the pattern';
       const swatchEls: HTMLButtonElement[] = [];
       const refreshSwatches = () => swatchEls.forEach((el) => el.classList.toggle('active', el.dataset.colour?.toLowerCase() === display().background.toLowerCase()));
       const pick = (colour: string) => {
@@ -565,7 +565,9 @@ function showRepeatAppearancePanel(anchor: HTMLElement, controller: AppControlle
       refreshSwatches();
       menu.appendChild(swatchRow);
 
-      panelSliderRow(menu, 'Opacity', {
+      // Fill: how strongly the design's own fill regions are drawn (not the background or strokes).
+      popoverSectionLabel(menu, 'Fill');
+      panelSliderRow(menu, 'Fill opacity', {
         min: 0,
         max: 100,
         step: 5,
