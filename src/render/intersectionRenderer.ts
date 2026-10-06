@@ -1,5 +1,5 @@
-// Intersection (V0): the construction of a small local group of copies — the primary and its
-// immediate lattice neighbours (geometry/intersection.ts) — each copy drawn entirely in its own
+// Intersection (V0): the construction of a small local group of copies — the primary and a compact
+// group of its lattice neighbours (geometry/intersection.ts) — each copy drawn entirely in its own
 // analysis colour (never the Construct stroke colours), so where lines cross it is plain which
 // copy each one belongs to. Placement is Repeat's: the same lattice, live drag draft, handles,
 // rotation ring and guides (repeatRenderer's draftRepeat / drawPlacementControls).
