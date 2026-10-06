@@ -441,10 +441,11 @@ function designStroke(doc: Doc): { colour: string; width: number } {
 }
 
 /**
- * Phase 5.1 items 3–6 / Phase 5.3 items 2–5: Repeat's Appearance panel — how the repeated motif is
+ * Phase 5.1 items 3–6 / Phase 5.3 items 2–5: Repeat's Appearance panel — how the repeated design is
  * drawn, never what it is. Every control writes only `doc.repeatDisplay` (a display preference:
- * not undo-tracked, persisted by autosave). Compact: one segmented row, one toggle line, one
- * swatch row (scrolls sideways if a narrow screen needs it), one slider line.
+ * not undo-tracked, persisted by autosave). One panel, two sections: Stroke (As constructed, or
+ * Repeat's own colour and width) and Fill (the colour behind the pattern, and fill opacity). Swatch
+ * rows scroll sideways if a narrow screen needs it.
  */
 function showRepeatAppearancePanel(anchor: HTMLElement, controller: AppController): void {
   const display = (): RepeatDisplay => controller.doc.repeatDisplay;
@@ -453,28 +454,11 @@ function showRepeatAppearancePanel(anchor: HTMLElement, controller: AppControlle
   mountPopover(
     anchor,
     (menu) => {
-      panelSegmented(
-        menu,
-        [
-          { id: 'design', label: 'Design' },
-          { id: 'stroke', label: 'Stroke' },
-          { id: 'fill', label: 'Fill' },
-        ],
-        () => display().artwork,
-        (id) => {
-          display().artwork = id;
-          strokeSection.style.display = id === 'stroke' ? '' : 'none';
-          changed();
-        },
-        'Artwork',
-      );
-
-      // Stroke tab: the repeated design's outline colour and thickness — Repeat's own style, applied
-      // at render time over every Fair piece. "As designed" (the default) keeps each piece's own
-      // Construct colour/width; choosing a colour or moving the slider sets Repeat's style instead.
+      // Stroke: the repeated design's outline colour and width — Repeat's own style, applied at render
+      // time over every Fair piece. "As constructed" (the default) keeps each piece's own Construct
+      // colour/width, and the colour and width controls rest until it is turned off.
       const strokeSection = document.createElement('div');
       strokeSection.className = 'panel-stroke-section';
-      strokeSection.style.display = display().artwork === 'stroke' ? '' : 'none';
       menu.appendChild(strokeSection);
       const styled = () => display().strokeColour != null || display().strokeWidth != null;
       const saved = () => controller.notify(); // the thumbnail follows a settled change
@@ -484,7 +468,7 @@ function showRepeatAppearancePanel(anchor: HTMLElement, controller: AppControlle
         popoverSectionLabel(strokeSection, 'Stroke');
         const asDesigned = popoverToggleRow(
           strokeSection,
-          'As designed',
+          'As constructed',
           () => !styled(),
           (on) => {
             if (on) {
@@ -500,8 +484,11 @@ function showRepeatAppearancePanel(anchor: HTMLElement, controller: AppControlle
             changed();
             saved();
           },
-          'Each outline keeps its own colour and thickness from Construct',
+          'Each outline keeps its own colour and width from Construct',
         );
+        const controls = document.createElement('div');
+        controls.className = 'panel-stroke-controls' + (styled() ? '' : ' resting');
+        strokeSection.appendChild(controls);
         const swatches = document.createElement('div');
         swatches.className = 'panel-swatches-host';
         colourSwatchRow(swatches, display().strokeColour ?? null, (c) => {
@@ -513,8 +500,8 @@ function showRepeatAppearancePanel(anchor: HTMLElement, controller: AppControlle
         });
         swatches.firstElementChild?.classList.add('panel-swatches');
         swatches.firstElementChild?.setAttribute('aria-label', 'Stroke colour');
-        strokeSection.appendChild(swatches.firstElementChild!);
-        const width = panelSliderRow(strokeSection, 'Thickness', {
+        controls.appendChild(swatches.firstElementChild!);
+        const width = panelSliderRow(controls, 'Width', {
           min: 0,
           max: 12,
           step: 0.25,
@@ -528,25 +515,21 @@ function showRepeatAppearancePanel(anchor: HTMLElement, controller: AppControlle
           },
           onCommit: saved,
         });
-        if (!styled()) width.value.textContent = 'As designed';
+        if (!styled()) {
+          width.value.textContent = 'As constructed';
+          width.slider.disabled = true;
+        }
       };
       buildStrokeSection();
 
-      popoverToggleRow(
-        menu,
-        'Construction overlay',
-        () => display().constructionOverlay,
-        (on) => {
-          display().constructionOverlay = on;
-          changed();
-        },
-        'Shows the construction of the reference motif and its repeated copies — a guide, not artwork',
-      );
-
+      // Fill: the colour behind the pattern (what shows through and around the design) and how
+      // strongly the design's own fills are drawn.
+      popoverSectionLabel(menu, 'Fill');
       const swatchRow = document.createElement('div');
       swatchRow.className = 'swatch-row panel-swatches';
       swatchRow.setAttribute('role', 'group');
-      swatchRow.setAttribute('aria-label', 'Background colour');
+      swatchRow.setAttribute('aria-label', 'Fill colour (the background behind the pattern)');
+      swatchRow.title = 'The background behind the pattern';
       const swatchEls: HTMLButtonElement[] = [];
       const refreshSwatches = () => swatchEls.forEach((el) => el.classList.toggle('active', el.dataset.colour?.toLowerCase() === display().background.toLowerCase()));
       const pick = (colour: string) => {
@@ -582,7 +565,7 @@ function showRepeatAppearancePanel(anchor: HTMLElement, controller: AppControlle
       refreshSwatches();
       menu.appendChild(swatchRow);
 
-      panelSliderRow(menu, 'Fill opacity', {
+      panelSliderRow(menu, 'Opacity', {
         min: 0,
         max: 100,
         step: 5,
@@ -639,8 +622,9 @@ export interface TimelapseSupport {
 
 /**
  * Phase 5.3 items 7–19 / Phase 5.4 items 1–3: Share — always the current view (zoom, pan, crop,
- * background, artwork mode and opacity; never re-fitted). Compact: format, resolution, background,
- * whether construction (and in Repeat, the grid/guides) come along — defaulting to what's showing.
+ * background, stroke style and opacity; never re-fitted). Compact: format, resolution, background,
+ * and whether construction (Construct) or the grid/guides (Repeat) come along — defaulting to
+ * what's showing.
  *
  * The file is rendered ahead of the tap (on open, and again whenever a choice changes), so the
  * Share tap hands the operating system a ready file straight away: iOS only opens its share sheet
@@ -656,7 +640,7 @@ function showExportPanel(anchor: HTMLElement, controller: AppController, getView
   if (exportChoice.format === 'timelapse' && !timelapse) exportChoice.format = 'png';
   const settings = {
     ...exportChoice,
-    construction: inRepeat ? display.constructionOverlay : true,
+    construction: !inRepeat, // Repeat never draws construction
     guides: inRepeat ? display.grid : false,
   };
   const still = (): ExportSettings => ({ ...settings, format: settings.format === 'svg' ? 'svg' : 'png' });
@@ -735,16 +719,17 @@ function showExportPanel(anchor: HTMLElement, controller: AppController, getView
       );
       menu.appendChild(bgRow);
 
-      popoverToggleRow(
-        menu,
-        'Construction',
-        () => settings.construction,
-        (on) => {
-          settings.construction = on;
-          prepare();
-        },
-      );
-      if (inRepeat) {
+      if (!inRepeat) {
+        popoverToggleRow(
+          menu,
+          'Construction',
+          () => settings.construction,
+          (on) => {
+            settings.construction = on;
+            prepare();
+          },
+        );
+      } else {
         popoverToggleRow(
           menu,
           'Grid / guides',

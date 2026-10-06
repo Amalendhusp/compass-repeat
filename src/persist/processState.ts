@@ -101,8 +101,8 @@ export function inPlaceParts(doc: Doc): InPlaceParts {
   const d = doc.repeatDisplay;
   return {
     repeat: plain(repeat) as Record<string, unknown>,
-    // The Construction overlay is a viewing aid, not part of the artwork: never recorded as a change.
-    // The field stays (always false) so every stored state keeps the same shape and fingerprint.
+    // Repeat no longer has a Construction overlay (a viewing aid, never artwork, never recorded). The
+    // field stays (always false) so every stored state keeps the same shape and fingerprint.
     appearance: {
       artwork: d.artwork,
       background: d.background,
@@ -151,7 +151,7 @@ export function inPlaceFingerprint(doc: Doc): string {
   const { gapFills: _gaps, ...repeat } = doc.repeat;
   const d = doc.repeatDisplay;
   const style = d.strokeColour != null || d.strokeWidth != null ? [d.strokeColour ?? null, d.strokeWidth ?? null] : [];
-  return JSON.stringify([repeat, d.artwork, d.background, d.fillOpacity, ...style]); // not the Construction overlay — a view aid
+  return JSON.stringify([repeat, d.artwork, d.background, d.fillOpacity, ...style]);
 }
 
 const toList = (c: Coll) => c.$o.map((k) => ({ id: k, ...(structuredClone(c.$v[k]) as object) }));

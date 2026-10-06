@@ -584,6 +584,15 @@ function upgradeSnapshot(doc: Doc, recordNamed: boolean | undefined): void {
   // Phase 5.6: Space colouring's own next colour.
   if (doc.spaceDefaults === undefined) doc.spaceDefaults = { colour: '#B5502E', opacity: 1 };
   if (!(doc.repeat.gapFills instanceof Map)) doc.repeat.gapFills = new Map();
+  // Repeat's Design | Stroke | Fill views are gone (Repeat always shows the whole design). An artwork
+  // saved in Fill-only view keeps its look as "no outlines"; one in Stroke-only view as "no fills".
+  if (doc.repeatDisplay.artwork === 'fill') {
+    doc.repeatDisplay.strokeWidth = 0;
+    doc.repeatDisplay.artwork = 'design';
+  } else if (doc.repeatDisplay.artwork === 'stroke') {
+    doc.repeatDisplay.fillOpacity = 0;
+    doc.repeatDisplay.artwork = 'design';
+  }
   // Phase 5.5: artworks saved before naming existed were never named by the participant.
   if (doc.named === undefined) doc.named = recordNamed ?? false;
 }

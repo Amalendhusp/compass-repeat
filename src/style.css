@@ -298,6 +298,11 @@ canvas.stage {
   background: var(--ink);
   color: var(--paper);
 }
+/* Repeat Appearance → Stroke: colour and width rest while "As constructed" is on. */
+.panel-stroke-controls.resting {
+  opacity: 0.4;
+  pointer-events: none;
+}
 .repeat-panel > .repeat-status {
   position: absolute;
   left: 50%;

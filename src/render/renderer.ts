@@ -1737,12 +1737,10 @@ function drawDividePreview(ctx: CanvasRenderingContext2D, controller: AppControl
 /** Phase 5.3: what an export asks the renderers for — artwork layers only, never app UI. */
 export interface ArtworkExport {
   background: boolean;
+  /** Construct only — Repeat never draws construction. */
   construction: boolean;
   /** Repeat only: the lattice grid, basis directions and motif boundary, as currently shown. */
   guides: boolean;
-  /** Repeat only: the Construction overlay around the reference motif alone, as before it repeated
-   * across the pattern — what a Timelapse keeps showing. */
-  referenceConstructionOnly?: boolean;
   /** The thumbnail only: Repeat's Stroke style for the Fair strokes (null = as designed; width 0 =
    * none), so My Artworks shows the artwork's outlines as styled. Construct itself never uses it. */
   fairStroke?: { colour: string | null; width: number | null };

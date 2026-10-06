@@ -62,7 +62,6 @@ export function placeFrame(doc: Doc, origin: Vec2, radius: number, rotation: num
 export function defaultRepeatDisplay(legacyGuide = true): RepeatDisplay {
   return {
     artwork: 'design',
-    constructionOverlay: false,
     background: color.plaster,
     fillOpacity: 1,
     grid: false,

@@ -89,8 +89,10 @@ export interface RepeatSystem {
 }
 
 export interface RepeatDisplay {
+  /** No longer chosen: Repeat always shows the whole design ('design'). An artwork saved in the old
+   * Stroke-only or Fill-only view is restated on opening (see main.ts); states recorded in those views
+   * still draw as they looked, so a Timelapse replays them faithfully. */
   artwork: 'design' | 'stroke' | 'fill';
-  constructionOverlay: boolean;
   background: string;
   fillOpacity: number; // 0..1, applied at render time only
   /** Repeat's own outline style for the repeated design, applied at render time only — absent or

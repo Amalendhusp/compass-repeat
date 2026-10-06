@@ -8,7 +8,7 @@
 // the same views a PNG export would use, held steady for the whole video:
 // - From Repeat: states from before Repeat was first set up are drawn as Construct (in the
 //   Construct view, construction included — it's the building phase), every later one as the
-//   pattern (in the Repeat view, with Share's own Construction / Grid settings).
+//   pattern (in the Repeat view — the repeated design only — with Share's Grid setting).
 // - From Construct: every state as Construct; changes that only affect Repeat look identical
 //   there, so they're skipped instead of shown as frozen frames.
 // Changes are cuts, never animated: each recorded state is simply shown, for a time that adapts to
@@ -115,8 +115,7 @@ export function frameRenderer(liveDoc: Doc, view: ViewTransform, settings: { con
   canvas.width = W;
   canvas.height = H;
   const ctx = canvas.getContext('2d')!;
-  // A timelapse keeps the Construction overlay as it always was: the reference motif's only.
-  const exp: ArtworkExport = { background: true, construction: settings.construction, guides: settings.guides, referenceConstructionOnly: true };
+  const exp: ArtworkExport = { background: true, construction: settings.construction, guides: settings.guides };
   // Made from Repeat, the states before the pattern existed are the construction being built:
   // they show it, whatever the pattern's own Construction setting is.
   const building: ArtworkExport = asRepeat ? { ...exp, construction: true } : exp;
