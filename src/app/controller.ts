@@ -270,6 +270,7 @@ type GestureTransientKey =
   | 'repeatDrag'
   | 'repeatContactFlash'
   | 'repeatRotateDrag'
+  | 'intersectionDrag'
   | 'incircle'
   | 'copyRadius';
 export interface GestureSnapshot {
@@ -369,6 +370,12 @@ export class AppController {
   /** Phase 5 item 7: non-null while the rotation ring is being dragged — same draft/commit split
    * as `repeatDrag`. */
   repeatRotateDrag: { rawRotation: number } | null = null;
+  /** Intersection: the construction being moved or turned, as shown (un-committed) — and the one
+   * selected (its rotation ring is shown). Session state, never saved. */
+  intersectionDrag: { key: string; x: number; y: number; rotation: number; mode: 'move' | 'turn' } | null = null;
+  intersectionSelected: string | null = null;
+  /** Intersection: the Spread slider while it is being dragged (un-committed). */
+  intersectionSpreadDraft: number | null = null;
 
   private undoStack: Doc[] = [];
   private redoStack: Doc[] = [];
@@ -481,6 +488,7 @@ export class AppController {
         repeatDrag: this.repeatDrag,
         repeatContactFlash: this.repeatContactFlash,
         repeatRotateDrag: this.repeatRotateDrag,
+        intersectionDrag: this.intersectionDrag,
         incircle: this.incircle,
         copyRadius: this.copyRadius,
       },
@@ -523,7 +531,7 @@ export class AppController {
 
   /** Camera and Repeat display preferences are not history — carry the live ones across. */
   private swapTo(snapshot: Doc): void {
-    const { view, repeatView, intersectionView, repeatDisplay, toolPrefs, dividePrefs, fillDefaults, fairDefaults, pointTargets, name, named, spaceDefaults } = this.doc;
+    const { view, repeatView, intersectionView, intersectionSnapshots, repeatDisplay, toolPrefs, dividePrefs, fillDefaults, fairDefaults, pointTargets, name, named, spaceDefaults } = this.doc;
     this.doc = snapshot;
     // The artwork's name is not history either (Phase 5.5).
     this.doc.name = name;
@@ -531,6 +539,7 @@ export class AppController {
     this.doc.view = view;
     this.doc.repeatView = repeatView;
     this.doc.intersectionView = intersectionView;
+    this.doc.intersectionSnapshots = intersectionSnapshots;
     this.doc.repeatDisplay = repeatDisplay;
     // Tool preferences aren't history either (Phase 5.2: the remembered radius/N survive undo).
     this.doc.toolPrefs = toolPrefs;

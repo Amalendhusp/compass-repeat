@@ -1,8 +1,7 @@
-// Intersection (V0): the construction of a small local group of copies — the primary and a compact
-// group of its lattice neighbours (geometry/intersection.ts) — each copy drawn entirely in its own
-// analysis colour (never the Construct stroke colours), so where lines cross it is plain which
-// copy each one belongs to. Placement is Repeat's: the same lattice, live drag draft, handles,
-// rotation ring and guides (repeatRenderer's draftRepeat / drawPlacementControls).
+// Intersection: a few copies of the construction, each where it has been placed and turned
+// (geometry/intersection.ts) — each drawn entirely in its own analysis colour (never the Construct
+// stroke colours), so where lines cross it is plain which copy each one belongs to. The selected
+// construction shows a rotation ring about its own centre, in Repeat's rotation-ring style.
 //
 // Drawn: every copy's bounded construction, always — every piece that isn't trimmed or Extension:
 // Construction solid, Fair a little heavier — and, where that copy's Extensions switch is on, its
@@ -15,9 +14,8 @@ import { worldToScreen } from '../app/controller.ts';
 import { resolveEntityGeom } from '../geometry/kernel.ts';
 import { defaultSegmentKind, deriveSegments } from '../geometry/segments.ts';
 import { motifRadius, poseArcAngle, transformPoint, type InstancePose } from '../geometry/lattice.ts';
-import { intersectionCopies } from '../geometry/intersection.ts';
+import { intersectionBounds, intersectionCopies, type IntersectionCopy } from '../geometry/intersection.ts';
 import { color, stroke } from './tokens.ts';
-import { draftRepeat, drawPlacementControls } from './repeatRenderer.ts';
 
 type Piece = { entity: Entity; kind: 'construction' | 'extension' | 'fair'; from?: number; to?: number };
 
@@ -95,9 +93,8 @@ export function renderIntersection(ctx: CanvasRenderingContext2D, controller: Ap
   ctx.fillStyle = color.plaster;
   ctx.fillRect(0, 0, view.w, view.h);
 
-  const repeat = draftRepeat(controller);
   const sc = scaffold(doc);
-  const copies = intersectionCopies(doc, repeat);
+  const copies = intersectionCopies(doc, { drag: controller.intersectionDrag, spread: controller.intersectionSpreadDraft });
   ctx.lineCap = 'round';
   ctx.lineJoin = 'round';
   for (const copy of copies) {
@@ -123,7 +120,64 @@ export function renderIntersection(ctx: CanvasRenderingContext2D, controller: Ap
   ctx.globalAlpha = 1;
   ctx.setLineDash([]);
 
-  drawPlacementControls(ctx, controller, view, repeat, color.plaster, { guides: true, handles: true, dragging: !!controller.repeatDrag });
+  const selected = copies.find((c) => c.key === controller.intersectionSelected);
+  if (selected) drawRotationRing(ctx, doc, view, selected, controller.intersectionDrag?.key === selected.key && controller.intersectionDrag.mode === 'turn');
   ctx.restore();
   return copies.length;
+}
+
+/** The radius (screen px) of a construction's rotation ring — just outside its frame, as Repeat's. */
+export function ringRadius(doc: Doc, view: ViewTransform): number {
+  return motifRadius(doc) * view.zoom + 26;
+}
+
+/** The selected construction's rotation ring about its own centre, its marker at its rotation. */
+function drawRotationRing(ctx: CanvasRenderingContext2D, doc: Doc, view: ViewTransform, copy: IntersectionCopy, active: boolean): void {
+  const pivot = doc.frame.origin;
+  const centre = worldToScreen(view, { x: pivot.x + copy.pose.translate.x, y: pivot.y + copy.pose.translate.y });
+  const r = ringRadius(doc, view);
+  ctx.save();
+  ctx.strokeStyle = copy.colour;
+  ctx.globalAlpha = 0.45;
+  ctx.lineWidth = 1.4;
+  ctx.setLineDash([2, 4]);
+  ctx.beginPath();
+  ctx.arc(centre.x, centre.y, r, 0, Math.PI * 2);
+  ctx.stroke();
+  ctx.restore();
+  const handleAngle = -Math.PI / 2 + copy.pose.rotation; // marker starts "up" at zero rotation
+  const hx = centre.x + r * Math.cos(handleAngle);
+  const hy = centre.y + r * Math.sin(handleAngle);
+  ctx.save();
+  ctx.beginPath();
+  ctx.arc(hx, hy, active ? 12 : 10, 0, Math.PI * 2);
+  ctx.fillStyle = active ? copy.colour : color.paper;
+  ctx.fill();
+  ctx.lineWidth = active ? 3 : 2;
+  ctx.strokeStyle = copy.colour;
+  ctx.stroke();
+  // The centre it turns about.
+  ctx.beginPath();
+  ctx.arc(centre.x, centre.y, 3.5, 0, Math.PI * 2);
+  ctx.fillStyle = copy.colour;
+  ctx.fill();
+  ctx.restore();
+}
+
+/** A small picture of the arrangement as committed (for a Snapshot): every construction fitted in,
+ * nothing selected — or undefined if no canvas could be made. */
+export function intersectionThumbnail(doc: Doc, size = 64): string | undefined {
+  const canvas = document.createElement('canvas');
+  canvas.width = size * 2;
+  canvas.height = size * 2;
+  const ctx = canvas.getContext('2d');
+  if (!ctx) return undefined;
+  const b = intersectionBounds(doc);
+  const zoom = Math.min(size / Math.max(b.maxX - b.minX, 1e-6), size / Math.max(b.maxY - b.minY, 1e-6)) * 0.92;
+  const view: ViewTransform = { zoom, pan: { x: -(b.minX + b.maxX) / 2, y: -(b.minY + b.maxY) / 2 }, w: size, h: size };
+  ctx.setTransform(2, 0, 0, 2, 0, 0);
+  const still = { doc, intersectionDrag: null, intersectionSpreadDraft: null, intersectionSelected: null } as unknown as AppController;
+  renderIntersection(ctx, still, view);
+  // A small JPEG: it's saved with the artwork, so it is kept to a few kilobytes.
+  return canvas.toDataURL('image/jpeg', 0.72);
 }

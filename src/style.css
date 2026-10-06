@@ -338,6 +338,53 @@ canvas.stage {
   height: 9px;
   border-radius: 50%;
 }
+/* Intersection: Spread, and Snapshots. */
+.spread-row {
+  gap: 8px;
+}
+.spread-slider {
+  width: 132px;
+}
+.spread-value {
+  min-width: 38px;
+  padding-left: 0;
+}
+.snapshot-save {
+  font-weight: 600;
+}
+.snapshot-row {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  padding: 2px 6px 2px 10px;
+}
+.snapshot-open {
+  flex: 1;
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  min-height: 44px;
+  border: none;
+  background: transparent;
+  padding: 2px 0;
+  cursor: pointer;
+  text-align: left;
+}
+.snapshot-open img {
+  width: 40px;
+  height: 40px;
+  border-radius: 6px;
+  background: var(--plaster);
+  border: 1px solid var(--hairline);
+}
+.snapshot-delete {
+  width: 36px;
+  height: 36px;
+  border: none;
+  background: transparent;
+  color: var(--muted);
+  cursor: pointer;
+}
 .copies-header {
   display: flex;
   justify-content: space-between;

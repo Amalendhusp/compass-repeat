@@ -29,7 +29,9 @@ import { onTap } from './tap.ts';
 import { color, fairPalette, stroke } from '../render/tokens.ts';
 import { defaultLatticeVectors, isSixtyDegreeFamily, type LatticeFamily } from '../geometry/lattice.ts';
 import { rotationFractionLabel } from '../render/repeatRenderer.ts';
-import { intersectionCopies, withCopySetting } from '../geometry/intersection.ts';
+import { asReference, intersectionCopies, layoutOf, seedLayout, SPREAD_MAX, SPREAD_MIN, withCopySetting, withLayout, withSpread, type IntersectionFamily } from '../geometry/intersection.ts';
+import { intersectionThumbnail } from '../render/intersectionRenderer.ts';
+import { genId } from '../model/id.ts';
 import { CAPTURED_CUE_MS } from '../interaction/tools/arc.ts';
 import { syncSnapChooser } from './snapchooser.ts';
 import { deriveSelectableGroups } from '../geometry/segments.ts';
@@ -579,6 +581,92 @@ function showRepeatAppearancePanel(anchor: HTMLElement, controller: AppControlle
           changed();
         },
       });
+    },
+    { shieldCanvas: true, panel: true },
+  );
+}
+
+/**
+ * Intersection Snapshots: a promising arrangement kept on purpose — every construction's place and
+ * turn, the Spread and its reference, and each copy's colour and extensions — to come back to. Not
+ * Undo history: saving or deleting one is never undone; restoring one is a single Undo step.
+ */
+const MAX_SNAPSHOTS = 24;
+
+function showIntersectionSnapshotsPanel(anchor: HTMLElement, controller: AppController, root: HTMLElement): void {
+  mountPopover(
+    anchor,
+    (menu, close) => {
+      const build = () => {
+        menu.replaceChildren();
+        popoverSectionLabel(menu, 'Snapshots');
+        const list = controller.doc.intersectionSnapshots ?? [];
+        const save = document.createElement('button');
+        save.className = 'popover-row snapshot-save';
+        save.textContent = list.length >= MAX_SNAPSHOTS ? `Full (${MAX_SNAPSHOTS}) — delete one to save` : 'Save this arrangement';
+        save.disabled = list.length >= MAX_SNAPSHOTS;
+        save.addEventListener('click', (e) => {
+          e.stopPropagation();
+          const doc = controller.doc;
+          const snap = {
+            id: genId('snap'),
+            at: Date.now(),
+            layout: structuredClone(layoutOf(doc)),
+            copies: structuredClone(doc.intersection?.copies ?? {}),
+            thumb: intersectionThumbnail(doc),
+          };
+          doc.intersectionSnapshots = [...list, snap];
+          controller.notify(); // saved with the artwork
+          build();
+        });
+        menu.appendChild(save);
+        list.forEach((snap, n) => {
+          const row = document.createElement('div');
+          row.className = 'snapshot-row';
+          const open = document.createElement('button');
+          open.className = 'snapshot-open';
+          open.setAttribute('aria-label', `Restore snapshot ${n + 1}`);
+          if (snap.thumb) {
+            const img = document.createElement('img');
+            img.src = snap.thumb;
+            img.alt = '';
+            open.appendChild(img);
+          }
+          const text = document.createElement('span');
+          text.className = 'popover-row-label';
+          text.textContent = `${n + 1} · ${new Date(snap.at).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}`;
+          open.appendChild(text);
+          open.addEventListener('click', (e) => {
+            e.stopPropagation();
+            controller.intersectionSelected = null;
+            controller.commit((d) => {
+              d.intersection = { copies: structuredClone(snap.copies), layout: structuredClone(snap.layout) };
+            });
+            close();
+          });
+          const del = document.createElement('button');
+          del.className = 'snapshot-delete';
+          del.setAttribute('aria-label', `Delete snapshot ${n + 1}`);
+          del.innerHTML = '<svg width="14" height="14" viewBox="0 0 14 14" aria-hidden="true"><path d="M3 3 L11 11 M11 3 L3 11" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"/></svg>';
+          del.addEventListener('click', (e) => {
+            e.stopPropagation();
+            close();
+            openConfirmSheet(root, {
+              title: `Delete snapshot ${n + 1}?`,
+              body: 'A deleted snapshot cannot be brought back.',
+              confirmLabel: 'Delete',
+              onConfirm: () => {
+                controller.doc.intersectionSnapshots = (controller.doc.intersectionSnapshots ?? []).filter((s) => s.id !== snap.id);
+                controller.notify();
+              },
+            });
+          });
+          row.appendChild(open);
+          row.appendChild(del);
+          menu.appendChild(row);
+        });
+      };
+      build();
     },
     { shieldCanvas: true, panel: true },
   );
@@ -1291,10 +1379,102 @@ export function buildShell(
   copiesRow.className = 'space-row';
   const copiesBtn = document.createElement('button');
   copiesBtn.className = 'space-chip copies-chip';
-  copiesBtn.setAttribute('aria-label', 'Copies: colour and visibility');
+  copiesBtn.setAttribute('aria-label', 'Copies: colour and extensions');
   onTap(copiesBtn, () => togglePanel(copiesBtn, () => showIntersectionCopiesPanel(copiesBtn, controller)));
   copiesRow.appendChild(copiesBtn);
+  // Snapshots: discoveries kept on purpose — not Undo history.
+  const snapshotsBtn = document.createElement('button');
+  snapshotsBtn.className = 'space-chip';
+  snapshotsBtn.setAttribute('aria-label', 'Snapshots');
+  onTap(snapshotsBtn, () => togglePanel(snapshotsBtn, () => showIntersectionSnapshotsPanel(snapshotsBtn, controller, root)));
+  copiesRow.appendChild(snapshotsBtn);
+
+  // Intersection's own starting arrangement — never Repeat's lattice: choosing one starts afresh
+  // (one Undo step); it doesn't constrain anything moved afterwards.
+  const ixFamilyRow = document.createElement('div');
+  ixFamilyRow.className = 'segmented-mini';
+  ixFamilyRow.setAttribute('aria-label', 'Starting arrangement');
+  const ixFamilyBtns = new Map<IntersectionFamily, HTMLButtonElement>();
+  for (const f of [
+    { id: 'square', label: 'Square' },
+    { id: 'triangle', label: 'Triangle' },
+    { id: 'hex', label: 'Hexagon' },
+  ] as { id: IntersectionFamily; label: string }[]) {
+    const btn = document.createElement('button');
+    btn.textContent = f.label;
+    btn.addEventListener('click', () => {
+      if (layoutOf(controller.doc).family === f.id) return;
+      controller.intersectionSelected = null;
+      controller.commit((d) => {
+        d.intersection = withLayout(d, seedLayout(d, f.id));
+      });
+    });
+    ixFamilyBtns.set(f.id, btn);
+    ixFamilyRow.appendChild(btn);
+  }
+
+  // Spread: centres in or out about the reference group's centre (100% = the reference); Reference
+  // makes what is shown now the reference. Sizes and rotations never change.
+  const ixSpreadRow = document.createElement('div');
+  ixSpreadRow.className = 'space-row spread-row';
+  const spreadLabel = document.createElement('span');
+  spreadLabel.className = 'space-label';
+  spreadLabel.textContent = 'Spread';
+  const spreadSlider = document.createElement('input');
+  spreadSlider.type = 'range';
+  spreadSlider.className = 'width-slider spread-slider';
+  spreadSlider.min = String(Math.round(SPREAD_MIN * 100));
+  spreadSlider.max = String(Math.round(SPREAD_MAX * 100));
+  spreadSlider.step = '1';
+  spreadSlider.setAttribute('aria-label', 'Spread');
+  const spreadValue = document.createElement('span');
+  spreadValue.className = 'space-label spread-value';
+  spreadSlider.addEventListener('input', () => {
+    controller.intersectionSpreadDraft = Number(spreadSlider.value) / 100;
+    spreadValue.textContent = `${spreadSlider.value}%`;
+    controller.notifyView();
+  });
+  spreadSlider.addEventListener('change', () => {
+    const spread = Number(spreadSlider.value) / 100;
+    controller.intersectionSpreadDraft = null;
+    if (Math.abs(spread - layoutOf(controller.doc).spread) < 1e-9) {
+      controller.notify();
+      return;
+    }
+    controller.commit((d) => {
+      d.intersection = withLayout(d, withSpread(layoutOf(d), spread));
+    });
+  });
+  const referenceBtn = document.createElement('button');
+  referenceBtn.className = 'space-chip';
+  referenceBtn.textContent = 'Reference';
+  referenceBtn.title = 'Make this arrangement the Spread reference (100%)';
+  referenceBtn.setAttribute('aria-label', 'Set this arrangement as the Spread reference');
+  onTap(referenceBtn, () => {
+    controller.commit((d) => {
+      d.intersection = withLayout(d, asReference(layoutOf(d)));
+    });
+    showToast('Spread reference set');
+  });
+  ixSpreadRow.appendChild(spreadLabel);
+  ixSpreadRow.appendChild(spreadSlider);
+  ixSpreadRow.appendChild(spreadValue);
+  ixSpreadRow.appendChild(referenceBtn);
+
+  repeatPanel.appendChild(ixFamilyRow);
+  repeatPanel.appendChild(ixSpreadRow);
   repeatPanel.appendChild(copiesRow);
+
+  function refreshIntersectionRows(): void {
+    const layout = layoutOf(controller.doc);
+    for (const [id, btn] of ixFamilyBtns) btn.classList.toggle('active', layout.family === id);
+    if (controller.intersectionSpreadDraft === null) {
+      spreadSlider.value = String(Math.round(layout.spread * 100));
+      spreadValue.textContent = `${Math.round(layout.spread * 100)}%`;
+    }
+    const n = controller.doc.intersectionSnapshots?.length ?? 0;
+    snapshotsBtn.textContent = n ? `Snapshots · ${n}` : 'Snapshots';
+  }
 
   function refreshCopiesRow(): void {
     const copies = intersectionCopies(controller.doc);
@@ -1839,7 +2019,7 @@ export function buildShell(
     syncSnapChooser(controller, canvas, opts.getView);
     const inRepeat = controller.doc.view.workspace === 'repeat';
     const inIntersection = controller.doc.view.workspace === 'intersection';
-    const placing = inRepeat || inIntersection; // both place copies with the lattice handles
+    const placing = inRepeat || inIntersection; // both use the bottom panel instead of the dock
     // Phase 5.3 item 1: a panel never outlives the workspace it belongs to.
     if (controller.doc.view.workspace !== shownWorkspace) {
       shownWorkspace = controller.doc.view.workspace;
@@ -1861,21 +2041,29 @@ export function buildShell(
     pointLockBtn.style.display = placing ? 'none' : '';
     visBtn.style.display = placing ? 'none' : '';
     appearanceBtn.style.display = inRepeat ? '' : 'none';
-    guidesBtn.style.display = placing ? '' : 'none';
-    exportBtn.style.display = inIntersection ? 'none' : ''; // Intersection V0 has nothing to share
-    if (placing) refreshGuidesBtn();
+    guidesBtn.style.display = inRepeat ? '' : 'none';
+    exportBtn.style.display = inIntersection ? 'none' : ''; // Intersection has nothing to share yet
+    if (inRepeat) refreshGuidesBtn();
 
     dock.style.display = placing ? 'none' : 'flex';
     contextSlot.style.display = placing ? 'none' : 'flex';
     repeatPanel.style.display = placing ? 'flex' : 'none';
+    // Repeat's lattice controls belong to Repeat; Intersection has its own rows.
+    familyRow.style.display = inRepeat ? '' : 'none';
+    ruleRow.style.display = inRepeat ? '' : 'none';
     spaceRow.style.display = inRepeat ? '' : 'none';
+    ixFamilyRow.style.display = inIntersection ? '' : 'none';
+    ixSpreadRow.style.display = inIntersection ? '' : 'none';
     copiesRow.style.display = inIntersection ? '' : 'none';
 
     if (placing) {
       for (const [id, btn] of familyBtns) btn.classList.toggle('active', controller.doc.repeat.family === id);
       for (const [id, btn] of ruleBtns) btn.classList.toggle('active', controller.doc.repeat.rule.kind === id);
       if (inRepeat) refreshSpaceRow();
-      else refreshCopiesRow();
+      else {
+        refreshCopiesRow();
+        refreshIntersectionRows();
+      }
       updateRepeatStatus();
       return;
     }

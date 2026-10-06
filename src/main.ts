@@ -10,6 +10,7 @@ import { divideTool } from './interaction/tools/divide.ts';
 import { fairTool } from './interaction/tools/fair.ts';
 import { fillTool } from './interaction/tools/fill.ts';
 import { repeatTool } from './interaction/tools/repeatTool.ts';
+import { intersectionTool } from './interaction/tools/intersectionTool.ts';
 import { render } from './render/renderer.ts';
 import { renderRepeat } from './render/repeatRenderer.ts';
 import { renderIntersection } from './render/intersectionRenderer.ts';
@@ -185,14 +186,13 @@ function boot(doc: Doc, opts: { fitToScreen: boolean; history?: { undo: Doc[]; r
       // check "was it already configured" first, purely to decide whether THIS entry deserves an
       // automatic Fit (a first look at the motif) or should leave the last Repeat view exactly
       // where the participant left it (item 12/18: Repeat's own viewport persists across visits).
-      // Intersection places copies with Repeat's own lattice, so either one may be where it is first
-      // set up — and Repeat's first-entry view is prepared then either way.
-      const firstEntry = ws !== 'construct' && controller.doc.repeat.family === undefined;
+      const firstEntry = ws === 'repeat' && controller.doc.repeat.family === undefined;
       controller.doc.view.workspace = ws;
-      if (ws !== 'construct') {
+      if (ws === 'repeat') {
         ensureRepeatDefaults(controller.doc);
         if (firstEntry) fitRepeatFirstEntry(controller, canvas, overlay);
       }
+      // Intersection has its own arrangement (never Repeat's lattice) and its own camera.
       if (ws === 'intersection' && !controller.doc.intersectionView) fitIntersectionView(controller, canvas, overlay);
       controller.notify();
     },
@@ -226,8 +226,10 @@ function boot(doc: Doc, opts: { fitToScreen: boolean; history?: { undo: Doc[]; r
     canvas,
     controller,
     getView,
-    // Intersection is placed exactly as Repeat is: the same handles, ring and gestures.
-    () => (controller.doc.view.workspace === 'construct' ? (tools[controller.tool] ?? null) : repeatTool),
+    () => {
+      const ws = controller.doc.view.workspace;
+      return ws === 'repeat' ? repeatTool : ws === 'intersection' ? intersectionTool : (tools[controller.tool] ?? null);
+    },
     () => viewState(),
   );
   const autosave = guideReturn ? inertAutosave : attachAutosave(controller);

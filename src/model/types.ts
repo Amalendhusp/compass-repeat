@@ -88,6 +88,30 @@ export interface RepeatSystem {
   gapFills: Map<string, string>;
 }
 
+/** Intersection's arrangement. Each construction's REFERENCE centre offset (where its frame centre
+ * sits, relative to the original, at Spread 100%) and its own rotation about that centre. What is
+ * shown is centre + spread × (reference − centre): Spread moves centres in or out about the
+ * reference group's centre — sizes and rotations never change. */
+export interface IntersectionLayout {
+  /** The starting arrangement this came from: how many constructions, and their first places. */
+  family: 'square' | 'triangle' | 'hex';
+  pieces: { key: string; x: number; y: number; rotation: number }[];
+  /** The reference group's centre: the mean of the reference centres when the reference was set —
+   * fixed until it is set again, so moving one construction never shifts where Spread pulls to. */
+  centre: Vec2;
+  /** 1 = the reference arrangement (100%). */
+  spread: number;
+}
+
+export interface IntersectionSnapshot {
+  id: string;
+  at: number;
+  layout: IntersectionLayout;
+  copies: Record<string, { colour?: string; extensions?: boolean }>;
+  /** A small picture of it (JPEG data URL), if one could be drawn. */
+  thumb?: string;
+}
+
 export interface RepeatDisplay {
   /** No longer chosen: Repeat always shows the whole design ('design'). An artwork saved in the old
    * Stroke-only or Fill-only view is restated on opening (see main.ts); states recorded in those views
@@ -184,10 +208,15 @@ export interface Doc {
   /** Intersection's own camera — like repeatView, never history. Absent until Intersection is first
    * entered. */
   intersectionView?: { zoom: number; pan: Vec2 };
-  /** Intersection's per-copy analysis colour and whether its extensions are drawn, keyed by lattice
-   * offset "i,j" (the primary is "0,0"). Absent or partial = defaults (see geometry/intersection.ts).
-   * Part of Undo; never part of the recorded artwork (it is a way of looking, not the design). */
-  intersection?: { copies: Record<string, { colour?: string; extensions?: boolean }> };
+  /** Intersection: an exploratory composition of a few copies of the construction, entirely its own —
+   * never Repeat's lattice. Per-copy analysis colour and whether its extensions are drawn (keyed by
+   * the copy's key; the primary is "0,0"), and the arrangement itself. Absent or partial = defaults
+   * (see geometry/intersection.ts). Part of Undo; never part of the recorded artwork (it is a way of
+   * exploring, not the design). */
+  intersection?: { copies: Record<string, { colour?: string; extensions?: boolean }>; layout?: IntersectionLayout };
+  /** Intersection Snapshots: discoveries kept on purpose while exploring — not history, so Undo /
+   * Redo never adds or removes one (carried across them like the cameras). */
+  intersectionSnapshots?: IntersectionSnapshot[];
   /** Phase 5.6 item 20: Space's own next colour and opacity (null = "No fill", which only clears).
    * A tool preference like `fillDefaults`; what each Space class actually shows is its own entry in
    * `repeat.gapFills`, undo-tracked through commit(). */
