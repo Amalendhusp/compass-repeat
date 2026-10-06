@@ -328,7 +328,7 @@ canvas.stage {
   background: var(--ink);
   color: var(--paper);
 }
-/* Intersection: the Copies chip shows each copy's colour (faint when hidden). */
+/* Intersection: the Copies chip shows each copy's colour. */
 .copies-dots {
   display: inline-flex;
   gap: 3px;
@@ -338,8 +338,9 @@ canvas.stage {
   height: 9px;
   border-radius: 50%;
 }
-.copies-dot.hidden {
-  opacity: 0.25;
+.copies-header {
+  display: flex;
+  justify-content: space-between;
 }
 .copy-row .copy-colour {
   width: 22px;

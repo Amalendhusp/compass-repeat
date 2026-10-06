@@ -4,8 +4,10 @@
 // copy each one belongs to. Placement is Repeat's: the same lattice, live drag draft, handles,
 // rotation ring and guides (repeatRenderer's draftRepeat / drawPlacementControls).
 //
-// Drawn: every piece that isn't trimmed — Construction solid, Extension dashed, Fair a little
-// heavier — and each extended line as the whole line through the view. No fills, no points.
+// Drawn: every copy's bounded construction, always — every piece that isn't trimmed or Extension:
+// Construction solid, Fair a little heavier — and, where that copy's Extensions switch is on, its
+// extension geometry, dashed: each extended line as the whole line through the view, and any
+// piece set to Extension. No fills, no points.
 
 import type { Doc, Entity, Vec2 } from '../model/types.ts';
 import type { AppController, ViewTransform } from '../app/controller.ts';
@@ -95,15 +97,18 @@ export function renderIntersection(ctx: CanvasRenderingContext2D, controller: Ap
 
   const repeat = draftRepeat(controller);
   const sc = scaffold(doc);
-  const shown = intersectionCopies(doc, repeat).filter((c) => c.visible);
+  const copies = intersectionCopies(doc, repeat);
   ctx.lineCap = 'round';
   ctx.lineJoin = 'round';
-  for (const copy of shown) {
+  for (const copy of copies) {
     const dashed = new Path2D();
     const solid = new Path2D();
     const fair = new Path2D();
-    for (const entity of sc.extended) appendWholeLine(dashed, doc, view, copy.pose, entity);
-    for (const piece of sc.pieces) appendPiece(piece.kind === 'fair' ? fair : piece.kind === 'extension' ? dashed : solid, doc, view, copy.pose, piece);
+    if (copy.extensions) for (const entity of sc.extended) appendWholeLine(dashed, doc, view, copy.pose, entity);
+    for (const piece of sc.pieces) {
+      if (piece.kind === 'extension' && !copy.extensions) continue;
+      appendPiece(piece.kind === 'fair' ? fair : piece.kind === 'extension' ? dashed : solid, doc, view, copy.pose, piece);
+    }
     ctx.strokeStyle = copy.colour;
     ctx.globalAlpha = 0.9;
     ctx.lineWidth = 1.1;
@@ -120,5 +125,5 @@ export function renderIntersection(ctx: CanvasRenderingContext2D, controller: Ap
 
   drawPlacementControls(ctx, controller, view, repeat, color.plaster, { guides: true, handles: true, dragging: !!controller.repeatDrag });
   ctx.restore();
-  return shown.length;
+  return copies.length;
 }

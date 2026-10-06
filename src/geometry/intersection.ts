@@ -21,7 +21,9 @@ export interface IntersectionCopy {
   j: number;
   label: string;
   colour: string;
-  visible: boolean;
+  /** Whether this copy's extension geometry (its dashed extended lines) is drawn. Its bounded
+   * construction always is. */
+  extensions: boolean;
   pose: InstancePose;
 }
 
@@ -55,14 +57,14 @@ export function intersectionCopies(doc: Doc, repeat: RepeatSystem = doc.repeat):
       j,
       label: n === 0 ? 'Primary' : `Copy ${n}`,
       colour: saved[key]?.colour ?? DEFAULT_COLOURS[key] ?? '#1E2A36',
-      visible: saved[key]?.visible ?? true,
+      extensions: saved[key]?.extensions ?? true,
       pose: instancePose(repeat, i, j),
     };
   });
 }
 
 /** The world-space bounds of the copies shown (each frame's extent around its own centre) — what
- * Intersection's Fit frames. Hidden copies still count, so hiding one never re-frames the view. */
+ * Intersection's Fit frames. */
 export function intersectionBounds(doc: Doc): { minX: number; minY: number; maxX: number; maxY: number } {
   const pivot: Vec2 = doc.frame.origin;
   const r = motifRadius(doc);
@@ -81,8 +83,8 @@ export function intersectionBounds(doc: Doc): { minX: number; minY: number; maxX
   return { minX, minY, maxX, maxY };
 }
 
-/** The artwork's Intersection settings with one copy's colour or visibility changed. */
-export function withCopySetting(doc: Doc, key: string, patch: { colour?: string; visible?: boolean }): NonNullable<Doc['intersection']> {
+/** The artwork's Intersection settings with one copy's colour or extensions changed. */
+export function withCopySetting(doc: Doc, key: string, patch: { colour?: string; extensions?: boolean }): NonNullable<Doc['intersection']> {
   const copies = { ...(doc.intersection?.copies ?? {}) };
   copies[key] = { ...copies[key], ...patch };
   return { copies };

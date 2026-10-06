@@ -585,16 +585,17 @@ function showRepeatAppearancePanel(anchor: HTMLElement, controller: AppControlle
 }
 
 /**
- * Intersection V0: the copies shown — the primary and each neighbour — with its analysis colour and
- * whether it is shown. Every change is one commit (Undo / Redo), on `doc.intersection` only. A tap on
- * a copy's colour opens the app's colour row beneath it.
+ * Intersection: the copies shown — the primary and each neighbour — with its analysis colour and
+ * whether its extensions are drawn (its bounded construction always is). Every change is one commit
+ * (Undo / Redo), on `doc.intersection` only. A tap on a copy's colour opens the app's colour row
+ * beneath it.
  */
 function showIntersectionCopiesPanel(anchor: HTMLElement, controller: AppController): void {
   mountPopover(
     anchor,
     (menu) => {
       let open: string | null = null;
-      const set = (key: string, patch: { colour?: string; visible?: boolean }) => {
+      const set = (key: string, patch: { colour?: string; extensions?: boolean }) => {
         controller.commit((d) => {
           d.intersection = withCopySetting(d, key, patch);
         });
@@ -602,7 +603,13 @@ function showIntersectionCopiesPanel(anchor: HTMLElement, controller: AppControl
       };
       const build = () => {
         menu.replaceChildren();
-        popoverSectionLabel(menu, 'Copies');
+        // Two columns: each copy (its colour), and whether its extensions are drawn — its bounded
+        // construction always is.
+        const header = document.createElement('div');
+        header.className = 'copies-header';
+        popoverSectionLabel(header, 'Copies');
+        popoverSectionLabel(header, 'Extensions');
+        menu.appendChild(header);
         for (const copy of intersectionCopies(controller.doc)) {
           const row = document.createElement('div');
           row.className = 'popover-toggle-row copy-row';
@@ -620,13 +627,13 @@ function showIntersectionCopiesPanel(anchor: HTMLElement, controller: AppControl
           label.className = 'popover-row-label';
           label.textContent = copy.label;
           const sw = document.createElement('button');
-          sw.className = 'toggle-switch' + (copy.visible ? ' on' : '');
+          sw.className = 'toggle-switch' + (copy.extensions ? ' on' : '');
           sw.innerHTML = '<span class="toggle-knob"></span>';
-          sw.setAttribute('aria-label', `${copy.label} ${copy.visible ? 'shown' : 'hidden'}`);
-          sw.setAttribute('aria-pressed', String(copy.visible));
+          sw.setAttribute('aria-label', `${copy.label} extensions ${copy.extensions ? 'on' : 'off'}`);
+          sw.setAttribute('aria-pressed', String(copy.extensions));
           sw.addEventListener('click', (e) => {
             e.stopPropagation();
-            set(copy.key, { visible: !copy.visible });
+            set(copy.key, { extensions: !copy.extensions });
           });
           row.appendChild(dot);
           row.appendChild(label);
@@ -1296,7 +1303,7 @@ export function buildShell(
     dots.className = 'copies-dots';
     for (const c of copies) {
       const dot = document.createElement('span');
-      dot.className = 'copies-dot' + (c.visible ? '' : ' hidden');
+      dot.className = 'copies-dot';
       dot.style.background = c.colour;
       dots.appendChild(dot);
     }
