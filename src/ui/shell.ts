@@ -29,6 +29,7 @@ import { onTap } from './tap.ts';
 import { color, fairPalette, stroke } from '../render/tokens.ts';
 import { defaultLatticeVectors, isSixtyDegreeFamily, type LatticeFamily } from '../geometry/lattice.ts';
 import { rotationFractionLabel } from '../render/repeatRenderer.ts';
+import { intersectionCopies, withCopySetting } from '../geometry/intersection.ts';
 import { CAPTURED_CUE_MS } from '../interaction/tools/arc.ts';
 import { syncSnapChooser } from './snapchooser.ts';
 import { deriveSelectableGroups } from '../geometry/segments.ts';
@@ -583,6 +584,72 @@ function showRepeatAppearancePanel(anchor: HTMLElement, controller: AppControlle
   );
 }
 
+/**
+ * Intersection V0: the copies shown — the primary and each neighbour — with its analysis colour and
+ * whether it is shown. Every change is one commit (Undo / Redo), on `doc.intersection` only. A tap on
+ * a copy's colour opens the app's colour row beneath it.
+ */
+function showIntersectionCopiesPanel(anchor: HTMLElement, controller: AppController): void {
+  mountPopover(
+    anchor,
+    (menu) => {
+      let open: string | null = null;
+      const set = (key: string, patch: { colour?: string; visible?: boolean }) => {
+        controller.commit((d) => {
+          d.intersection = withCopySetting(d, key, patch);
+        });
+        build();
+      };
+      const build = () => {
+        menu.replaceChildren();
+        popoverSectionLabel(menu, 'Copies');
+        for (const copy of intersectionCopies(controller.doc)) {
+          const row = document.createElement('div');
+          row.className = 'popover-toggle-row copy-row';
+          const dot = document.createElement('button');
+          dot.className = 'copy-colour';
+          dot.style.background = copy.colour;
+          dot.setAttribute('aria-label', `${copy.label} colour`);
+          dot.setAttribute('aria-expanded', String(open === copy.key));
+          dot.addEventListener('click', (e) => {
+            e.stopPropagation();
+            open = open === copy.key ? null : copy.key;
+            build();
+          });
+          const label = document.createElement('span');
+          label.className = 'popover-row-label';
+          label.textContent = copy.label;
+          const sw = document.createElement('button');
+          sw.className = 'toggle-switch' + (copy.visible ? ' on' : '');
+          sw.innerHTML = '<span class="toggle-knob"></span>';
+          sw.setAttribute('aria-label', `${copy.label} ${copy.visible ? 'shown' : 'hidden'}`);
+          sw.setAttribute('aria-pressed', String(copy.visible));
+          sw.addEventListener('click', (e) => {
+            e.stopPropagation();
+            set(copy.key, { visible: !copy.visible });
+          });
+          row.appendChild(dot);
+          row.appendChild(label);
+          row.appendChild(sw);
+          menu.appendChild(row);
+          if (open === copy.key) {
+            const host = document.createElement('div');
+            colourSwatchRow(host, copy.colour, (c) => {
+              if (c) set(copy.key, { colour: c });
+            });
+            const swatches = host.firstElementChild as HTMLElement;
+            swatches.classList.add('panel-swatches');
+            swatches.setAttribute('aria-label', `${copy.label} colour`);
+            menu.appendChild(swatches);
+          }
+        }
+      };
+      build();
+    },
+    { shieldCanvas: true, panel: true },
+  );
+}
+
 /** Phase 5.1 item 7: Grid / Guides — interaction aids only, each independently switchable, with
  * one master row that turns them all on or off together. */
 function showRepeatGuidesPanel(anchor: HTMLElement, controller: AppController, onChange: () => void): void {
@@ -896,7 +963,7 @@ export function buildShell(
     onOpen: () => void;
     onSave: () => void;
     onSaveAs: () => void;
-    onSwitchWorkspace: (ws: 'construct' | 'repeat') => void;
+    onSwitchWorkspace: (ws: 'construct' | 'intersection' | 'repeat') => void;
     getView: () => ViewTransform;
     /** vNext Phase 4B: null for the Beginner Guide's practice artwork (no history, no Timelapse). */
     timelapse: TimelapseSupport | null;
@@ -962,11 +1029,18 @@ export function buildShell(
   segmented.className = 'segmented';
   const constructBtn = document.createElement('button');
   constructBtn.textContent = 'Construct';
+  // Intersection sits between the two: a small local group of construction copies, placed with
+  // Repeat's own lattice. A narrow phone shows its shorter name so all three fit.
+  const intersectionBtn = document.createElement('button');
+  intersectionBtn.innerHTML = '<span class="ws-long">Intersection</span><span class="ws-short">Intersect</span>';
+  intersectionBtn.setAttribute('aria-label', 'Intersection');
   const repeatBtn = document.createElement('button');
   repeatBtn.textContent = 'Repeat';
   constructBtn.addEventListener('click', () => opts.onSwitchWorkspace('construct'));
+  intersectionBtn.addEventListener('click', () => opts.onSwitchWorkspace('intersection'));
   repeatBtn.addEventListener('click', () => opts.onSwitchWorkspace('repeat'));
   segmented.appendChild(constructBtn);
+  segmented.appendChild(intersectionBtn);
   segmented.appendChild(repeatBtn);
 
   const rightSide = document.createElement('div');
@@ -1204,6 +1278,31 @@ export function buildShell(
   spaceRow.appendChild(spaceColourBtn);
   spaceRow.appendChild(spaceOpacityBtn);
   repeatPanel.appendChild(spaceRow);
+
+  // Intersection: in Space's place, the copies shown — each one's analysis colour and visibility.
+  const copiesRow = document.createElement('div');
+  copiesRow.className = 'space-row';
+  const copiesBtn = document.createElement('button');
+  copiesBtn.className = 'space-chip copies-chip';
+  copiesBtn.setAttribute('aria-label', 'Copies: colour and visibility');
+  onTap(copiesBtn, () => togglePanel(copiesBtn, () => showIntersectionCopiesPanel(copiesBtn, controller)));
+  copiesRow.appendChild(copiesBtn);
+  repeatPanel.appendChild(copiesRow);
+
+  function refreshCopiesRow(): void {
+    const copies = intersectionCopies(controller.doc);
+    copiesBtn.replaceChildren();
+    const dots = document.createElement('span');
+    dots.className = 'copies-dots';
+    for (const c of copies) {
+      const dot = document.createElement('span');
+      dot.className = 'copies-dot' + (c.visible ? '' : ' hidden');
+      dot.style.background = c.colour;
+      dots.appendChild(dot);
+    }
+    copiesBtn.appendChild(dots);
+    copiesBtn.appendChild(document.createTextNode('Copies'));
+  }
 
   function refreshSpaceRow(): void {
     const on = controller.spaceMode;
@@ -1732,13 +1831,16 @@ export function buildShell(
   function update(): void {
     syncSnapChooser(controller, canvas, opts.getView);
     const inRepeat = controller.doc.view.workspace === 'repeat';
+    const inIntersection = controller.doc.view.workspace === 'intersection';
+    const placing = inRepeat || inIntersection; // both place copies with the lattice handles
     // Phase 5.3 item 1: a panel never outlives the workspace it belongs to.
     if (controller.doc.view.workspace !== shownWorkspace) {
       shownWorkspace = controller.doc.view.workspace;
       closeAnyPopover();
       controller.spaceMode = false; // Space belongs to one visit to Repeat, not the next
     }
-    constructBtn.classList.toggle('active', !inRepeat);
+    constructBtn.classList.toggle('active', !placing);
+    intersectionBtn.classList.toggle('active', inIntersection);
     repeatBtn.classList.toggle('active', inRepeat);
 
     for (const [id, btn] of dockButtonEls) {
@@ -1749,20 +1851,24 @@ export function buildShell(
     redoBtn.disabled = !controller.canRedo();
     refreshPointLockBtn();
 
-    pointLockBtn.style.display = inRepeat ? 'none' : '';
-    visBtn.style.display = inRepeat ? 'none' : '';
+    pointLockBtn.style.display = placing ? 'none' : '';
+    visBtn.style.display = placing ? 'none' : '';
     appearanceBtn.style.display = inRepeat ? '' : 'none';
-    guidesBtn.style.display = inRepeat ? '' : 'none';
-    if (inRepeat) refreshGuidesBtn();
+    guidesBtn.style.display = placing ? '' : 'none';
+    exportBtn.style.display = inIntersection ? 'none' : ''; // Intersection V0 has nothing to share
+    if (placing) refreshGuidesBtn();
 
-    dock.style.display = inRepeat ? 'none' : 'flex';
-    contextSlot.style.display = inRepeat ? 'none' : 'flex';
-    repeatPanel.style.display = inRepeat ? 'flex' : 'none';
+    dock.style.display = placing ? 'none' : 'flex';
+    contextSlot.style.display = placing ? 'none' : 'flex';
+    repeatPanel.style.display = placing ? 'flex' : 'none';
+    spaceRow.style.display = inRepeat ? '' : 'none';
+    copiesRow.style.display = inIntersection ? '' : 'none';
 
-    if (inRepeat) {
+    if (placing) {
       for (const [id, btn] of familyBtns) btn.classList.toggle('active', controller.doc.repeat.family === id);
       for (const [id, btn] of ruleBtns) btn.classList.toggle('active', controller.doc.repeat.rule.kind === id);
-      refreshSpaceRow();
+      if (inRepeat) refreshSpaceRow();
+      else refreshCopiesRow();
       updateRepeatStatus();
       return;
     }

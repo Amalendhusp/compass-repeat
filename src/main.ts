@@ -12,6 +12,8 @@ import { fillTool } from './interaction/tools/fill.ts';
 import { repeatTool } from './interaction/tools/repeatTool.ts';
 import { render } from './render/renderer.ts';
 import { renderRepeat } from './render/repeatRenderer.ts';
+import { renderIntersection } from './render/intersectionRenderer.ts';
+import { intersectionBounds } from './geometry/intersection.ts';
 import { buildShell, closeAnyPopover } from './ui/shell.ts';
 import { openGuide, type CoachHost } from './tutorial/engine.ts';
 import { beginnerGuide } from './tutorial/guides/beginner.ts';
@@ -141,6 +143,14 @@ function fitRepeatFirstEntry(controller: AppController, canvas: HTMLCanvasElemen
   controller.notifyView();
 }
 
+/** Intersection's own Fit — the primary and its neighbours shown, into Intersection's own view. */
+function fitIntersectionView(controller: AppController, canvas: HTMLCanvasElement, overlay: HTMLElement): void {
+  const doc = controller.doc;
+  doc.intersectionView ??= { zoom: 1, pan: { x: 0, y: 0 } };
+  fitViewState(doc.intersectionView, intersectionBounds(doc), doc.frame.radius, doc.frame.origin, canvas, overlay);
+  controller.notifyView();
+}
+
 /** Boots the app on a document. `fitToScreen: false` preserves a drawn/restored viewport. */
 const KEY_ZOOM_STEP = 1.25;
 
@@ -150,7 +160,8 @@ function boot(doc: Doc, opts: { fitToScreen: boolean; history?: { undo: Doc[]; r
   // §9 restore: "the tool reset to Select" — AppController already defaults tool to 'select'.
   if (opts.history) controller.restoreHistory(opts.history.undo, opts.history.redo);
 
-  const fit = () => (controller.doc.view.workspace === 'repeat' ? fitRepeatView(controller, canvas, overlay) : fitView(controller, canvas, overlay));
+  const fitFor = (ws: Doc['view']['workspace']) => (ws === 'repeat' ? fitRepeatView : ws === 'intersection' ? fitIntersectionView : fitView);
+  const fit = () => fitFor(controller.doc.view.workspace)(controller, canvas, overlay);
   const { canvas, overlay } = buildShell(root!, controller, {
     onFit: () => fit(),
     onNew: () => showStart('frames'),
@@ -174,12 +185,15 @@ function boot(doc: Doc, opts: { fitToScreen: boolean; history?: { undo: Doc[]; r
       // check "was it already configured" first, purely to decide whether THIS entry deserves an
       // automatic Fit (a first look at the motif) or should leave the last Repeat view exactly
       // where the participant left it (item 12/18: Repeat's own viewport persists across visits).
-      const firstEntry = ws === 'repeat' && controller.doc.repeat.family === undefined;
+      // Intersection places copies with Repeat's own lattice, so either one may be where it is first
+      // set up — and Repeat's first-entry view is prepared then either way.
+      const firstEntry = ws !== 'construct' && controller.doc.repeat.family === undefined;
       controller.doc.view.workspace = ws;
-      if (ws === 'repeat') {
+      if (ws !== 'construct') {
         ensureRepeatDefaults(controller.doc);
         if (firstEntry) fitRepeatFirstEntry(controller, canvas, overlay);
       }
+      if (ws === 'intersection' && !controller.doc.intersectionView) fitIntersectionView(controller, canvas, overlay);
       controller.notify();
     },
   });
@@ -196,16 +210,25 @@ function boot(doc: Doc, opts: { fitToScreen: boolean; history?: { undo: Doc[]; r
   if (!ctx) throw new Error('2d context unavailable');
 
   function getView(): ViewTransform {
-    const vs = controller.doc.view.workspace === 'repeat' ? controller.doc.repeatView : controller.doc.view;
+    const vs = viewState();
     return { zoom: vs.zoom, pan: vs.pan, w: canvas.clientWidth, h: canvas.clientHeight };
+  }
+
+  /** Each workspace navigates its own camera. */
+  function viewState(): { zoom: number; pan: { x: number; y: number } } {
+    const doc = controller.doc;
+    if (doc.view.workspace === 'repeat') return doc.repeatView;
+    if (doc.view.workspace === 'intersection') return (doc.intersectionView ??= { zoom: 1, pan: { x: 0, y: 0 } });
+    return doc.view;
   }
 
   const pointer = new PointerManager(
     canvas,
     controller,
     getView,
-    () => (controller.doc.view.workspace === 'repeat' ? repeatTool : (tools[controller.tool] ?? null)),
-    () => (controller.doc.view.workspace === 'repeat' ? controller.doc.repeatView : controller.doc.view),
+    // Intersection is placed exactly as Repeat is: the same handles, ring and gestures.
+    () => (controller.doc.view.workspace === 'construct' ? (tools[controller.tool] ?? null) : repeatTool),
+    () => viewState(),
   );
   const autosave = guideReturn ? inertAutosave : attachAutosave(controller);
   // vNext Phase 4A: the artwork's process history — never for the Beginner Guide's practice artwork.
@@ -235,6 +258,7 @@ function boot(doc: Doc, opts: { fitToScreen: boolean; history?: { undo: Doc[]; r
     const t0 = performance.now();
     let copies: number | null = null;
     if (controller.doc.view.workspace === 'repeat') copies = renderRepeat(ctx!, controller, getView());
+    else if (controller.doc.view.workspace === 'intersection') copies = renderIntersection(ctx!, controller, getView());
     else render(ctx!, controller, getView());
     diagnostics?.record(performance.now() - t0, copies);
   }
@@ -266,7 +290,7 @@ function boot(doc: Doc, opts: { fitToScreen: boolean; history?: { undo: Doc[]; r
     const centre = { x: canvas.clientWidth / 2, y: canvas.clientHeight / 2 };
     if (e.key === '+' || e.key === '=') pointer.zoomAt(centre, KEY_ZOOM_STEP);
     else if (e.key === '-' || e.key === '_' || e.key === '\u2212') pointer.zoomAt(centre, 1 / KEY_ZOOM_STEP);
-    else if (e.key === '0') controller.doc.view.workspace === 'repeat' ? fitRepeatView(controller, canvas, overlay) : fitView(controller, canvas, overlay);
+    else if (e.key === '0') fit();
     else return;
     e.preventDefault();
   };

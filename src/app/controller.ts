@@ -523,13 +523,14 @@ export class AppController {
 
   /** Camera and Repeat display preferences are not history — carry the live ones across. */
   private swapTo(snapshot: Doc): void {
-    const { view, repeatView, repeatDisplay, toolPrefs, dividePrefs, fillDefaults, fairDefaults, pointTargets, name, named, spaceDefaults } = this.doc;
+    const { view, repeatView, intersectionView, repeatDisplay, toolPrefs, dividePrefs, fillDefaults, fairDefaults, pointTargets, name, named, spaceDefaults } = this.doc;
     this.doc = snapshot;
     // The artwork's name is not history either (Phase 5.5).
     this.doc.name = name;
     this.doc.named = named;
     this.doc.view = view;
     this.doc.repeatView = repeatView;
+    this.doc.intersectionView = intersectionView;
     this.doc.repeatDisplay = repeatDisplay;
     // Tool preferences aren't history either (Phase 5.2: the remembered radius/N survive undo).
     this.doc.toolPrefs = toolPrefs;

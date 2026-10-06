@@ -108,7 +108,7 @@ export interface RepeatDisplay {
 export interface ViewState {
   zoom: number;
   pan: { x: number; y: number };
-  workspace: 'construct' | 'repeat';
+  workspace: 'construct' | 'intersection' | 'repeat';
 }
 
 export interface Frame {
@@ -181,6 +181,13 @@ export interface Doc {
    * artwork's own stored Fair/fill state. Not undo-tracked (carried across undo/redo like
    * `repeatView`). Replaces Phase 5's single `repeatGuide` boolean. */
   repeatDisplay: RepeatDisplay;
+  /** Intersection's own camera — like repeatView, never history. Absent until Intersection is first
+   * entered. */
+  intersectionView?: { zoom: number; pan: Vec2 };
+  /** Intersection's per-copy analysis colours and visibility, keyed by lattice offset "i,j" (the
+   * primary is "0,0"). Absent or partial = defaults (see geometry/intersection.ts). Part of Undo;
+   * never part of the recorded artwork (it is a way of looking, not the design). */
+  intersection?: { copies: Record<string, { colour?: string; visible?: boolean }> };
   /** Phase 5.6 item 20: Space's own next colour and opacity (null = "No fill", which only clears).
    * A tool preference like `fillDefaults`; what each Space class actually shows is its own entry in
    * `repeat.gapFills`, undo-tracked through commit(). */

@@ -446,15 +446,9 @@ export function renderRepeat(ctx: CanvasRenderingContext2D, controller: AppContr
     ctx.fillRect(0, 0, view.w, view.h);
   }
 
-  // Live drag draft (items 4/6/7): while dragging a lattice-arm handle or the rotation ring,
-  // preview the shown (un-committed) value so the field — and the grid — follow the finger.
   const drag = exp ? null : controller.repeatDrag;
   const rotating = exp ? null : controller.repeatRotateDrag;
-  const repeat: RepeatSystem = {
-    ...doc.repeat,
-    ...(drag ? { [drag.dir]: drag.translate } : null),
-    motif: rotating ? { ...doc.repeat.motif, rotation: rotating.rawRotation } : doc.repeat.motif,
-  };
+  const repeat = exp ? doc.repeat : draftRepeat(controller);
   const draftDoc = drag || rotating ? { ...doc, repeat } : doc;
 
   const pivot = doc.frame.origin;
@@ -487,22 +481,44 @@ export function renderRepeat(ctx: CanvasRenderingContext2D, controller: AppContr
     }
   }
 
-  const showGuides = !exp || exp.guides;
-  if (showGuides) {
-    const guideInk = lightness(display.background) < 0.45 ? color.paper : color.ink;
-    if (display.grid) {
-      drawLatticeGrid(ctx, doc, repeat, view, !!drag, guideInk);
-      if (!display.handles) drawBasisArrows(ctx, doc, repeat, view, guideInk);
-    }
-    if (display.motifBoundary) drawFrameOutline(ctx, view, pivot, instancePose(repeat, 0, 0), doc, 0.6);
-  }
-  if (!exp && display.handles && !controller.spaceMode) {
-    drawLatticeHandles(ctx, controller, repeat, view);
-    drawRotationRing(ctx, controller, view);
-  }
+  drawPlacementControls(ctx, controller, view, repeat, display.background, { guides: !exp || exp.guides, handles: !exp && !controller.spaceMode, dragging: !!drag });
 
   ctx.restore();
   return instances.length;
+}
+
+/** Live drag draft (items 4/6/7): while a lattice-arm handle or the rotation ring is being dragged,
+ * the shown (un-committed) value, so whatever is drawn — and the grid — follows the finger. Shared
+ * by Repeat and Intersection, which place copies with the same lattice. */
+export function draftRepeat(controller: AppController): RepeatSystem {
+  const doc = controller.doc;
+  const drag = controller.repeatDrag;
+  const rotating = controller.repeatRotateDrag;
+  return {
+    ...doc.repeat,
+    ...(drag ? { [drag.dir]: drag.translate } : null),
+    motif: rotating ? { ...doc.repeat.motif, rotation: rotating.rawRotation } : doc.repeat.motif,
+  };
+}
+
+/** The placement aids drawn over copies: the guides (lattice grid, basis arrows, motif boundary, as
+ * switched in Grid / guides) and, when `handles`, the two lattice-arm handles and the rotation ring
+ * — the same three handles in Repeat and Intersection. */
+export function drawPlacementControls(ctx: CanvasRenderingContext2D, controller: AppController, view: ViewTransform, repeat: RepeatSystem, background: string, show: { guides: boolean; handles: boolean; dragging: boolean }): void {
+  const doc = controller.doc;
+  const display = doc.repeatDisplay;
+  if (show.guides) {
+    const guideInk = lightness(background) < 0.45 ? color.paper : color.ink;
+    if (display.grid) {
+      drawLatticeGrid(ctx, doc, repeat, view, show.dragging, guideInk);
+      if (!display.handles) drawBasisArrows(ctx, doc, repeat, view, guideInk);
+    }
+    if (display.motifBoundary) drawFrameOutline(ctx, view, doc.frame.origin, instancePose(repeat, 0, 0), doc, 0.6);
+  }
+  if (show.handles && display.handles) {
+    drawLatticeHandles(ctx, controller, repeat, view);
+    drawRotationRing(ctx, controller, view);
+  }
 }
 
 export { motifRadius };

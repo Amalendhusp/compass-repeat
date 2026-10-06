@@ -544,6 +544,7 @@ export function cloneDoc(doc: Doc): Doc {
       gapFills: new Map(doc.repeat.gapFills),
     },
     view: { ...doc.view, pan: { ...doc.view.pan } },
+    ...(doc.intersection ? { intersection: { copies: Object.fromEntries(Object.entries(doc.intersection.copies).map(([k, v]) => [k, { ...v }])) } } : null),
   };
 }
 
