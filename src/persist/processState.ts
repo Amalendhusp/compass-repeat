@@ -36,7 +36,9 @@ export interface ArtworkState {
   symmetrySources: unknown;
   echo: unknown;
   repeat: Record<string, unknown> & { gapFills: Coll };
-  appearance: { artwork: string; constructionOverlay: boolean; background: string; fillOpacity: number };
+  /** strokeColour/strokeWidth appear only once Repeat's Stroke style is set, so every state recorded
+   * before it existed (or with it "as designed") keeps exactly the same shape and fingerprint. */
+  appearance: { artwork: string; constructionOverlay: boolean; background: string; fillOpacity: number; strokeColour?: string; strokeWidth?: number };
 }
 
 // A captured state is built with every object's keys already in sorted order, so plain
@@ -101,7 +103,14 @@ export function inPlaceParts(doc: Doc): InPlaceParts {
     repeat: plain(repeat) as Record<string, unknown>,
     // The Construction overlay is a viewing aid, not part of the artwork: never recorded as a change.
     // The field stays (always false) so every stored state keeps the same shape and fingerprint.
-    appearance: { artwork: d.artwork, background: d.background, constructionOverlay: false, fillOpacity: d.fillOpacity },
+    appearance: {
+      artwork: d.artwork,
+      background: d.background,
+      constructionOverlay: false,
+      fillOpacity: d.fillOpacity,
+      ...(d.strokeColour != null ? { strokeColour: d.strokeColour } : null),
+      ...(d.strokeWidth != null ? { strokeWidth: d.strokeWidth } : null),
+    },
   };
 }
 
@@ -141,7 +150,8 @@ export function capturedHash(state: ArtworkState): { hash: string; bytes: number
 export function inPlaceFingerprint(doc: Doc): string {
   const { gapFills: _gaps, ...repeat } = doc.repeat;
   const d = doc.repeatDisplay;
-  return JSON.stringify([repeat, d.artwork, d.background, d.fillOpacity]); // not the Construction overlay — a view aid
+  const style = d.strokeColour != null || d.strokeWidth != null ? [d.strokeColour ?? null, d.strokeWidth ?? null] : [];
+  return JSON.stringify([repeat, d.artwork, d.background, d.fillOpacity, ...style]); // not the Construction overlay — a view aid
 }
 
 const toList = (c: Coll) => c.$o.map((k) => ({ id: k, ...(structuredClone(c.$v[k]) as object) }));
@@ -163,7 +173,8 @@ export function stateToDoc(state: ArtworkState, base: Doc): Doc {
     symmetrySources: structuredClone(state.symmetrySources) as Doc['symmetrySources'],
     echo: structuredClone(state.echo) as Doc['echo'],
     repeat: { ...(repeat as unknown as Doc['repeat']), gapFills: toMap(state.repeat.gapFills) },
-    repeatDisplay: { ...base.repeatDisplay, ...state.appearance } as Doc['repeatDisplay'],
+    // A state without a Stroke style was drawn as designed — never with the live artwork's style.
+    repeatDisplay: { ...base.repeatDisplay, strokeColour: null, strokeWidth: null, ...state.appearance } as Doc['repeatDisplay'],
   };
 }
 

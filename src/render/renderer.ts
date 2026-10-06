@@ -187,10 +187,11 @@ function drawEntities(ctx: CanvasRenderingContext2D, controller: AppController, 
       // Phase 5.6: an extended line's pieces beyond its own span default to dashed Extension.
       const kind = st?.state ?? defaultSegmentKind(e, seg);
       if (kind === 'trimmed' || (kind !== 'fair' && !showConstruction)) continue;
+      if (kind === 'fair' && exp?.fairStroke?.width === 0) continue;
       segmentPath(ctx, doc, view, e, seg.fromParam, seg.toParam);
       if (kind === 'fair') {
-        ctx.strokeStyle = st?.stroke?.colour ?? color.ink;
-        ctx.lineWidth = st?.stroke?.width ?? stroke.fairDefault;
+        ctx.strokeStyle = exp?.fairStroke?.colour ?? st?.stroke?.colour ?? color.ink;
+        ctx.lineWidth = exp?.fairStroke?.width ?? st?.stroke?.width ?? stroke.fairDefault;
         ctx.lineCap = 'round';
         ctx.lineJoin = 'round';
         ctx.setLineDash([]);
@@ -1742,6 +1743,9 @@ export interface ArtworkExport {
   /** Repeat only: the Construction overlay around the reference motif alone, as before it repeated
    * across the pattern — what a Timelapse keeps showing. */
   referenceConstructionOnly?: boolean;
+  /** The thumbnail only: Repeat's Stroke style for the Fair strokes (null = as designed; width 0 =
+   * none), so My Artworks shows the artwork's outlines as styled. Construct itself never uses it. */
+  fairStroke?: { colour: string | null; width: number | null };
 }
 
 /** On screen, `exp` is absent and everything draws. With `exp` (Phase 5.3 export), only the

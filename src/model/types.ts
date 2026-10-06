@@ -93,6 +93,11 @@ export interface RepeatDisplay {
   constructionOverlay: boolean;
   background: string;
   fillOpacity: number; // 0..1, applied at render time only
+  /** Repeat's own outline style for the repeated design, applied at render time only — absent or
+   * null means "as designed" (each Fair piece's own Construct colour/width). Width is in screen px;
+   * 0 draws no outlines. Never touches geometry or region boundaries. */
+  strokeColour?: string | null;
+  strokeWidth?: number | null;
   grid: boolean;
   handles: boolean;
   motifBoundary: boolean;

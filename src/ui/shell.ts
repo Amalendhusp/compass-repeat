@@ -26,7 +26,7 @@ import { iconSvg, type IconName } from './icons.ts';
 import { showToast } from './toast.ts';
 import { openConfirmSheet } from './confirmsheet.ts';
 import { onTap } from './tap.ts';
-import { color, fairPalette } from '../render/tokens.ts';
+import { color, fairPalette, stroke } from '../render/tokens.ts';
 import { defaultLatticeVectors, isSixtyDegreeFamily, type LatticeFamily } from '../geometry/lattice.ts';
 import { rotationFractionLabel } from '../render/repeatRenderer.ts';
 import { CAPTURED_CUE_MS } from '../interaction/tools/arc.ts';
@@ -287,8 +287,8 @@ function panelSegmented<T extends string>(parent: HTMLElement, options: { id: T;
   return { refresh, buttons };
 }
 
-/** "Label ───●── 70%" on one line (Phase 5.3 item 5). */
-function panelSliderRow(menu: HTMLElement, label: string, opts: { min: number; max: number; step: number; value: number; format: (v: number) => string; onInput: (v: number) => void }): void {
+/** "Label ───●── 70%" on one line (Phase 5.3 item 5). `onCommit` runs once the thumb is let go. */
+function panelSliderRow(menu: HTMLElement, label: string, opts: { min: number; max: number; step: number; value: number; format: (v: number) => string; onInput: (v: number) => void; onCommit?: (v: number) => void }): { slider: HTMLInputElement; value: HTMLSpanElement } {
   const row = document.createElement('div');
   row.className = 'popover-toggle-row panel-slider-row';
   const text = document.createElement('span');
@@ -310,10 +310,17 @@ function panelSliderRow(menu: HTMLElement, label: string, opts: { min: number; m
     value.textContent = opts.format(Number(slider.value));
     opts.onInput(Number(slider.value));
   });
+  if (opts.onCommit) {
+    slider.addEventListener('change', (e) => {
+      e.stopPropagation();
+      opts.onCommit!(Number(slider.value));
+    });
+  }
   row.appendChild(text);
   row.appendChild(slider);
   row.appendChild(value);
   menu.appendChild(row);
+  return { slider, value };
 }
 
 const POINT_TARGET_ROWS: { key: keyof Doc['pointTargets']; label: string; hint: string }[] = [
@@ -418,6 +425,21 @@ const REPEAT_BACKGROUNDS: { name: string; colour: string }[] = [
   ...fairPalette,
 ];
 
+/** The Fair stroke colour and width the design mostly uses — where Repeat's Stroke style starts. */
+function designStroke(doc: Doc): { colour: string; width: number } {
+  const colours = new Map<string, number>();
+  const widths = new Map<number, number>();
+  for (const st of doc.segmentStates.values()) {
+    if (st.state !== 'fair') continue;
+    const c = st.stroke?.colour ?? color.ink;
+    const w = st.stroke?.width ?? stroke.fairDefault;
+    colours.set(c, (colours.get(c) ?? 0) + 1);
+    widths.set(w, (widths.get(w) ?? 0) + 1);
+  }
+  const most = <K,>(m: Map<K, number>, fallback: K): K => [...m].reduce<[K, number]>((best, e) => (e[1] > best[1] ? e : best), [fallback, 0])[0];
+  return { colour: most(colours, color.ink as string), width: most(widths, stroke.fairDefault) };
+}
+
 /**
  * Phase 5.1 items 3–6 / Phase 5.3 items 2–5: Repeat's Appearance panel — how the repeated motif is
  * drawn, never what it is. Every control writes only `doc.repeatDisplay` (a display preference:
@@ -441,10 +463,74 @@ function showRepeatAppearancePanel(anchor: HTMLElement, controller: AppControlle
         () => display().artwork,
         (id) => {
           display().artwork = id;
+          strokeSection.style.display = id === 'stroke' ? '' : 'none';
           changed();
         },
         'Artwork',
       );
+
+      // Stroke tab: the repeated design's outline colour and thickness — Repeat's own style, applied
+      // at render time over every Fair piece. "As designed" (the default) keeps each piece's own
+      // Construct colour/width; choosing a colour or moving the slider sets Repeat's style instead.
+      const strokeSection = document.createElement('div');
+      strokeSection.className = 'panel-stroke-section';
+      strokeSection.style.display = display().artwork === 'stroke' ? '' : 'none';
+      menu.appendChild(strokeSection);
+      const styled = () => display().strokeColour != null || display().strokeWidth != null;
+      const saved = () => controller.notify(); // the thumbnail follows a settled change
+      const fmtWidth = (v: number) => (v === 0 ? 'None' : `${Number(v.toFixed(2))} px`);
+      const buildStrokeSection = () => {
+        strokeSection.replaceChildren();
+        popoverSectionLabel(strokeSection, 'Stroke');
+        const asDesigned = popoverToggleRow(
+          strokeSection,
+          'As designed',
+          () => !styled(),
+          (on) => {
+            if (on) {
+              display().strokeColour = null;
+              display().strokeWidth = null;
+            } else {
+              // Start Repeat's style from what the design mostly uses, so nothing jumps.
+              const typical = designStroke(controller.doc);
+              display().strokeColour = typical.colour;
+              display().strokeWidth = typical.width;
+            }
+            buildStrokeSection();
+            changed();
+            saved();
+          },
+          'Each outline keeps its own colour and thickness from Construct',
+        );
+        const swatches = document.createElement('div');
+        swatches.className = 'panel-swatches-host';
+        colourSwatchRow(swatches, display().strokeColour ?? null, (c) => {
+          display().strokeColour = c;
+          if (display().strokeWidth == null) display().strokeWidth = designStroke(controller.doc).width;
+          asDesigned.refresh();
+          changed();
+          saved();
+        });
+        swatches.firstElementChild?.classList.add('panel-swatches');
+        swatches.firstElementChild?.setAttribute('aria-label', 'Stroke colour');
+        strokeSection.appendChild(swatches.firstElementChild!);
+        const width = panelSliderRow(strokeSection, 'Thickness', {
+          min: 0,
+          max: 12,
+          step: 0.25,
+          value: display().strokeWidth ?? designStroke(controller.doc).width,
+          format: fmtWidth,
+          onInput: (v) => {
+            display().strokeWidth = v;
+            if (display().strokeColour == null) display().strokeColour = designStroke(controller.doc).colour;
+            asDesigned.refresh();
+            changed();
+          },
+          onCommit: saved,
+        });
+        if (!styled()) width.value.textContent = 'As designed';
+      };
+      buildStrokeSection();
 
       popoverToggleRow(
         menu,

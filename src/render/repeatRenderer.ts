@@ -687,10 +687,13 @@ function drawCopy(ctx: CanvasRenderingContext2D, doc: Doc, view: ViewTransform, 
     ctx.globalAlpha = 1;
   }
   beforeStrokes?.();
-  if (!showStrokes) return;
+  // Repeat's Stroke style, if set, replaces every piece's own colour/width (0 = no outlines).
+  const colourOverride = display.strokeColour ?? null;
+  const widthOverride = display.strokeWidth ?? null;
+  if (!showStrokes || widthOverride === 0) return;
   for (const { entity, seg, state } of flat.strokes) {
-    ctx.strokeStyle = state.stroke?.colour ?? color.ink;
-    ctx.lineWidth = (state.stroke?.width ?? stroke.fairDefault) * lineScale;
+    ctx.strokeStyle = colourOverride ?? state.stroke?.colour ?? color.ink;
+    ctx.lineWidth = (widthOverride ?? state.stroke?.width ?? stroke.fairDefault) * lineScale;
     ctx.lineCap = 'round';
     ctx.lineJoin = 'round';
     pathTransformedPiece(ctx, view, pivot, pose, doc, entity, seg.fromParam, seg.toParam);
@@ -716,10 +719,10 @@ const LOD_COPIES = 150;
  * scaled (`allowStale`) and redrawn sharp on release. Null when it would be too large to be worth it.
  */
 function motifSprite(doc: Doc, display: RepeatDisplay, zoom: number, detail: number, allowStale: boolean, showFills: boolean, showStrokes: boolean): Sprite | null {
-  const key = `${display.artwork}|${display.fillOpacity}|${detail}`;
+  const key = `${display.artwork}|${display.fillOpacity}|${display.strokeColour ?? ''}|${display.strokeWidth ?? ''}|${detail}`;
   if (sprite && sprite.doc === doc && (allowStale || (sprite.key === key && Math.abs(sprite.zoom / zoom - 1) < 0.005))) return sprite;
   const flat = flatMotif(doc);
-  const half = motifExtent(doc) * zoom + flat.maxStroke + 2; // CSS px
+  const half = motifExtent(doc) * zoom + (display.strokeWidth ?? flat.maxStroke) + 2; // CSS px
   const scale = effectiveDpr() * detail;
   const px = Math.ceil(half * 2 * scale);
   if (px > MAX_SPRITE_PX || px < 4) return null;
