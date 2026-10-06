@@ -32,6 +32,7 @@ const paths: Record<string, string> = {
   arc: '<circle cx="7" cy="17" r="1.6" fill="currentColor"/><path d="M19 17a12 12 0 00-10.5-11.9"/><circle cx="19" cy="17" r="1.8" fill="currentColor"/><circle cx="8.5" cy="5.1" r="1.8" fill="currentColor"/><path d="M7 17l1.5-11.9" stroke-dasharray="2 2" opacity=".5"/>',
   // Phase 5.1 item 2: Repeat's own top-bar pair, in the slots Point Targets / Points use in Construct.
   appearance: '<circle cx="12" cy="12" r="8"/><path d="M12 4a8 8 0 010 16z" fill="currentColor" opacity=".45" stroke="none"/>',
+  bookmark: '<path d="M7 4h10v16l-5-3.6L7 20z"/>',
   gridGuides: '<rect x="4" y="4" width="16" height="16" rx="2"/><path d="M12 4v16M4 12h16" opacity=".55"/><circle cx="12" cy="12" r="1.8" fill="currentColor"/>',
 };
 

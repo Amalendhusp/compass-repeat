@@ -328,16 +328,6 @@ canvas.stage {
   background: var(--ink);
   color: var(--paper);
 }
-/* Intersection: the Copies chip shows each copy's colour. */
-.copies-dots {
-  display: inline-flex;
-  gap: 3px;
-}
-.copies-dot {
-  width: 9px;
-  height: 9px;
-  border-radius: 50%;
-}
 /* Intersection: Spread, and Snapshots. */
 .spread-row {
   gap: 8px;
@@ -384,6 +374,46 @@ canvas.stage {
   background: transparent;
   color: var(--muted);
   cursor: pointer;
+}
+.copy-row .copy-remove {
+  width: 32px;
+  min-width: 32px;
+  height: 32px;
+  border: none;
+  background: transparent;
+  color: var(--muted);
+  cursor: pointer;
+}
+.copy-row .copy-remove:disabled {
+  visibility: hidden;
+}
+.copy-add {
+  font-weight: 600;
+}
+/* A small count on a top-bar icon (Intersection's Snapshots). */
+.badge-host {
+  position: relative;
+}
+.icon-badge {
+  position: absolute;
+  top: 6px;
+  right: 4px;
+  min-width: 15px;
+  height: 15px;
+  padding: 0 4px;
+  border-radius: 8px;
+  background: var(--ink);
+  color: var(--paper);
+  font-size: 10px;
+  font-weight: 600;
+  line-height: 15px;
+  text-align: center;
+  pointer-events: none;
+}
+/* Spread waits for a new Reference after the copies change. */
+.spread-row.stale .spread-value {
+  color: var(--muted);
+  font-size: 11px;
 }
 .copies-header {
   display: flex;

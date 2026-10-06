@@ -93,9 +93,15 @@ export interface RepeatSystem {
  * shown is centre + spread × (reference − centre): Spread moves centres in or out about the
  * reference group's centre — sizes and rotations never change. */
 export interface IntersectionLayout {
-  /** The starting arrangement this came from: how many constructions, and their first places. */
-  family: 'square' | 'triangle' | 'hex';
+  /** The Primary first ("0,0"), then each copy, in the order added. */
   pieces: { key: string; x: number; y: number; rotation: number }[];
+  /** Which constructions the reference was set with. When the copies present differ (one added or
+   * removed since), the reference is out of date and Spread waits for a new one. Absent in
+   * arrangements saved before copies could be added — those are always current. */
+  referenceKeys?: string[];
+  /** Legacy: the starting arrangement (Square / Triangle / Hexagon) of arrangements saved before
+   * copies could be added freely. Not used. */
+  family?: 'square' | 'triangle' | 'hex';
   /** The reference group's centre: the mean of the reference centres when the reference was set —
    * fixed until it is set again, so moving one construction never shifts where Spread pulls to. */
   centre: Vec2;

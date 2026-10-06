@@ -29,7 +29,7 @@ import { onTap } from './tap.ts';
 import { color, fairPalette, stroke } from '../render/tokens.ts';
 import { defaultLatticeVectors, isSixtyDegreeFamily, type LatticeFamily } from '../geometry/lattice.ts';
 import { rotationFractionLabel } from '../render/repeatRenderer.ts';
-import { asReference, intersectionCopies, layoutOf, seedLayout, SPREAD_MAX, SPREAD_MIN, withCopySetting, withLayout, withSpread, type IntersectionFamily } from '../geometry/intersection.ts';
+import { asReference, intersectionCopies, layoutOf, MAX_CONSTRUCTIONS, PRIMARY, referenceCurrent, sliderToSpread, SPREAD_SLIDER_MAX, spreadToSlider, withAddedCopy, withCopySetting, withLayout, withoutCopy, withSpread } from '../geometry/intersection.ts';
 import { intersectionThumbnail } from '../render/intersectionRenderer.ts';
 import { genId } from '../model/id.ts';
 import { CAPTURED_CUE_MS } from '../interaction/tools/arc.ts';
@@ -726,6 +726,29 @@ function showIntersectionCopiesPanel(anchor: HTMLElement, controller: AppControl
           row.appendChild(dot);
           row.appendChild(label);
           row.appendChild(sw);
+          // Any copy can be removed again (one Undo step); the Primary stays.
+          const remove = document.createElement('button');
+          remove.className = 'copy-remove';
+          if (copy.key === PRIMARY) {
+            remove.disabled = true;
+            remove.setAttribute('aria-hidden', 'true');
+          } else {
+            remove.setAttribute('aria-label', `Remove ${copy.label}`);
+            remove.innerHTML = '<svg width="14" height="14" viewBox="0 0 14 14" aria-hidden="true"><path d="M3 3 L11 11 M11 3 L3 11" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"/></svg>';
+            remove.addEventListener('click', (e) => {
+              e.stopPropagation();
+              const wasCurrent = referenceCurrent(layoutOf(controller.doc));
+              const next = withoutCopy(controller.doc, copy.key);
+              if (!next) return;
+              if (controller.intersectionSelected === copy.key) controller.intersectionSelected = null;
+              controller.commit((d) => {
+                d.intersection = next;
+              });
+              if (wasCurrent && !referenceCurrent(layoutOf(controller.doc))) showToast('Copies changed — set a new Reference to use Spread');
+              build();
+            });
+          }
+          row.appendChild(remove);
           menu.appendChild(row);
           if (open === copy.key) {
             const host = document.createElement('div');
@@ -738,6 +761,24 @@ function showIntersectionCopiesPanel(anchor: HTMLElement, controller: AppControl
             menu.appendChild(swatches);
           }
         }
+        // + Copy: one more construction, in a free spot with a colour of its own (up to six in all).
+        const count = intersectionCopies(controller.doc).length;
+        const add = document.createElement('button');
+        add.className = 'popover-row copy-add';
+        add.textContent = count >= MAX_CONSTRUCTIONS ? `${MAX_CONSTRUCTIONS} constructions — the most for now` : '+ Copy';
+        add.disabled = count >= MAX_CONSTRUCTIONS;
+        add.addEventListener('click', (e) => {
+          e.stopPropagation();
+          const wasCurrent = referenceCurrent(layoutOf(controller.doc));
+          const next = withAddedCopy(controller.doc);
+          if (!next) return;
+          controller.commit((d) => {
+            d.intersection = next;
+          });
+          if (wasCurrent && !referenceCurrent(layoutOf(controller.doc))) showToast('Copies changed — set a new Reference to use Spread');
+          build();
+        });
+        menu.appendChild(add);
       };
       build();
     },
@@ -1120,6 +1161,21 @@ export function buildShell(
   onTap(appearanceBtn, () => togglePanel(appearanceBtn, () => showRepeatAppearancePanel(appearanceBtn, controller)));
   leftSide.appendChild(appearanceBtn);
 
+  // Intersection: in that slot, the Copies panel — its icon a little 2×2 of the constructions' own
+  // analysis colours (the first four), so it says which copies there are without shouting.
+  const ixCopiesBtn = document.createElement('button');
+  ixCopiesBtn.className = 'icon-btn';
+  ixCopiesBtn.setAttribute('aria-label', 'Copies');
+  onTap(ixCopiesBtn, () => togglePanel(ixCopiesBtn, () => showIntersectionCopiesPanel(ixCopiesBtn, controller)));
+  leftSide.appendChild(ixCopiesBtn);
+  function refreshIxCopiesBtn(): void {
+    const copies = intersectionCopies(controller.doc).slice(0, 4);
+    const at = [[8, 8], [16, 8], [8, 16], [16, 16]] as const;
+    const dots = copies.map((c, k) => `<circle cx="${at[k]![0]}" cy="${at[k]![1]}" r="3.4" fill="${c.colour}" stroke="none"/>`).join('');
+    ixCopiesBtn.innerHTML = `<svg width="22" height="22" viewBox="0 0 24 24" aria-hidden="true">${dots}</svg>`;
+    ixCopiesBtn.setAttribute('aria-label', `Copies · ${intersectionCopies(controller.doc).length} constructions`);
+  }
+
   const segmented = document.createElement('div');
   segmented.className = 'segmented';
   const constructBtn = document.createElement('button');
@@ -1176,8 +1232,25 @@ export function buildShell(
   }
   onTap(guidesBtn, () => togglePanel(guidesBtn, () => showRepeatGuidesPanel(guidesBtn, controller, refreshGuidesBtn)));
 
+  // Intersection: in Grid / guides' slot, Snapshots — discoveries kept on purpose (not Undo history),
+  // with how many there are.
+  const ixSnapshotsBtn = document.createElement('button');
+  ixSnapshotsBtn.className = 'icon-btn badge-host';
+  ixSnapshotsBtn.innerHTML = iconSvg('bookmark');
+  const ixSnapshotsBadge = document.createElement('span');
+  ixSnapshotsBadge.className = 'icon-badge';
+  ixSnapshotsBtn.appendChild(ixSnapshotsBadge);
+  onTap(ixSnapshotsBtn, () => togglePanel(ixSnapshotsBtn, () => showIntersectionSnapshotsPanel(ixSnapshotsBtn, controller, root)));
+  function refreshIxSnapshotsBtn(): void {
+    const n = controller.doc.intersectionSnapshots?.length ?? 0;
+    ixSnapshotsBadge.textContent = n ? String(n) : '';
+    ixSnapshotsBadge.style.display = n ? '' : 'none';
+    ixSnapshotsBtn.setAttribute('aria-label', `Snapshots · ${n} saved`);
+  }
+
   rightSide.appendChild(visBtn);
   rightSide.appendChild(guidesBtn);
+  rightSide.appendChild(ixSnapshotsBtn);
   rightSide.appendChild(exportBtn);
 
   topbar.appendChild(leftSide);
@@ -1374,47 +1447,10 @@ export function buildShell(
   spaceRow.appendChild(spaceOpacityBtn);
   repeatPanel.appendChild(spaceRow);
 
-  // Intersection: in Space's place, the copies shown — each one's analysis colour and visibility.
-  const copiesRow = document.createElement('div');
-  copiesRow.className = 'space-row';
-  const copiesBtn = document.createElement('button');
-  copiesBtn.className = 'space-chip copies-chip';
-  copiesBtn.setAttribute('aria-label', 'Copies: colour and extensions');
-  onTap(copiesBtn, () => togglePanel(copiesBtn, () => showIntersectionCopiesPanel(copiesBtn, controller)));
-  copiesRow.appendChild(copiesBtn);
-  // Snapshots: discoveries kept on purpose — not Undo history.
-  const snapshotsBtn = document.createElement('button');
-  snapshotsBtn.className = 'space-chip';
-  snapshotsBtn.setAttribute('aria-label', 'Snapshots');
-  onTap(snapshotsBtn, () => togglePanel(snapshotsBtn, () => showIntersectionSnapshotsPanel(snapshotsBtn, controller, root)));
-  copiesRow.appendChild(snapshotsBtn);
-
-  // Intersection's own starting arrangement — never Repeat's lattice: choosing one starts afresh
-  // (one Undo step); it doesn't constrain anything moved afterwards.
-  const ixFamilyRow = document.createElement('div');
-  ixFamilyRow.className = 'segmented-mini';
-  ixFamilyRow.setAttribute('aria-label', 'Starting arrangement');
-  const ixFamilyBtns = new Map<IntersectionFamily, HTMLButtonElement>();
-  for (const f of [
-    { id: 'square', label: 'Square' },
-    { id: 'triangle', label: 'Triangle' },
-    { id: 'hex', label: 'Hexagon' },
-  ] as { id: IntersectionFamily; label: string }[]) {
-    const btn = document.createElement('button');
-    btn.textContent = f.label;
-    btn.addEventListener('click', () => {
-      if (layoutOf(controller.doc).family === f.id) return;
-      controller.intersectionSelected = null;
-      controller.commit((d) => {
-        d.intersection = withLayout(d, seedLayout(d, f.id));
-      });
-    });
-    ixFamilyBtns.set(f.id, btn);
-    ixFamilyRow.appendChild(btn);
-  }
-
   // Spread: centres in or out about the reference group's centre (100% = the reference); Reference
-  // makes what is shown now the reference. Sizes and rotations never change.
+  // makes what is shown now the reference. Sizes and rotations never change. Logarithmic, 25–500%,
+  // so 100% sits mid-way with fine control either side. Once a copy is added or removed, the old
+  // reference is out of date: Spread rests (and says so) until Reference is set again.
   const ixSpreadRow = document.createElement('div');
   ixSpreadRow.className = 'space-row spread-row';
   const spreadLabel = document.createElement('span');
@@ -1423,19 +1459,20 @@ export function buildShell(
   const spreadSlider = document.createElement('input');
   spreadSlider.type = 'range';
   spreadSlider.className = 'width-slider spread-slider';
-  spreadSlider.min = String(Math.round(SPREAD_MIN * 100));
-  spreadSlider.max = String(Math.round(SPREAD_MAX * 100));
+  spreadSlider.min = '0';
+  spreadSlider.max = String(SPREAD_SLIDER_MAX);
   spreadSlider.step = '1';
   spreadSlider.setAttribute('aria-label', 'Spread');
   const spreadValue = document.createElement('span');
   spreadValue.className = 'space-label spread-value';
   spreadSlider.addEventListener('input', () => {
-    controller.intersectionSpreadDraft = Number(spreadSlider.value) / 100;
-    spreadValue.textContent = `${spreadSlider.value}%`;
+    const spread = sliderToSpread(Number(spreadSlider.value));
+    controller.intersectionSpreadDraft = spread;
+    spreadValue.textContent = `${Math.round(spread * 100)}%`;
     controller.notifyView();
   });
   spreadSlider.addEventListener('change', () => {
-    const spread = Number(spreadSlider.value) / 100;
+    const spread = sliderToSpread(Number(spreadSlider.value));
     controller.intersectionSpreadDraft = null;
     if (Math.abs(spread - layoutOf(controller.doc).spread) < 1e-9) {
       controller.notify();
@@ -1461,34 +1498,22 @@ export function buildShell(
   ixSpreadRow.appendChild(spreadValue);
   ixSpreadRow.appendChild(referenceBtn);
 
-  repeatPanel.appendChild(ixFamilyRow);
   repeatPanel.appendChild(ixSpreadRow);
-  repeatPanel.appendChild(copiesRow);
 
   function refreshIntersectionRows(): void {
     const layout = layoutOf(controller.doc);
-    for (const [id, btn] of ixFamilyBtns) btn.classList.toggle('active', layout.family === id);
-    if (controller.intersectionSpreadDraft === null) {
-      spreadSlider.value = String(Math.round(layout.spread * 100));
+    const current = referenceCurrent(layout);
+    spreadSlider.disabled = !current;
+    ixSpreadRow.classList.toggle('stale', !current);
+    referenceBtn.classList.toggle('active', !current);
+    referenceBtn.title = current ? 'Make this arrangement the Spread reference (100%)' : 'Copies have changed — set a new reference to use Spread';
+    if (!current) {
+      spreadSlider.value = String(spreadToSlider(1));
+      spreadValue.textContent = 'Set ref.';
+    } else if (controller.intersectionSpreadDraft === null) {
+      spreadSlider.value = String(spreadToSlider(layout.spread));
       spreadValue.textContent = `${Math.round(layout.spread * 100)}%`;
     }
-    const n = controller.doc.intersectionSnapshots?.length ?? 0;
-    snapshotsBtn.textContent = n ? `Snapshots · ${n}` : 'Snapshots';
-  }
-
-  function refreshCopiesRow(): void {
-    const copies = intersectionCopies(controller.doc);
-    copiesBtn.replaceChildren();
-    const dots = document.createElement('span');
-    dots.className = 'copies-dots';
-    for (const c of copies) {
-      const dot = document.createElement('span');
-      dot.className = 'copies-dot';
-      dot.style.background = c.colour;
-      dots.appendChild(dot);
-    }
-    copiesBtn.appendChild(dots);
-    copiesBtn.appendChild(document.createTextNode('Copies'));
   }
 
   function refreshSpaceRow(): void {
@@ -2052,16 +2077,17 @@ export function buildShell(
     familyRow.style.display = inRepeat ? '' : 'none';
     ruleRow.style.display = inRepeat ? '' : 'none';
     spaceRow.style.display = inRepeat ? '' : 'none';
-    ixFamilyRow.style.display = inIntersection ? '' : 'none';
     ixSpreadRow.style.display = inIntersection ? '' : 'none';
-    copiesRow.style.display = inIntersection ? '' : 'none';
+    ixCopiesBtn.style.display = inIntersection ? '' : 'none';
+    ixSnapshotsBtn.style.display = inIntersection ? '' : 'none';
 
     if (placing) {
       for (const [id, btn] of familyBtns) btn.classList.toggle('active', controller.doc.repeat.family === id);
       for (const [id, btn] of ruleBtns) btn.classList.toggle('active', controller.doc.repeat.rule.kind === id);
       if (inRepeat) refreshSpaceRow();
       else {
-        refreshCopiesRow();
+        refreshIxCopiesBtn();
+        refreshIxSnapshotsBtn();
         refreshIntersectionRows();
       }
       updateRepeatStatus();
