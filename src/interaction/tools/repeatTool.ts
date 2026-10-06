@@ -10,7 +10,6 @@ import { screenToWorld, worldToScreen } from '../../app/controller.ts';
 import { contactModel, motifRadius, snapRotation, type ContactModel } from '../../geometry/lattice.ts';
 import { dist } from '../../geometry/vec.ts';
 import { computeSpaces, spaceAt } from '../../geometry/spaces.ts';
-import { constructionSpaceAt, faceContains } from '../../geometry/constructionSpace.ts';
 import { withAlpha } from '../../model/colour.ts';
 import { showToast } from '../../ui/toast.ts';
 import type { Gesture, ToolModule } from './types.ts';
@@ -204,23 +203,6 @@ function spaceTapGesture(controller: AppController, view: ViewTransform): Gestur
     onUp(sp, wasDrag) {
       if (wasDrag) return;
       const doc = controller.doc;
-      if (controller.spaceBoundary === 'construction') {
-        // Analysis only — never committed, saved or undone. A tap adds the closed region under it
-        // (so neighbouring regions can be seen as one shape); a tap on a shown region removes it.
-        const w = screenToWorld(view, sp);
-        const shown = controller.constructionSpace?.doc === doc ? controller.constructionSpace.faces : [];
-        const hit = shown.find((f) => faceContains(f, w));
-        if (hit) {
-          const faces = shown.filter((f) => f !== hit);
-          controller.constructionSpace = faces.length ? { doc, faces } : null;
-        } else {
-          const found = constructionSpaceAt(doc, w);
-          if (found.face) controller.constructionSpace = { doc, faces: [...shown, found.face] };
-          else showToast('No closed construction space here');
-        }
-        controller.notify(); // the Clear button follows
-        return;
-      }
       const topology = computeSpaces(doc);
       const hit = spaceAt(topology, screenToWorld(view, sp));
       if (!hit) {

@@ -4,7 +4,6 @@ import { cloneDoc } from '../model/doc.ts';
 import { invalidatePointFacts } from '../geometry/usage.ts';
 import type { PointRef } from '../interaction/pointref.ts';
 import type { EdgeCircle } from '../geometry/incircle.ts';
-import type { ConstructionFace } from '../geometry/constructionSpace.ts';
 
 /** Phase 5.2 item 1: Polygon is no longer a creation tool (connected Lines make any polygon);
  * existing polygon groups stay fully supported as data and as Select targets. */
@@ -311,14 +310,6 @@ export class AppController {
   /** Phase 5.6 item 19: Repeat's Space action — while on, a one-finger tap colours negative-space
    * classes instead of reaching the lattice handles. Session state, never saved. */
   spaceMode = false;
-  /** Space's boundary: Design (the saved Spaces between Fair strokes) or Construction (a temporary
-   * look at a region of the repeated construction scaffold — needs the Construction overlay).
-   * Session state, never saved. */
-  spaceBoundary: 'design' | 'construction' = 'design';
-  /** The Construction Space regions shown (tapped one by one, so neighbours can be seen together),
-   * valid only for the exact document they were found in: any commit (lattice, rule, rotation,
-   * spacing — anything) makes a new Doc, and they are no longer shown. */
-  constructionSpace: { doc: Doc; faces: ConstructionFace[] } | null = null;
   /** Mobile performance: true while two fingers pan/zoom — renderers may draw a lighter version and
    * restore full quality on release. Session state only. */
   viewGesture = false;

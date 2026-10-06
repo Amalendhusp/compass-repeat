@@ -1,6 +1,8 @@
-// Construction Space: in Repeat, with the Construction overlay on, the enclosed region of the
-// repeated construction scaffold under a tap — a temporary analysis, never artwork. Nothing here is
-// saved, coloured, undone or recorded; the caller only ever shows the face it returns.
+// Construction Space: the enclosed region of the repeated construction scaffold around a point — a
+// temporary analysis, never artwork. Nothing here is saved, coloured, undone or recorded.
+//
+// Not used at present: it was briefly offered in Repeat's Space (a Construction boundary) and taken
+// out again so Repeat stays about repetition. Kept for a forthcoming Intersection stage.
 //
 // Unlike Design Space (spaces.ts), which classifies the gaps between copies' Fair strokes once for
 // the whole periodic pattern, this works locally and only on demand: the construction of the copies

@@ -91,7 +91,7 @@ interface Source {
   entityId: string;
 }
 
-/** Vertices snapped together within `tol` (a grid lookup) — shared with Construction Space. */
+/** Vertices snapped together within `tol` (a grid lookup) — also used by geometry/constructionSpace.ts. */
 export class Arrangement {
   xs: number[] = [];
   ys: number[] = [];

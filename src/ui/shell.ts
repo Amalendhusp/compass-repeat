@@ -452,12 +452,7 @@ function showRepeatAppearancePanel(anchor: HTMLElement, controller: AppControlle
         () => display().constructionOverlay,
         (on) => {
           display().constructionOverlay = on;
-          // Construction Space needs the overlay: turning it off returns Space to Design.
-          if (!on && controller.spaceBoundary === 'construction') {
-            controller.spaceBoundary = 'design';
-            controller.constructionSpace = null;
-          }
-          controller.notify(); // the Space row too (Construction is offered only with the overlay)
+          changed();
         },
         'Shows the construction of the reference motif and its repeated copies — a guide, not artwork',
       );
@@ -1092,8 +1087,6 @@ export function buildShell(
   onTap(spaceBtn, () => {
     closeAnyPopover();
     controller.spaceMode = !controller.spaceMode;
-    controller.spaceBoundary = 'design'; // each time Space opens, it starts at Design
-    controller.constructionSpace = null;
     controller.notify();
   });
   const spaceColourBtn = document.createElement('button');
@@ -1139,66 +1132,13 @@ export function buildShell(
   spaceRow.appendChild(spaceOpacityBtn);
   repeatPanel.appendChild(spaceRow);
 
-  // While Space is on: what bounds a space — Design (the saved Spaces between Fair strokes) or
-  // Construction (a temporary look at a region of the repeated scaffold; needs the overlay).
-  const boundaryRow = document.createElement('div');
-  boundaryRow.className = 'space-row';
-  const boundaryLabel = document.createElement('span');
-  boundaryLabel.className = 'space-label';
-  boundaryLabel.textContent = 'Boundary';
-  const boundarySeg = document.createElement('div');
-  boundarySeg.className = 'segmented-mini';
-  boundarySeg.setAttribute('aria-label', 'Space boundary');
-  const BOUNDARIES: { id: AppController['spaceBoundary']; label: string }[] = [
-    { id: 'design', label: 'Design' },
-    { id: 'construction', label: 'Construction' },
-  ];
-  const boundaryBtns = new Map<AppController['spaceBoundary'], HTMLButtonElement>();
-  for (const m of BOUNDARIES) {
-    const btn = document.createElement('button');
-    btn.textContent = m.label;
-    btn.addEventListener('click', () => {
-      if (controller.spaceBoundary === m.id) return;
-      if (m.id === 'construction' && !controller.doc.repeatDisplay.constructionOverlay) return;
-      closeAnyPopover();
-      controller.spaceBoundary = m.id;
-      controller.constructionSpace = null;
-      controller.notify();
-    });
-    boundaryBtns.set(m.id, btn);
-    boundarySeg.appendChild(btn);
-  }
-  const clearRegionsBtn = document.createElement('button');
-  clearRegionsBtn.className = 'space-chip';
-  clearRegionsBtn.textContent = 'Clear';
-  clearRegionsBtn.setAttribute('aria-label', 'Clear construction regions');
-  onTap(clearRegionsBtn, () => {
-    controller.constructionSpace = null;
-    controller.notify();
-  });
-  boundaryRow.appendChild(boundaryLabel);
-  boundaryRow.appendChild(boundarySeg);
-  boundaryRow.appendChild(clearRegionsBtn);
-  repeatPanel.appendChild(boundaryRow);
-
   function refreshSpaceRow(): void {
     const on = controller.spaceMode;
     const pref = controller.doc.spaceDefaults;
-    const overlayOn = controller.doc.repeatDisplay.constructionOverlay;
-    if (controller.spaceBoundary === 'construction' && !overlayOn) controller.spaceBoundary = 'design';
-    // A Construction Space belongs to the exact document it was found in.
-    if (controller.constructionSpace && (controller.constructionSpace.doc !== controller.doc || !on || controller.spaceBoundary !== 'construction')) controller.constructionSpace = null;
-    const design = controller.spaceBoundary === 'design';
     spaceBtn.classList.toggle('active', on);
     spaceBtn.setAttribute('aria-pressed', String(on));
-    spaceColourBtn.style.display = on && design ? '' : 'none';
-    spaceOpacityBtn.style.display = on && design ? '' : 'none';
-    boundaryRow.style.display = on ? '' : 'none';
-    for (const [id, btn] of boundaryBtns) btn.classList.toggle('active', controller.spaceBoundary === id);
-    clearRegionsBtn.style.display = controller.constructionSpace ? '' : 'none';
-    const constructionBtn = boundaryBtns.get('construction')!;
-    constructionBtn.disabled = !overlayOn;
-    constructionBtn.title = overlayOn ? 'Find closed regions of the repeated construction — a guide, not artwork' : 'Turn on the Construction overlay to use this';
+    spaceColourBtn.style.display = on ? '' : 'none';
+    spaceOpacityBtn.style.display = on ? '' : 'none';
     spaceDot.classList.toggle('none', !pref.colour);
     spaceDot.style.background = pref.colour ? withAlpha(pref.colour, pref.opacity) : '';
     spaceColourBtn.setAttribute('aria-label', `Space colour ${pref.colour ?? 'no fill'}`);
@@ -1724,8 +1664,6 @@ export function buildShell(
       shownWorkspace = controller.doc.view.workspace;
       closeAnyPopover();
       controller.spaceMode = false; // Space belongs to one visit to Repeat, not the next
-      controller.spaceBoundary = 'design';
-      controller.constructionSpace = null;
     }
     constructBtn.classList.toggle('active', !inRepeat);
     repeatBtn.classList.toggle('active', inRepeat);
