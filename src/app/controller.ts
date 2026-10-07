@@ -4,6 +4,7 @@ import { cloneDoc } from '../model/doc.ts';
 import { invalidatePointFacts } from '../geometry/usage.ts';
 import type { PointRef } from '../interaction/pointref.ts';
 import type { EdgeCircle } from '../geometry/incircle.ts';
+import type { IntersectionPick, PickKind } from '../geometry/intersectionSnap.ts';
 
 /** Phase 5.2 item 1: Polygon is no longer a creation tool (connected Lines make any polygon);
  * existing polygon groups stay fully supported as data and as Select targets. */
@@ -376,6 +377,12 @@ export class AppController {
   intersectionSelected: string | null = null;
   /** Intersection: the Spread slider while it is being dragged (un-committed). */
   intersectionSpreadDraft: number | null = null;
+  /** Intersection: the lines or points picked for Snap — the reference first, then the moving one.
+   * Identities only (never positions), worked out again from the copies whenever used. Session
+   * state, never saved. */
+  intersectionPicks: IntersectionPick[] = [];
+  /** Intersection: whether a tap picks lines or points (the Snap row's switch). */
+  intersectionPickKind: PickKind = 'line';
 
   private undoStack: Doc[] = [];
   private redoStack: Doc[] = [];

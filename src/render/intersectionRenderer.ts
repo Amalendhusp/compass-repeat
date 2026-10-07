@@ -7,6 +7,11 @@
 // Construction solid, Fair a little heavier — and, where that copy's Extensions switch is on, its
 // extension geometry, dashed: each extended line as the whole line through the view, and any
 // piece set to Extension. No fills, no points.
+//
+// Picks for Snap (geometry/intersectionSnap.ts), kept quiet in a dense drawing: a picked line is
+// redrawn a little heavier over everything, the reference on a soft ink halo (or as an ink ring about
+// its point) — fixed; the moving one on a halo of its own construction's colour, with that
+// construction's rotation ring showing which construction would move.
 
 import type { Doc, Entity, Vec2 } from '../model/types.ts';
 import type { AppController, ViewTransform } from '../app/controller.ts';
@@ -15,6 +20,7 @@ import { resolveEntityGeom } from '../geometry/kernel.ts';
 import { defaultSegmentKind, deriveSegments } from '../geometry/segments.ts';
 import { motifRadius, poseArcAngle, transformPoint, type InstancePose } from '../geometry/lattice.ts';
 import { intersectionBounds, intersectionCopies, type IntersectionCopy } from '../geometry/intersection.ts';
+import { resolvePick, type ResolvedPick, type ShownLine } from '../geometry/intersectionSnap.ts';
 import { color, stroke } from './tokens.ts';
 
 type Piece = { entity: Entity; kind: 'construction' | 'extension' | 'fair'; from?: number; to?: number };
@@ -97,6 +103,12 @@ export function renderIntersection(ctx: CanvasRenderingContext2D, controller: Ap
   const copies = intersectionCopies(doc, { drag: controller.intersectionDrag, spread: controller.intersectionSpreadDraft });
   ctx.lineCap = 'round';
   ctx.lineJoin = 'round';
+  // Picks, worked out from the copies as shown right now (so they follow a live move or Spread).
+  const picks = (controller.intersectionPicks ?? []).map((pick) => resolvePick(doc, copies, pick));
+  const colourOf = (key: string) => copies.find((c) => c.key === key)?.colour ?? color.ink;
+  picks.forEach((r, n) => {
+    if (r?.kind === 'line') drawLineHalo(ctx, view, r.line, n === 0 ? color.ink : colourOf(r.line.copyKey), n === 0 ? 0.16 : 0.24, 9);
+  });
   for (const copy of copies) {
     const dashed = new Path2D();
     const solid = new Path2D();
@@ -119,11 +131,57 @@ export function renderIntersection(ctx: CanvasRenderingContext2D, controller: Ap
   }
   ctx.globalAlpha = 1;
   ctx.setLineDash([]);
+  picks.forEach((r, n) => {
+    // The picked line itself, crisp over everything else; a point's mark.
+    if (r?.kind === 'line') drawLineHalo(ctx, view, r.line, colourOf(r.line.copyKey), 1, 2.2);
+    if (r?.kind === 'point') drawPointMark(ctx, view, r, n === 0 ? color.ink : colourOf(r.carrier ?? ''), n === 0);
+  });
 
   const selected = copies.find((c) => c.key === controller.intersectionSelected);
   if (selected) drawRotationRing(ctx, doc, view, selected, controller.intersectionDrag?.key === selected.key && controller.intersectionDrag.mode === 'turn');
   ctx.restore();
   return copies.length;
+}
+
+/** A picked line's halo — its shown extent (or the whole line through the view), wide and faint —
+ * or, at full strength and narrow, the line itself redrawn over the rest. */
+function drawLineHalo(ctx: CanvasRenderingContext2D, view: ViewTransform, line: ShownLine, colour: string, alpha: number, width: number): void {
+  // A whole line: as far either way as the view reaches, about the point on it nearest the view's centre.
+  const far = Math.hypot(view.w, view.h) / view.zoom;
+  const mid = (-view.pan.x - line.p.x) * line.u.x + (-view.pan.y - line.p.y) * line.u.y;
+  const [t0, t1] = line.extent ?? [mid - far, mid + far];
+  const a = worldToScreen(view, { x: line.p.x + line.u.x * t0, y: line.p.y + line.u.y * t0 });
+  const b = worldToScreen(view, { x: line.p.x + line.u.x * t1, y: line.p.y + line.u.y * t1 });
+  ctx.save();
+  ctx.strokeStyle = colour;
+  ctx.globalAlpha = alpha;
+  ctx.lineWidth = width;
+  ctx.beginPath();
+  ctx.moveTo(a.x, a.y);
+  ctx.lineTo(b.x, b.y);
+  ctx.stroke();
+  ctx.restore();
+}
+
+/** A picked point: the reference as a small ink ring with a solid centre (fixed); the moving one as
+ * a ring in its construction's colour around a paper centre. */
+function drawPointMark(ctx: CanvasRenderingContext2D, view: ViewTransform, r: Extract<ResolvedPick, { kind: 'point' }>, colour: string, reference: boolean): void {
+  const p = worldToScreen(view, r.at);
+  ctx.save();
+  ctx.beginPath();
+  ctx.arc(p.x, p.y, 6.5, 0, Math.PI * 2);
+  ctx.fillStyle = reference ? color.ink : color.paper;
+  ctx.globalAlpha = reference ? 0.12 : 0.85;
+  ctx.fill();
+  ctx.globalAlpha = 1;
+  ctx.lineWidth = 1.6;
+  ctx.strokeStyle = colour;
+  ctx.stroke();
+  ctx.beginPath();
+  ctx.arc(p.x, p.y, 2.2, 0, Math.PI * 2);
+  ctx.fillStyle = colour;
+  ctx.fill();
+  ctx.restore();
 }
 
 /** The radius (screen px) of a construction's rotation ring — just outside its frame, as Repeat's. */
@@ -176,7 +234,7 @@ export function intersectionThumbnail(doc: Doc, size = 64): string | undefined {
   const zoom = Math.min(size / Math.max(b.maxX - b.minX, 1e-6), size / Math.max(b.maxY - b.minY, 1e-6)) * 0.92;
   const view: ViewTransform = { zoom, pan: { x: -(b.minX + b.maxX) / 2, y: -(b.minY + b.maxY) / 2 }, w: size, h: size };
   ctx.setTransform(2, 0, 0, 2, 0, 0);
-  const still = { doc, intersectionDrag: null, intersectionSpreadDraft: null, intersectionSelected: null } as unknown as AppController;
+  const still = { doc, intersectionDrag: null, intersectionSpreadDraft: null, intersectionSelected: null, intersectionPicks: [] } as unknown as AppController;
   renderIntersection(ctx, still, view);
   // A small JPEG: it's saved with the artwork, so it is kept to a few kilobytes.
   return canvas.toDataURL('image/jpeg', 0.72);

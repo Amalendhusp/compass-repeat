@@ -1897,3 +1897,44 @@ canvas.stage {
   pointer-events: none;
   white-space: pre;
 }
+/* Intersection: the Snap row, shown only once a line or point is picked — a quiet status line over
+ * the Line | Point switch and the operations it allows. */
+.snap-row {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 4px;
+}
+.snap-status {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  max-width: calc(100vw - 24px);
+  padding: 3px 9px 3px 8px;
+  border-radius: 9px;
+  background: rgba(251, 249, 245, 0.88);
+  font-size: 12px;
+  color: var(--ink);
+}
+.snap-kind button {
+  padding: 6px 10px;
+}
+.snap-text {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.snap-dot {
+  width: 10px;
+  height: 10px;
+  min-width: 10px;
+  border-radius: 50%;
+}
+.snap-op:disabled {
+  opacity: 0.38;
+  cursor: default;
+}
+.snap-clear {
+  padding: 0 10px;
+  color: var(--muted);
+}

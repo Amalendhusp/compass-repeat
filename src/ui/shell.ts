@@ -1,5 +1,5 @@
 import type { AppController, PointVisibility, SelectCandidate, ToolId, ViewTransform } from '../app/controller.ts';
-import type { Doc, EntityId, PointId, SegmentKey } from '../model/types.ts';
+import type { Doc, EntityId, PointId, SegmentKey, Vec2 } from '../model/types.ts';
 import {
   addCircleDivision,
   addSegmentDivisionPoints,
@@ -29,7 +29,9 @@ import { onTap } from './tap.ts';
 import { color, fairPalette, stroke } from '../render/tokens.ts';
 import { defaultLatticeVectors, isSixtyDegreeFamily, type LatticeFamily } from '../geometry/lattice.ts';
 import { rotationFractionLabel } from '../render/repeatRenderer.ts';
-import { asReference, intersectionCopies, layoutOf, MAX_CONSTRUCTIONS, PRIMARY, referenceCurrent, sliderToSpread, SPREAD_SLIDER_MAX, spreadToSlider, withAddedCopy, withCopySetting, withLayout, withoutCopy, withSpread } from '../geometry/intersection.ts';
+import { asReference, intersectionCopies, layoutOf, MAX_CONSTRUCTIONS, placedAt, PRIMARY, referenceCurrent, sliderToSpread, SPREAD_SLIDER_MAX, spreadToSlider, withAddedCopy, withCopySetting, withLayout, withoutCopy, withSpread } from '../geometry/intersection.ts';
+import { canMoveAgainst, convertPick, isPointPick, planSnap, resolvePick, type PickKind } from '../geometry/intersectionSnap.ts';
+import { PICK_REACH_PX } from '../interaction/tools/intersectionTool.ts';
 import { intersectionThumbnail } from '../render/intersectionRenderer.ts';
 import { genId } from '../model/id.ts';
 import { CAPTURED_CUE_MS } from '../interaction/tools/arc.ts';
@@ -1498,7 +1500,153 @@ export function buildShell(
   ixSpreadRow.appendChild(spreadValue);
   ixSpreadRow.appendChild(referenceBtn);
 
+  // Snap: only once something is picked (a tap on a line or point — see intersectionTool). Two
+  // lines offer Parallel (turn only) and Join (slide only, once parallel); two points offer Snap
+  // (slide only). Each moves just the second pick's construction, as one Undo step. The Line |
+  // Point switch says what taps pick, and turns what is picked into the other kind where it was
+  // tapped (a line into the point on it there; a point into the line through it).
+  const ixSnapRow = document.createElement('div');
+  ixSnapRow.className = 'snap-row';
+  const snapStatus = document.createElement('div');
+  snapStatus.className = 'space-label snap-status';
+  const snapDot = document.createElement('span');
+  snapDot.className = 'snap-dot';
+  const snapText = document.createElement('span');
+  snapText.className = 'snap-text';
+  snapStatus.appendChild(snapDot);
+  snapStatus.appendChild(snapText);
+  const snapControls = document.createElement('div');
+  snapControls.className = 'space-row';
+  const kindSeg = document.createElement('div');
+  kindSeg.className = 'segmented-mini snap-kind';
+  const kindBtns = new Map<PickKind, HTMLButtonElement>();
+  for (const [kind, label] of [
+    ['line', 'Line'],
+    ['point', 'Point'],
+  ] as const) {
+    const b = document.createElement('button');
+    b.textContent = label;
+    b.setAttribute('aria-label', `Pick ${label.toLowerCase()}s`);
+    onTap(b, () => setPickKind(kind));
+    kindBtns.set(kind, b);
+    kindSeg.appendChild(b);
+  }
+  /** Taps pick `kind` from now on; what is picked becomes that kind where it was tapped. */
+  function setPickKind(kind: PickKind): void {
+    if (controller.intersectionPickKind === kind) return;
+    controller.intersectionPickKind = kind;
+    const copies = intersectionCopies(controller.doc);
+    const reach = (PICK_REACH_PX * 2) / opts.getView().zoom;
+    const [reference, moving] = controller.intersectionPicks;
+    const ref = reference ? convertPick(controller.doc, copies, reference, kind, reach) : null;
+    const mov = ref && moving ? convertPick(controller.doc, copies, moving, kind, reach, (p) => canMoveAgainst(ref, p)) : null;
+    const picks = ref ? (mov ? [ref, mov] : [ref]) : [];
+    if (picks.length < controller.intersectionPicks.length) showToast(kind === 'point' ? 'No point there — tap one' : 'No line there — tap one');
+    controller.intersectionPicks = picks;
+    controller.notify();
+  }
+  const snapChip = (label: string, title: string) => {
+    const b = document.createElement('button');
+    b.className = 'space-chip snap-op';
+    b.textContent = label;
+    b.title = title;
+    return b;
+  };
+  const parallelBtn = snapChip('Parallel', 'Turn the second line’s construction until its line is parallel to the first');
+  const joinBtn = snapChip('Join', 'Slide the second line’s construction across until its line lies on the first');
+  const pointSnapBtn = snapChip('Snap', 'Slide the second point’s construction until its point lies on the first');
+  const snapClearBtn = document.createElement('button');
+  snapClearBtn.className = 'space-chip snap-clear';
+  snapClearBtn.setAttribute('aria-label', 'Clear the selection');
+  snapClearBtn.innerHTML = '<svg width="12" height="12" viewBox="0 0 14 14" aria-hidden="true"><path d="M3 3 L11 11 M11 3 L3 11" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"/></svg>';
+  /** Moves one construction as shown — turned to `rotation`, slid by `shift` — as one step. */
+  const placeCopy = (key: string, shift: Vec2, rotation: number | null) => {
+    const copy = intersectionCopies(controller.doc).find((c) => c.key === key);
+    if (!copy) return;
+    const at = { x: copy.pose.translate.x + shift.x, y: copy.pose.translate.y + shift.y };
+    controller.commit((d) => {
+      d.intersection = withLayout(d, placedAt(layoutOf(d), key, at, rotation ?? copy.pose.rotation));
+    });
+  };
+  const currentPlan = () => {
+    const [reference, moving] = controller.intersectionPicks;
+    return reference && moving ? planSnap(controller.doc, intersectionCopies(controller.doc), reference, moving) : null;
+  };
+  onTap(parallelBtn, () => {
+    const plan = currentPlan();
+    if (plan?.kind !== 'lines' || plan.parallel) return;
+    const copy = intersectionCopies(controller.doc).find((c) => c.key === plan.moving);
+    if (copy) placeCopy(plan.moving, { x: 0, y: 0 }, copy.pose.rotation + plan.turn);
+  });
+  onTap(joinBtn, () => {
+    const plan = currentPlan();
+    if (plan?.kind === 'lines' && plan.shift && !plan.joined) placeCopy(plan.moving, plan.shift, null);
+  });
+  onTap(pointSnapBtn, () => {
+    const plan = currentPlan();
+    if (plan?.kind === 'points' && !plan.snapped) placeCopy(plan.moving, plan.shift, null);
+  });
+  onTap(snapClearBtn, () => {
+    controller.intersectionPicks = [];
+    controller.notify();
+  });
+  ixSnapRow.appendChild(snapStatus);
+  snapControls.appendChild(kindSeg);
+  snapControls.appendChild(parallelBtn);
+  snapControls.appendChild(joinBtn);
+  snapControls.appendChild(pointSnapBtn);
+  snapControls.appendChild(snapClearBtn);
+  ixSnapRow.appendChild(snapControls);
+  repeatPanel.appendChild(ixSnapRow);
+
   repeatPanel.appendChild(ixSpreadRow);
+
+  /** The Snap row for the current picks — after first dropping any pick that no longer exists
+   * (never kept at an old position). */
+  function refreshSnapRow(): void {
+    const copies = intersectionCopies(controller.doc);
+    const picks = controller.intersectionPicks;
+    if (picks.length > 0) {
+      const kept = resolvePick(controller.doc, copies, picks[0]!) ? (picks[1] && !resolvePick(controller.doc, copies, picks[1]) ? [picks[0]!] : picks) : [];
+      if (kept.length !== picks.length) {
+        controller.intersectionPicks = kept;
+        if (controller.intersectionSelected && !copies.some((c) => c.key === controller.intersectionSelected)) controller.intersectionSelected = null;
+        showToast(kept.length === 0 ? 'Selection cleared — it is no longer there' : 'Second pick cleared — it is no longer there');
+      }
+    }
+    const [reference, moving] = controller.intersectionPicks;
+    ixSnapRow.style.display = reference ? '' : 'none';
+    if (!reference) return;
+    const plan = moving ? planSnap(controller.doc, copies, reference, moving) : null;
+    const labelOf = (key: string) => copies.find((c) => c.key === key)?.label ?? '';
+    const colourOf = (key: string) => copies.find((c) => c.key === key)?.colour ?? '';
+    const lines = plan ? plan.kind === 'lines' : !isPointPick(reference);
+    let text: string;
+    let dot = '';
+    for (const [kind, b] of kindBtns) b.classList.toggle('active', controller.intersectionPickKind === kind);
+    if (!plan) text = isPointPick(reference) ? 'Reference point · now tap a point to move' : 'Reference line · now tap a line to move';
+    else if (plan.kind === 'none') text = plan.note;
+    else {
+      dot = colourOf(plan.moving);
+      const who = labelOf(plan.moving);
+      if (plan.kind === 'points') text = plan.snapped ? 'Points coincide' : `Snap moves ${who}`;
+      else if (plan.joined) text = 'Lines joined';
+      else if (plan.parallel) text = `Parallel — Join moves ${who}`;
+      else {
+        const deg = Math.abs((plan.turn * 180) / Math.PI);
+        text = `Parallel turns ${who} ${deg < 0.05 ? '<0.1' : deg.toFixed(1)}°`;
+      }
+    }
+    snapText.textContent = text;
+    snapDot.style.display = dot ? '' : 'none';
+    snapDot.style.background = dot;
+    parallelBtn.style.display = lines && plan ? '' : 'none';
+    joinBtn.style.display = lines && plan ? '' : 'none';
+    pointSnapBtn.style.display = !lines && plan ? '' : 'none';
+    parallelBtn.disabled = plan?.kind !== 'lines' || plan.parallel;
+    joinBtn.disabled = plan?.kind !== 'lines' || !plan.parallel || plan.joined;
+    pointSnapBtn.disabled = plan?.kind !== 'points' || plan.snapped;
+  }
 
   function refreshIntersectionRows(): void {
     const layout = layoutOf(controller.doc);
@@ -2050,6 +2198,8 @@ export function buildShell(
       shownWorkspace = controller.doc.view.workspace;
       closeAnyPopover();
       controller.spaceMode = false; // Space belongs to one visit to Repeat, not the next
+      controller.intersectionPicks = []; // nor do Intersection's picks outlive a visit
+      controller.intersectionPickKind = 'line';
     }
     constructBtn.classList.toggle('active', !placing);
     intersectionBtn.classList.toggle('active', inIntersection);
@@ -2078,6 +2228,7 @@ export function buildShell(
     ruleRow.style.display = inRepeat ? '' : 'none';
     spaceRow.style.display = inRepeat ? '' : 'none';
     ixSpreadRow.style.display = inIntersection ? '' : 'none';
+    if (!inIntersection) ixSnapRow.style.display = 'none';
     ixCopiesBtn.style.display = inIntersection ? '' : 'none';
     ixSnapshotsBtn.style.display = inIntersection ? '' : 'none';
 
@@ -2089,6 +2240,7 @@ export function buildShell(
         refreshIxCopiesBtn();
         refreshIxSnapshotsBtn();
         refreshIntersectionRows();
+        refreshSnapRow();
       }
       updateRepeatStatus();
       return;

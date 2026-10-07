@@ -1,20 +1,29 @@
 // Intersection's single always-on tool: every construction can be moved and turned on its own.
 // One finger on a construction drags it (and selects it); on the selected construction's ring it
 // turns it about its own centre — with Repeat's rotation ring feel and snapping to the same nice
-// fractions of a turn. A tap selects; a tap on empty canvas clears the selection. Two fingers are
-// pan/zoom, as everywhere (claimed upstream in PointerManager). Each move or turn is one Undo step.
+// fractions of a turn. Two fingers are pan/zoom, as everywhere (claimed upstream in PointerManager).
+// Each move or turn is one Undo step. Moving is always free: nothing ever pulls a construction.
+//
+// A tap (a press that never leaves the drag slop) picks geometry for an explicit Snap
+// (geometry/intersectionSnap.ts): the line — or, with the Snap row's switch on Point, the point —
+// under the finger. Choosing by kind rather than by distance matters: in a dense construction there
+// is a crossing every pixel or two along every line. A tap inside a construction away from its
+// lines selects the construction; a tap on empty canvas clears both.
 
 import type { Vec2 } from '../../model/types.ts';
 import type { AppController, ViewTransform } from '../../app/controller.ts';
-import { worldToScreen } from '../../app/controller.ts';
+import { screenToWorld, worldToScreen } from '../../app/controller.ts';
 import { motifRadius, snapRotation } from '../../geometry/lattice.ts';
 import { dist } from '../../geometry/vec.ts';
 import { intersectionCopies, layoutOf, placedAt, withLayout, type IntersectionCopy } from '../../geometry/intersection.ts';
+import { canMoveAgainst, pickAtTap, pickCarrier, samePick, withPick, type IntersectionPick } from '../../geometry/intersectionSnap.ts';
 import { ringRadius } from '../../render/intersectionRenderer.ts';
 import type { Gesture, ToolModule } from './types.ts';
 
 const RING_HIT_BAND = 22; // px either side of the ring's own radius, as Repeat's
-const DRAG_SLOP_PX = 6; // as Repeat: a press that stays within this moves nothing
+const DRAG_SLOP_PX = 6; // as Repeat: a press that stays within this moves nothing — it's a tap
+/** How close (px) a tap must be to pick a line or point. */
+export const PICK_REACH_PX = 14;
 
 function centreOf(controller: AppController, view: ViewTransform, copy: IntersectionCopy): Vec2 {
   const pivot = controller.doc.frame.origin;
@@ -27,13 +36,14 @@ function commitPlacement(controller: AppController, key: string, at: Vec2, rotat
   });
 }
 
-function moveGesture(controller: AppController, view: ViewTransform, copy: IntersectionCopy, down: Vec2): Gesture {
+function moveGesture(controller: AppController, view: ViewTransform, copy: IntersectionCopy, down: Vec2, onTap: () => void): Gesture {
   const start = copy.pose.translate;
   let moving = false;
   return {
     onMove(sp) {
       if (!moving && dist(sp, down) <= DRAG_SLOP_PX) return;
       moving = true;
+      controller.intersectionSelected = copy.key;
       controller.intersectionDrag = { key: copy.key, x: start.x + (sp.x - down.x) / view.zoom, y: start.y + (sp.y - down.y) / view.zoom, rotation: copy.pose.rotation, mode: 'move' };
       controller.notifyView();
     },
@@ -41,7 +51,7 @@ function moveGesture(controller: AppController, view: ViewTransform, copy: Inter
       const drag = controller.intersectionDrag;
       controller.intersectionDrag = null;
       if (moving && drag) commitPlacement(controller, copy.key, { x: drag.x, y: drag.y }, drag.rotation);
-      else controller.notify();
+      else onTap();
     },
     onCancel() {
       controller.intersectionDrag = null;
@@ -66,7 +76,10 @@ function turnGesture(controller: AppController, view: ViewTransform, copy: Inter
       const drag = controller.intersectionDrag;
       controller.intersectionDrag = null;
       if (moving && drag && drag.rotation !== copy.pose.rotation) commitPlacement(controller, copy.key, copy.pose.translate, drag.rotation);
-      else controller.notify();
+      else {
+        if (!moving) pickAt(controller, view, down); // a tap on the ring may still be on a line
+        controller.notify();
+      }
     },
     onCancel() {
       controller.intersectionDrag = null;
@@ -99,19 +112,47 @@ export const intersectionTool: ToolModule = {
       }
     }
     if (hit) {
-      controller.intersectionSelected = hit.key;
-      controller.notifyView();
-      return moveGesture(controller, view, hit, sp);
+      const body = hit;
+      return moveGesture(controller, view, body, sp, () => {
+        // A tap on a construction: its line or point if the finger is on one, else the construction.
+        if (!pickAt(controller, view, sp)) controller.intersectionSelected = body.key;
+        controller.notify();
+      });
     }
-    // Empty canvas: a tap clears the selection.
+    // Outside every construction: a tap picks an extension line or a crossing out there, or —
+    // on empty canvas — clears the picks and the selection.
     return {
       onMove() {},
       onUp(_sp, wasDrag) {
-        if (wasDrag || !controller.intersectionSelected) return;
-        controller.intersectionSelected = null;
-        controller.notifyView();
+        if (wasDrag) return;
+        if (!pickAt(controller, view, sp)) {
+          if (!controller.intersectionSelected && controller.intersectionPicks.length === 0) return;
+          controller.intersectionSelected = null;
+          controller.intersectionPicks = [];
+        }
+        controller.notify();
       },
       onCancel() {},
     };
   },
 };
+
+/** The line or point under a tap at `sp`, if any — once there is a reference, one that can move
+ * against it first (or the picks themselves, to un-pick them). */
+function pickUnder(controller: AppController, view: ViewTransform, sp: Vec2): IntersectionPick | null {
+  const [reference, moving] = controller.intersectionPicks;
+  const accept = (p: IntersectionPick) => !reference || samePick(reference, p) || (!!moving && samePick(moving, p)) || canMoveAgainst(reference, p);
+  return pickAtTap(controller.doc, intersectionCopies(controller.doc), screenToWorld(view, sp), PICK_REACH_PX / view.zoom, controller.intersectionPickKind, accept);
+}
+
+/** Picks what is under a tap (see withPick); the construction that would move — else the one
+ * picked — becomes the selected one, so its ring shows which it is. False if nothing is there. */
+function pickAt(controller: AppController, view: ViewTransform, sp: Vec2): boolean {
+  const pick = pickUnder(controller, view, sp);
+  if (!pick) return false;
+  controller.intersectionPicks = withPick(controller.intersectionPicks, pick);
+  const [reference, moving] = controller.intersectionPicks;
+  const owner = moving ?? reference;
+  controller.intersectionSelected = owner ? pickCarrier(owner) : null;
+  return true;
+}
