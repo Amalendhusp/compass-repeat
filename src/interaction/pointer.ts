@@ -24,6 +24,18 @@ const WHEEL_ZOOM_RATE = 0.01;
 const WHEEL_ZOOM_CLAMP = 40;
 const WHEEL_IDLE_MS = 140;
 
+/** Something that takes a whole touch over — every finger, from first down to last up — instead of
+ * the tools and the camera (the reference's Transform mode, interaction/referenceTransform.ts). */
+export interface PointerTakeover {
+  /** The fingers now down (canvas px, in the order they went down), whenever one goes down, moves
+   * or lifts. */
+  update(points: Vec2[], phase: 'down' | 'move' | 'up'): void;
+  /** The last finger lifted. */
+  end(): void;
+  /** The browser or OS took the touch away: nothing may be kept. */
+  cancel(): void;
+}
+
 interface PointerRecord {
   x: number;
   y: number;
@@ -59,6 +71,10 @@ export class PointerManager {
   private lastPinchDist = 0;
   /** Phase 5.12a: the state as it was when the first finger of the current touch went down. */
   private before: GestureSnapshot | null = null;
+  /** Asked at each touch's first finger: whether something takes the whole touch over. */
+  getTakeover: () => PointerTakeover | null = () => null;
+  /** The current touch's takeover, if it has one. */
+  private takeover: PointerTakeover | null = null;
 
   constructor(
     canvas: HTMLCanvasElement,
@@ -180,6 +196,11 @@ export class PointerManager {
     return { x: x / n, y: y / n };
   }
 
+  /** Every finger down, in the order they went down. */
+  private points(): Vec2[] {
+    return [...this.active.values()].map((r) => ({ x: r.x, y: r.y }));
+  }
+
   private pinchDistance(): number {
     const pts = [...this.active.values()];
     if (pts.length < 2) return 0;
@@ -199,12 +220,22 @@ export class PointerManager {
     // place, it would make every later touch count as a second finger — pan/zoom, never a tool —
     // until reload. Drop it and start clean.
     if (e.isPrimary && this.active.size > 0) {
+      this.takeover?.cancel();
+      this.takeover = null;
       this.gesture?.onCancel();
       this.gesture = null;
       this.active.clear();
       this.mode = 'idle';
       this.session = null;
       this.controller.viewGesture = false;
+    }
+    // A touch taken over (the reference's Transform mode) goes to it whole — never to a tool, the
+    // camera, or the two-/three-finger undo/redo taps.
+    if (this.active.size === 0) this.takeover = this.getTakeover();
+    if (this.takeover) {
+      this.active.set(e.pointerId, { x, y, startX: x, startY: y, maxTravel: 0 });
+      this.takeover.update(this.points(), 'down');
+      return;
     }
     // Phase 5.12a: the first finger of a touch records everything its gesture may change, before
     // anything does, so a pointercancel can put it all back.
@@ -245,6 +276,10 @@ export class PointerManager {
     rec.x = x;
     rec.y = y;
     rec.maxTravel = Math.max(rec.maxTravel, Math.hypot(x - rec.startX, y - rec.startY));
+    if (this.takeover) {
+      this.takeover.update(this.points(), 'move');
+      return;
+    }
     if (this.session) this.session.maxTravel = Math.max(this.session.maxTravel, rec.maxTravel);
 
     if (this.mode === 'single') {
@@ -301,6 +336,14 @@ export class PointerManager {
     }
     this.active.delete(e.pointerId);
     const { x, y } = this.toLocal(e);
+    if (this.takeover) {
+      if (this.active.size > 0) this.takeover.update(this.points(), 'up');
+      else {
+        this.takeover.end();
+        this.takeover = null;
+      }
+      return;
+    }
 
     if (this.mode === 'single') {
       const wasDrag = rec.maxTravel > TAP_MOVE_THRESHOLD;
@@ -347,6 +390,12 @@ export class PointerManager {
       }
     }
     const wasSingle = this.mode === 'single';
+    if (this.takeover) {
+      this.takeover.cancel();
+      this.takeover = null;
+      this.active.clear();
+      return;
+    }
     this.gesture?.onCancel();
     this.gesture = null;
     this.active.clear();

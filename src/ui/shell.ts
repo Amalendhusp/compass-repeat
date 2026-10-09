@@ -32,9 +32,9 @@ import { rotationFractionLabel } from '../render/repeatRenderer.ts';
 import { asReference, intersectionCopies, layoutOf, MAX_CONSTRUCTIONS, placedAt, PRIMARY, referenceCurrent, sliderToSpread, SPREAD_SLIDER_MAX, spreadToSlider, withAddedCopy, withCopySetting, withLayout, withoutCopy, withSpread } from '../geometry/intersection.ts';
 import { canMoveAgainst, convertPick, isPointPick, planSnap, resolvePick, type PickKind } from '../geometry/intersectionSnap.ts';
 import { PICK_REACH_PX } from '../interaction/tools/intersectionTool.ts';
-import { listReferences, type ReferenceRecord } from '../persist/referenceStore.ts';
+import { artworksUsing, deleteReference, listReferences, type ReferenceRecord } from '../persist/referenceStore.ts';
 import { importReference, ReferenceImportError } from '../reference/importReference.ts';
-import { initialUnderlay, onUnderlayImage, underlayImage, underlayViewOf, withUnderlayView } from '../render/underlay.ts';
+import { forgetUnderlayImage, initialUnderlay, onUnderlayImage, underlayImage, underlayViewOf, withUnderlayView } from '../render/underlay.ts';
 import { intersectionThumbnail } from '../render/intersectionRenderer.ts';
 import { genId } from '../model/id.ts';
 import { CAPTURED_CUE_MS } from '../interaction/tools/arc.ts';
@@ -806,22 +806,58 @@ const WORKSPACE_NAMES = { construct: 'Construct', intersection: 'Intersection', 
 
 /**
  * The Reference panel: the artwork's reference (shown or hidden, its strength and the artwork's
- * over it, in this workspace — viewing only, never Undo), and the Reference Library (every
- * imported image, as thumbnails; tapping one makes it this artwork's reference — one Undo step).
+ * over it, in this workspace — viewing only, never Undo — and Transform), and the Reference Library
+ * (every imported image, as thumbnails; tapping one makes it this artwork's reference — one Undo
+ * step; Edit offers to delete one from the library).
  */
-function showReferencePanel(anchor: HTMLElement, controller: AppController, onChange: () => void): void {
+function showReferencePanel(anchor: HTMLElement, controller: AppController, root: HTMLElement, hooks: { onChange: () => void; startTransform: () => void }): void {
+  const onChange = hooks.onChange;
   mountPopover(
     anchor,
     (menu) => {
       menu.classList.add('reference-panel');
       let library: ReferenceRecord[] | null = null;
       let adding = false;
+      let editing = false;
       const ws = () => controller.doc.view.workspace;
       const setView = (patch: Parameters<typeof withUnderlayView>[2]) => {
         // A view, like the camera: saved with the artwork, never an Undo step or a recorded change.
         controller.doc.underlayView = withUnderlayView(controller.doc, ws(), patch);
         controller.notifyView();
         onChange();
+      };
+      /** Deleting from the library: never the artworks — those that use it keep their placement
+       * for it and show "Reference missing" (removable or replaceable there). */
+      const confirmDelete = async (r: ReferenceRecord) => {
+        const doc = controller.doc;
+        let users: string[];
+        try {
+          users = await artworksUsing(r.id, doc);
+        } catch {
+          showToast('Couldn’t check which artworks use it');
+          return;
+        }
+        const body =
+          users.length === 0
+            ? 'No artwork uses it. It will be removed from this device.'
+            : `It is used by ${users.length === 1 ? '1 artwork' : `${users.length} artworks`}${users.length <= 3 ? ` (${users.join(', ')})` : ''}. Those artworks keep their place for it and will show “Reference missing”.`;
+        openConfirmSheet(root, {
+          title: 'Delete this reference?',
+          body,
+          confirmLabel: 'Delete',
+          onConfirm: () => {
+            deleteReference(r.id)
+              .then(async () => {
+                forgetUnderlayImage(r.id);
+                library = await listReferences().catch(() => (library ?? []).filter((x) => x.id !== r.id));
+                if (library.length === 0) editing = false;
+                showToast('Reference deleted');
+                onChange();
+                if (menu.isConnected) build();
+              })
+              .catch(() => showToast('Couldn’t delete the reference'));
+          },
+        });
       };
       const build = () => {
         menu.replaceChildren();
@@ -867,6 +903,17 @@ function showReferencePanel(anchor: HTMLElement, controller: AppController, onCh
             panelSliderRow(menu, 'Reference', { min: 0, max: 100, step: 1, value: Math.round(v.referenceOpacity * 100), format: (x) => `${x}%`, onInput: (x) => setView({ referenceOpacity: x / 100 }) });
             panelSliderRow(menu, 'Artwork', { min: 5, max: 100, step: 1, value: Math.round(v.artworkOpacity * 100), format: (x) => `${x}%`, onInput: (x) => setView({ artworkOpacity: x / 100 }) });
           }
+          if (!missing) {
+            // Transform: the canvas's fingers move, scale and turn the reference until Done.
+            const transform = document.createElement('button');
+            transform.className = 'popover-row reference-transform';
+            transform.textContent = 'Transform…';
+            transform.addEventListener('click', (e) => {
+              e.stopPropagation();
+              hooks.startTransform();
+            });
+            menu.appendChild(transform);
+          }
           const remove = document.createElement('button');
           remove.className = 'popover-row reference-remove';
           remove.textContent = 'Remove from artwork';
@@ -883,7 +930,22 @@ function showReferencePanel(anchor: HTMLElement, controller: AppController, onCh
           divider.className = 'popover-divider';
           menu.appendChild(divider);
         }
-        popoverSectionLabel(menu, 'Reference Library');
+        const libHead = document.createElement('div');
+        libHead.className = 'reference-library-head';
+        popoverSectionLabel(libHead, 'Reference Library');
+        if (library?.length) {
+          const edit = document.createElement('button');
+          edit.className = 'reference-edit';
+          edit.textContent = editing ? 'Done' : 'Edit';
+          edit.setAttribute('aria-pressed', String(editing));
+          edit.addEventListener('click', (e) => {
+            e.stopPropagation();
+            editing = !editing;
+            build();
+          });
+          libHead.appendChild(edit);
+        }
+        menu.appendChild(libHead);
         const grid = document.createElement('div');
         grid.className = 'reference-grid';
         if (!library) {
@@ -906,13 +968,29 @@ function showReferencePanel(anchor: HTMLElement, controller: AppController, onCh
           img.src = thumbUrl(r);
           img.alt = '';
           b.appendChild(img);
+          if (editing) {
+            b.classList.add('editing');
+            b.setAttribute('aria-label', `Delete reference ${r.name}`);
+            const x = document.createElement('span');
+            x.className = 'reference-delete-badge';
+            x.innerHTML = '<svg width="10" height="10" viewBox="0 0 14 14" aria-hidden="true"><path d="M3 3 L11 11 M11 3 L3 11" stroke="currentColor" stroke-width="2" stroke-linecap="round"/></svg>';
+            b.appendChild(x);
+          }
           b.addEventListener('click', (e) => {
             e.stopPropagation();
+            if (editing) {
+              void confirmDelete(r);
+              return;
+            }
             if (controller.doc.underlay?.refId === r.id) return;
             // Choosing (or replacing) the reference is one Undo step; it starts at the same place
-            // whichever workspace it is chosen in (underlay.ts — initialUnderlay).
+            // whichever workspace it is chosen in (underlay.ts — initialUnderlay) — except that a
+            // reference replacing a missing one takes over its placement, proportions apart.
+            const old = controller.doc.underlay;
+            const replacingMissing = !!old && (!library?.some((x) => x.id === old.refId) || underlayImage(old.refId).state === 'missing');
             controller.commit((d) => {
-              d.underlay = initialUnderlay(d, r);
+              const fresh = initialUnderlay(d, r);
+              d.underlay = replacingMissing && old ? { ...old, centre: { ...old.centre }, refId: fresh.refId, aspect: fresh.aspect } : fresh;
             });
             onChange();
             build();
@@ -1499,15 +1577,60 @@ export function buildShell(
     referenceEyeBtn.setAttribute('aria-label', shown ? 'Hide reference' : 'Show reference');
     referenceEyeBtn.setAttribute('aria-pressed', String(shown));
   }
+  const openReferencePanel = () => showReferencePanel(referencePanelBtn, controller, root, { onChange: refreshReferenceButtons, startTransform });
   referenceEyeBtn.addEventListener('click', () => {
     const shown = underlayViewOf(controller.doc, controller.doc.view.workspace).visible;
     controller.doc.underlayView = withUnderlayView(controller.doc, controller.doc.view.workspace, { visible: !shown });
+    // A hidden reference can't be moved: hiding it ends Transform.
+    if (shown) setReferenceTransform(false);
     controller.notifyView();
+    // No reference (removed, undone, or its image gone): nothing to transform.
+    if (controller.referenceTransform && (!controller.doc.underlay || underlayImage(controller.doc.underlay.refId).state === 'missing')) setReferenceTransform(false);
     refreshReferenceButtons();
     // An open Reference panel follows.
-    if (openPopoverAnchor === referencePanelBtn) showReferencePanel(referencePanelBtn, controller, refreshReferenceButtons);
+    if (openPopoverAnchor === referencePanelBtn) openReferencePanel();
   });
-  onTap(referencePanelBtn, () => togglePanel(referencePanelBtn, () => showReferencePanel(referencePanelBtn, controller, refreshReferenceButtons)));
+  onTap(referencePanelBtn, () => togglePanel(referencePanelBtn, openReferencePanel));
+
+  // Reference Transform: an explicit mode, plainly announced, with an obvious way out. While on,
+  // every finger on the canvas moves the reference (main.ts → referenceTakeover); Done locks it, and
+  // the tools and the camera have the canvas again.
+  const transformBar = document.createElement('div');
+  transformBar.className = 'transform-bar';
+  transformBar.style.display = 'none';
+  const transformText = document.createElement('div');
+  transformText.className = 'transform-text';
+  const transformTitle = document.createElement('span');
+  transformTitle.className = 'transform-title';
+  transformTitle.textContent = 'Reference · Transform';
+  const transformHint = document.createElement('span');
+  transformHint.className = 'transform-hint';
+  transformHint.textContent = 'Drag to move · two fingers to scale and turn';
+  transformText.appendChild(transformTitle);
+  transformText.appendChild(transformHint);
+  const transformDone = document.createElement('button');
+  transformDone.className = 'space-chip active transform-done';
+  transformDone.textContent = 'Done';
+  transformDone.setAttribute('aria-label', 'Done — lock the reference');
+  onTap(transformDone, () => setReferenceTransform(false));
+  transformBar.appendChild(transformText);
+  transformBar.appendChild(transformDone);
+  function setReferenceTransform(on: boolean): void {
+    if (controller.referenceTransform === on) return;
+    controller.referenceTransform = on;
+    controller.underlayDraft = null;
+    transformBar.style.display = on ? '' : 'none';
+    referencePanelBtn.classList.toggle('transforming', on);
+    controller.notifyView();
+  }
+  function startTransform(): void {
+    closeAnyPopover();
+    const ws = controller.doc.view.workspace;
+    // What is being moved must be seen.
+    if (!underlayViewOf(controller.doc, ws).visible) controller.doc.underlayView = withUnderlayView(controller.doc, ws, { visible: true });
+    setReferenceTransform(true);
+    refreshReferenceButtons();
+  }
   const utilRight = document.createElement('div');
   utilRight.className = 'util-right';
   utilRight.appendChild(referenceEyeBtn);
@@ -1896,6 +2019,7 @@ export function buildShell(
   }
 
 
+  overlay.appendChild(transformBar);
   overlay.appendChild(utilRow);
   overlay.appendChild(repeatPanel);
   overlay.appendChild(contextSlot);
@@ -2418,6 +2542,7 @@ export function buildShell(
       controller.spaceMode = false; // Space belongs to one visit to Repeat, not the next
       controller.intersectionPicks = []; // nor do Intersection's picks outlive a visit
       controller.intersectionPickKind = 'line';
+      setReferenceTransform(false); // Transform is locked again on leaving a workspace
     }
     constructBtn.classList.toggle('active', !placing);
     intersectionBtn.classList.toggle('active', inIntersection);

@@ -116,16 +116,17 @@ export interface ScreenLayers {
   artworkOpacity: number;
 }
 
-/** What a workspace's screen frame draws beyond the artwork itself. While the reference isn't
- * showing (none chosen, hidden, or missing) the artwork is always shown at full strength. */
-export function screenLayers(doc: Doc, ws: Workspace): ScreenLayers {
+/** What a workspace's screen frame draws beyond the artwork itself — the reference where it is, or
+ * where a Transform touch is moving it (`draft`). While the reference isn't showing (none chosen,
+ * hidden, or missing) the artwork is always shown at full strength. */
+export function screenLayers(doc: Doc, ws: Workspace, draft?: Underlay | null): ScreenLayers {
   const v = underlayViewOf(doc, ws);
   const showing = underlayShowing(doc, ws);
-  return { underlay: (ctx, view) => drawUnderlay(ctx, doc, view, ws), artworkOpacity: showing ? v.artworkOpacity : 1 };
+  return { underlay: (ctx, view) => drawUnderlay(ctx, doc, view, ws, draft), artworkOpacity: showing ? v.artworkOpacity : 1 };
 }
 
-export function drawUnderlay(ctx: CanvasRenderingContext2D, doc: Doc, view: ViewTransform, ws: Workspace): void {
-  const u = doc.underlay;
+export function drawUnderlay(ctx: CanvasRenderingContext2D, doc: Doc, view: ViewTransform, ws: Workspace, draft?: Underlay | null): void {
+  const u = draft ?? doc.underlay;
   if (!u) return;
   const v = underlayViewOf(doc, ws);
   if (!v.visible || v.referenceOpacity <= 0) return;
@@ -145,6 +146,40 @@ export function drawUnderlay(ctx: CanvasRenderingContext2D, doc: Doc, view: View
   if (u.rotation) ctx.rotate(u.rotation);
   ctx.drawImage(level.source, -w / 2, -h / 2, w, h);
   ctx.restore();
+}
+
+/** While Transform is on: the reference's bounds, quietly outlined over everything (so it can be
+ * found even faint or covered), with a small mark at its centre. */
+export function drawUnderlayOutline(ctx: CanvasRenderingContext2D, u: Underlay, view: ViewTransform): void {
+  const w = u.width * view.zoom;
+  const h = (u.width / u.aspect) * view.zoom;
+  const c = worldToScreen(view, u.centre);
+  ctx.save();
+  ctx.translate(c.x, c.y);
+  if (u.rotation) ctx.rotate(u.rotation);
+  ctx.lineWidth = 3;
+  ctx.strokeStyle = 'rgba(251, 249, 245, 0.8)';
+  ctx.strokeRect(-w / 2, -h / 2, w, h);
+  ctx.lineWidth = 1.2;
+  ctx.setLineDash([6, 5]);
+  ctx.strokeStyle = 'rgba(30, 42, 54, 0.75)';
+  ctx.strokeRect(-w / 2, -h / 2, w, h);
+  ctx.setLineDash([]);
+  ctx.beginPath();
+  ctx.moveTo(-7, 0);
+  ctx.lineTo(7, 0);
+  ctx.moveTo(0, -7);
+  ctx.lineTo(0, 7);
+  ctx.stroke();
+  ctx.restore();
+}
+
+/** A reference just removed from the library: shown as missing from now on. */
+export function forgetUnderlayImage(refId: string): void {
+  const e = images.get(refId);
+  if (e?.state === 'ready') for (const l of e.levels) if (l.source instanceof ImageBitmap) l.source.close();
+  images.set(refId, { state: 'missing' });
+  for (const fn of listeners) fn();
 }
 
 let layer: HTMLCanvasElement | null = null;

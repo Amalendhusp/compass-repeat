@@ -1,4 +1,4 @@
-import type { Doc, EntityId, FaceSig, PointId, SegmentKey, SegmentState, Vec2 } from '../model/types.ts';
+import type { Doc, EntityId, FaceSig, PointId, SegmentKey, SegmentState, Underlay, Vec2 } from '../model/types.ts';
 import type { PointDependent } from '../model/doc.ts';
 import { cloneDoc } from '../model/doc.ts';
 import { invalidatePointFacts } from '../geometry/usage.ts';
@@ -383,6 +383,11 @@ export class AppController {
   intersectionPicks: IntersectionPick[] = [];
   /** Intersection: whether a tap picks lines or points (the Snap row's switch). */
   intersectionPickKind: PickKind = 'line';
+  /** Reference Transform mode: while on, the canvas's fingers move, scale and turn the reference
+   * (interaction/referenceTransform.ts) instead of reaching the tools or the camera. Session state. */
+  referenceTransform = false;
+  /** The reference as a Transform touch is moving it, shown live; committed when the touch ends. */
+  underlayDraft: Underlay | null = null;
 
   private undoStack: Doc[] = [];
   private redoStack: Doc[] = [];
@@ -557,6 +562,7 @@ export class AppController {
     this.doc.pointTargets = pointTargets;
     this.doc.spaceDefaults = spaceDefaults;
     this.pending = null;
+    this.underlayDraft = null;
     this.pointEdit = null;
     this.divide = null;
     this.dividePreview = null;
