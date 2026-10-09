@@ -13,6 +13,7 @@
 // its point) — fixed; the moving one on a halo of its own construction's colour, with that
 // construction's rotation ring showing which construction would move.
 
+import { drawArtworkLayer, type ScreenLayers } from './underlay.ts';
 import type { Doc, Entity, Vec2 } from '../model/types.ts';
 import type { AppController, ViewTransform } from '../app/controller.ts';
 import { worldToScreen } from '../app/controller.ts';
@@ -92,12 +93,14 @@ function appendWholeLine(path: Path2D, doc: Doc, view: ViewTransform, pose: Inst
 }
 
 /** Draws Intersection; returns how many copies are shown (for the diagnostics overlay). */
-export function renderIntersection(ctx: CanvasRenderingContext2D, controller: AppController, view: ViewTransform): number {
+export function renderIntersection(ctx: CanvasRenderingContext2D, controller: AppController, view: ViewTransform, layers?: ScreenLayers): number {
   const doc = controller.doc;
   ctx.save();
   ctx.clearRect(0, 0, view.w, view.h);
   ctx.fillStyle = color.plaster;
   ctx.fillRect(0, 0, view.w, view.h);
+  // On screen only: the reference just above the background (underlay.ts).
+  layers?.underlay(ctx, view);
 
   const sc = scaffold(doc);
   const copies = intersectionCopies(doc, { drag: controller.intersectionDrag, spread: controller.intersectionSpreadDraft });
@@ -109,6 +112,27 @@ export function renderIntersection(ctx: CanvasRenderingContext2D, controller: Ap
   picks.forEach((r, n) => {
     if (r?.kind === 'line') drawLineHalo(ctx, view, r.line, n === 0 ? color.ink : colourOf(r.line.copyKey), n === 0 ? 0.16 : 0.24, 9);
   });
+  // The constructions at their viewing strength over the reference; the picks' marks and the
+  // rotation ring, drawn after, stay full.
+  drawArtworkLayer(ctx, layers, (ctx) => drawCopies(ctx, doc, view, sc, copies));
+  ctx.globalAlpha = 1;
+  ctx.setLineDash([]);
+  picks.forEach((r, n) => {
+    // The picked line itself, crisp over everything else; a point's mark.
+    if (r?.kind === 'line') drawLineHalo(ctx, view, r.line, colourOf(r.line.copyKey), 1, 2.2);
+    if (r?.kind === 'point') drawPointMark(ctx, view, r, n === 0 ? color.ink : colourOf(r.carrier ?? ''), n === 0);
+  });
+
+  const selected = copies.find((c) => c.key === controller.intersectionSelected);
+  if (selected) drawRotationRing(ctx, doc, view, selected, controller.intersectionDrag?.key === selected.key && controller.intersectionDrag.mode === 'turn');
+  ctx.restore();
+  return copies.length;
+}
+
+/** Every construction, each in its own colour (the artwork part of the frame). */
+function drawCopies(ctx: CanvasRenderingContext2D, doc: Doc, view: ViewTransform, sc: Scaffold, copies: IntersectionCopy[]): void {
+  ctx.lineCap = 'round';
+  ctx.lineJoin = 'round';
   for (const copy of copies) {
     const dashed = new Path2D();
     const solid = new Path2D();
@@ -131,16 +155,6 @@ export function renderIntersection(ctx: CanvasRenderingContext2D, controller: Ap
   }
   ctx.globalAlpha = 1;
   ctx.setLineDash([]);
-  picks.forEach((r, n) => {
-    // The picked line itself, crisp over everything else; a point's mark.
-    if (r?.kind === 'line') drawLineHalo(ctx, view, r.line, colourOf(r.line.copyKey), 1, 2.2);
-    if (r?.kind === 'point') drawPointMark(ctx, view, r, n === 0 ? color.ink : colourOf(r.carrier ?? ''), n === 0);
-  });
-
-  const selected = copies.find((c) => c.key === controller.intersectionSelected);
-  if (selected) drawRotationRing(ctx, doc, view, selected, controller.intersectionDrag?.key === selected.key && controller.intersectionDrag.mode === 'turn');
-  ctx.restore();
-  return copies.length;
 }
 
 /** A picked line's halo — its shown extent (or the whole line through the view), wide and faint —

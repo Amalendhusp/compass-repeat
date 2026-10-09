@@ -109,6 +109,32 @@ export interface IntersectionLayout {
   spread: number;
 }
 
+export type Workspace = 'construct' | 'intersection' | 'repeat';
+
+/** A reference image placed in an artwork's own coordinates (see Doc.underlay). */
+export interface Underlay {
+  /** Its Reference Library id. */
+  refId: string;
+  /** Where its centre lies, in the artwork's coordinates. */
+  centre: Vec2;
+  /** Its width, in the artwork's units; its height follows from `aspect`. */
+  width: number;
+  /** Its turn about its centre (radians). */
+  rotation: number;
+  /** The image's own width ÷ height, as imported — so it is always drawn undistorted, and still
+   * known if the library image goes missing. */
+  aspect: number;
+}
+
+/** One workspace's viewing balance between the reference and the artwork. */
+export interface UnderlayView {
+  visible: boolean;
+  /** 0–1. */
+  referenceOpacity: number;
+  /** 0–1: how strongly the artwork is shown over the reference — a view only, never its styling. */
+  artworkOpacity: number;
+}
+
 export interface IntersectionSnapshot {
   id: string;
   at: number;
@@ -138,7 +164,7 @@ export interface RepeatDisplay {
 export interface ViewState {
   zoom: number;
   pan: { x: number; y: number };
-  workspace: 'construct' | 'intersection' | 'repeat';
+  workspace: Workspace;
 }
 
 export interface Frame {
@@ -223,6 +249,14 @@ export interface Doc {
   /** Intersection Snapshots: discoveries kept on purpose while exploring — not history, so Undo /
    * Redo never adds or removes one (carried across them like the cameras). */
   intersectionSnapshots?: IntersectionSnapshot[];
+  /** The reference image under this artwork (one at most): which Reference Library image, and
+   * where it lies in the artwork's own coordinates — the same in every workspace, each of which
+   * only looks at it through its own camera. Never image data (that stays in the library). Part of
+   * Undo; never part of the recorded artwork, its exports or its Timelapse. */
+  underlay?: Underlay;
+  /** How the reference and the artwork are balanced for viewing, in each workspace — not history
+   * (carried across Undo/Redo like the cameras). Absent = the defaults (underlay.ts). */
+  underlayView?: Partial<Record<Workspace, UnderlayView>>;
   /** Phase 5.6 item 20: Space's own next colour and opacity (null = "No fill", which only clears).
    * A tool preference like `fillDefaults`; what each Space class actually shows is its own entry in
    * `repeat.gapFills`, undo-tracked through commit(). */

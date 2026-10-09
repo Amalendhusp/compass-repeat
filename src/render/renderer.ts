@@ -1,3 +1,4 @@
+import { drawArtworkLayer, type ScreenLayers } from './underlay.ts';
 import type { Doc, Entity, Point, PointId, SegmentKey, SegmentState, Vec2 } from '../model/types.ts';
 import type { AppController, SelectCandidate, ViewTransform } from '../app/controller.ts';
 import { resolveEntityGeom, resolvePoint } from '../geometry/kernel.ts';
@@ -1750,16 +1751,28 @@ export interface ArtworkExport {
  * artwork at the current zoom/pan: background (optional), fills, Fair strokes, and — when
  * included — Construction/Extension at exactly their on-screen grade. No selection, previews,
  * points, node inset or any other interaction feedback. */
-export function render(ctx: CanvasRenderingContext2D, controller: AppController, view: ViewTransform, exp?: ArtworkExport): void {
+export function render(ctx: CanvasRenderingContext2D, controller: AppController, view: ViewTransform, exp?: ArtworkExport, layers?: ScreenLayers): void {
   ctx.save();
   ctx.clearRect(0, 0, view.w, view.h);
   if (!exp || exp.background) {
     ctx.fillStyle = color.plaster;
     ctx.fillRect(0, 0, view.w, view.h);
   }
-  drawFills(ctx, controller, view, !exp);
-  if (!exp) drawFairRunHalo(ctx, controller, view);
-  drawEntities(ctx, controller, view, exp);
+  // On screen only: the reference just above the background, and the artwork at its viewing
+  // strength over it (underlay.ts). Without them this draws exactly as it always has.
+  layers?.underlay(ctx, view);
+  if (layers && layers.artworkOpacity < 1) {
+    // The Fair-run halo is an aid: it stays at full strength, under the fainter artwork.
+    drawFairRunHalo(ctx, controller, view);
+    drawArtworkLayer(ctx, layers, (c) => {
+      drawFills(c, controller, view, true);
+      drawEntities(c, controller, view, undefined);
+    });
+  } else {
+    drawFills(ctx, controller, view, !exp);
+    if (!exp) drawFairRunHalo(ctx, controller, view);
+    drawEntities(ctx, controller, view, exp);
+  }
   if (exp) {
     ctx.restore();
     return;

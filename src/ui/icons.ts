@@ -33,6 +33,11 @@ const paths: Record<string, string> = {
   // Phase 5.1 item 2: Repeat's own top-bar pair, in the slots Point Targets / Points use in Construct.
   appearance: '<circle cx="12" cy="12" r="8"/><path d="M12 4a8 8 0 010 16z" fill="currentColor" opacity=".45" stroke="none"/>',
   bookmark: '<path d="M7 4h10v16l-5-3.6L7 20z"/>',
+  // The Reference Library / underlay: a picture — frame, sun, hills.
+  reference: '<rect x="3.5" y="5" width="17" height="14" rx="2"/><circle cx="9" cy="10" r="1.6"/><path d="M4 17.5l5-5 3.5 3.5 2.5-2.5 5 4.5"/>',
+  // Show / hide the reference: an open eye, and the same eye struck through.
+  eye: '<path d="M3 12S7 6.5 12 6.5 21 12 21 12 17 17.5 12 17.5 3 12 3 12z"/><circle cx="12" cy="12" r="2.6"/>',
+  eyeOff: '<path d="M3 12S7 6.5 12 6.5 21 12 21 12 17 17.5 12 17.5 3 12 3 12z" opacity=".5"/><circle cx="12" cy="12" r="2.6" opacity=".5"/><path d="M4.5 4.5l15 15"/>',
   gridGuides: '<rect x="4" y="4" width="16" height="16" rx="2"/><path d="M12 4v16M4 12h16" opacity=".55"/><circle cx="12" cy="12" r="1.8" fill="currentColor"/>',
 };
 

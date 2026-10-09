@@ -5,6 +5,7 @@
 // Phase 5.1: everything Appearance and Grid/Guides control is applied here at draw time only —
 // nothing in doc.repeatDisplay ever writes back into Fair/fill state.
 
+import { drawArtworkLayer, type ScreenLayers } from './underlay.ts';
 import type { Doc, Entity, RepeatDisplay, RepeatSystem, SegmentState, Vec2 } from '../model/types.ts';
 import type { AppController, ViewTransform } from '../app/controller.ts';
 import { screenToWorld, worldToScreen } from '../app/controller.ts';
@@ -436,7 +437,7 @@ function motifSprite(doc: Doc, display: RepeatDisplay, zoom: number, detail: num
  * guides only if asked — and never the handles or rotation ring. Exports are
  * always drawn as exact vectors; the screen stamps a cached bitmap per copy. Returns how many copies
  * were drawn (for the diagnostics overlay). */
-export function renderRepeat(ctx: CanvasRenderingContext2D, controller: AppController, view: ViewTransform, exp?: ArtworkExport): number {
+export function renderRepeat(ctx: CanvasRenderingContext2D, controller: AppController, view: ViewTransform, exp?: ArtworkExport, layers?: ScreenLayers): number {
   const doc = controller.doc;
   const display = doc.repeatDisplay;
   ctx.save();
@@ -465,27 +466,33 @@ export function renderRepeat(ctx: CanvasRenderingContext2D, controller: AppContr
   const showStrokes = display.artwork !== 'fill';
   const flat = flatMotif(doc);
 
-  // Spaces sit on the background, under every motif. While a handle or the ring is being dragged
-  // the arrangement is still changing, so they wait for release rather than show a stale shape.
-  if (showFills && !drag && !rotating) drawSpaces(ctx, doc, view);
+  // On screen only: the reference just above the background (underlay.ts) — and the field (Spaces
+  // and every motif) drawn at its viewing strength over it; the guides and handles stay full.
+  layers?.underlay(ctx, view);
 
   const detail = instances.length > LOD_COPIES ? 0.5 : 1;
   const bitmap = exp ? null : motifSprite(doc, display, view.zoom, detail, controller.viewGesture, showFills, showStrokes);
 
-  for (const pose of instances) {
-    if (bitmap) {
-      const at = worldToScreen(view, { x: pivot.x + pose.translate.x, y: pivot.y + pose.translate.y });
-      const size = bitmap.cssSize * (view.zoom / bitmap.zoom);
-      ctx.save();
-      ctx.translate(at.x, at.y);
-      if (pose.rotation) ctx.rotate(pose.rotation);
-      if (pose.mirror) ctx.scale(1, -1);
-      ctx.drawImage(bitmap.canvas, -size / 2, -size / 2, size, size);
-      ctx.restore();
-    } else {
-      drawCopy(ctx, doc, view, pose, flat, display, showFills, showStrokes, 1);
+  drawArtworkLayer(ctx, layers, (ctx) => {
+    // Spaces sit on the background, under every motif. While a handle or the ring is being dragged
+    // the arrangement is still changing, so they wait for release rather than show a stale shape.
+    if (showFills && !drag && !rotating) drawSpaces(ctx, doc, view);
+
+    for (const pose of instances) {
+      if (bitmap) {
+        const at = worldToScreen(view, { x: pivot.x + pose.translate.x, y: pivot.y + pose.translate.y });
+        const size = bitmap.cssSize * (view.zoom / bitmap.zoom);
+        ctx.save();
+        ctx.translate(at.x, at.y);
+        if (pose.rotation) ctx.rotate(pose.rotation);
+        if (pose.mirror) ctx.scale(1, -1);
+        ctx.drawImage(bitmap.canvas, -size / 2, -size / 2, size, size);
+        ctx.restore();
+      } else {
+        drawCopy(ctx, doc, view, pose, flat, display, showFills, showStrokes, 1);
+      }
     }
-  }
+  });
 
   const showGuides = !exp || exp.guides;
   if (showGuides) {

@@ -1938,3 +1938,66 @@ canvas.stage {
   padding: 0 10px;
   color: var(--muted);
 }
+/* The reference: a quick Show/Hide and the Reference panel, beside Fit. */
+.util-right {
+  display: flex;
+  gap: 8px;
+  pointer-events: none;
+}
+.util-right > * {
+  pointer-events: auto;
+}
+.fit-btn.has-reference {
+  color: var(--ink);
+  box-shadow: 0 0 0 1.5px var(--ink) inset, 0 4px 12px rgba(30, 42, 54, 0.06);
+}
+.reference-panel {
+  width: min(300px, calc(100vw - 16px)) !important;
+}
+.reference-active {
+  gap: 10px;
+}
+.reference-active .popover-row-label {
+  flex: 1;
+}
+.reference-active-thumb {
+  width: 36px;
+  height: 36px;
+  border-radius: 6px;
+  object-fit: cover;
+  border: 1px solid var(--hairline);
+}
+.reference-grid {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  gap: 6px;
+  padding: 4px 10px 6px;
+  max-height: 40vh;
+  overflow-y: auto;
+  touch-action: pan-y;
+}
+.reference-thumb {
+  aspect-ratio: 1;
+  padding: 0;
+  border: 1.5px solid var(--hairline);
+  border-radius: 8px;
+  background: var(--plaster);
+  overflow: hidden;
+  cursor: pointer;
+}
+.reference-thumb img {
+  display: block;
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+}
+.reference-thumb.active {
+  border-color: var(--ink);
+  box-shadow: 0 0 0 1.5px var(--ink);
+}
+.popover-menu.panel .reference-add {
+  font-weight: 600;
+}
+.popover-menu.panel .reference-remove {
+  color: var(--muted);
+}

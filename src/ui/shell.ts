@@ -32,6 +32,9 @@ import { rotationFractionLabel } from '../render/repeatRenderer.ts';
 import { asReference, intersectionCopies, layoutOf, MAX_CONSTRUCTIONS, placedAt, PRIMARY, referenceCurrent, sliderToSpread, SPREAD_SLIDER_MAX, spreadToSlider, withAddedCopy, withCopySetting, withLayout, withoutCopy, withSpread } from '../geometry/intersection.ts';
 import { canMoveAgainst, convertPick, isPointPick, planSnap, resolvePick, type PickKind } from '../geometry/intersectionSnap.ts';
 import { PICK_REACH_PX } from '../interaction/tools/intersectionTool.ts';
+import { listReferences, type ReferenceRecord } from '../persist/referenceStore.ts';
+import { importReference, ReferenceImportError } from '../reference/importReference.ts';
+import { initialUnderlay, onUnderlayImage, underlayImage, underlayViewOf, withUnderlayView } from '../render/underlay.ts';
 import { intersectionThumbnail } from '../render/intersectionRenderer.ts';
 import { genId } from '../model/id.ts';
 import { CAPTURED_CUE_MS } from '../interaction/tools/arc.ts';
@@ -788,6 +791,188 @@ function showIntersectionCopiesPanel(anchor: HTMLElement, controller: AppControl
   );
 }
 
+/** Library thumbnails as object URLs, made once per reference for this session. */
+const thumbUrls = new Map<string, string>();
+const thumbUrl = (r: ReferenceRecord) => {
+  let url = thumbUrls.get(r.id);
+  if (!url) {
+    url = URL.createObjectURL(r.thumb);
+    thumbUrls.set(r.id, url);
+  }
+  return url;
+};
+
+const WORKSPACE_NAMES = { construct: 'Construct', intersection: 'Intersection', repeat: 'Repeat' } as const;
+
+/**
+ * The Reference panel: the artwork's reference (shown or hidden, its strength and the artwork's
+ * over it, in this workspace — viewing only, never Undo), and the Reference Library (every
+ * imported image, as thumbnails; tapping one makes it this artwork's reference — one Undo step).
+ */
+function showReferencePanel(anchor: HTMLElement, controller: AppController, onChange: () => void): void {
+  mountPopover(
+    anchor,
+    (menu) => {
+      menu.classList.add('reference-panel');
+      let library: ReferenceRecord[] | null = null;
+      let adding = false;
+      const ws = () => controller.doc.view.workspace;
+      const setView = (patch: Parameters<typeof withUnderlayView>[2]) => {
+        // A view, like the camera: saved with the artwork, never an Undo step or a recorded change.
+        controller.doc.underlayView = withUnderlayView(controller.doc, ws(), patch);
+        controller.notifyView();
+        onChange();
+      };
+      const build = () => {
+        menu.replaceChildren();
+        const u = controller.doc.underlay;
+        if (u) {
+          popoverSectionLabel(menu, `Reference · ${WORKSPACE_NAMES[ws()]}`);
+          const v = underlayViewOf(controller.doc, ws());
+          const record = library?.find((r) => r.id === u.refId);
+          const missing = (library && !record) || underlayImage(u.refId).state === 'missing';
+          const row = document.createElement('div');
+          row.className = 'popover-toggle-row reference-active';
+          if (record) {
+            const img = document.createElement('img');
+            img.className = 'reference-active-thumb';
+            img.src = thumbUrl(record);
+            img.alt = '';
+            row.appendChild(img);
+          }
+          const label = document.createElement('span');
+          label.className = 'popover-row-label';
+          label.textContent = missing ? 'Reference missing' : 'Show';
+          row.appendChild(label);
+          if (!missing) {
+            const sw = document.createElement('button');
+            sw.className = 'toggle-switch' + (v.visible ? ' on' : '');
+            sw.innerHTML = '<span class="toggle-knob"></span>';
+            sw.setAttribute('aria-label', `Reference ${v.visible ? 'shown' : 'hidden'}`);
+            sw.setAttribute('aria-pressed', String(v.visible));
+            sw.addEventListener('click', (e) => {
+              e.stopPropagation();
+              setView({ visible: !v.visible });
+              build();
+            });
+            row.appendChild(sw);
+          }
+          menu.appendChild(row);
+          if (missing) {
+            const note = document.createElement('p');
+            note.className = 'popover-hint';
+            note.textContent = 'This image is no longer in the Reference Library.';
+            menu.appendChild(note);
+          } else {
+            panelSliderRow(menu, 'Reference', { min: 0, max: 100, step: 1, value: Math.round(v.referenceOpacity * 100), format: (x) => `${x}%`, onInput: (x) => setView({ referenceOpacity: x / 100 }) });
+            panelSliderRow(menu, 'Artwork', { min: 5, max: 100, step: 1, value: Math.round(v.artworkOpacity * 100), format: (x) => `${x}%`, onInput: (x) => setView({ artworkOpacity: x / 100 }) });
+          }
+          const remove = document.createElement('button');
+          remove.className = 'popover-row reference-remove';
+          remove.textContent = 'Remove from artwork';
+          remove.addEventListener('click', (e) => {
+            e.stopPropagation();
+            controller.commit((d) => {
+              delete d.underlay;
+            });
+            onChange();
+            build();
+          });
+          menu.appendChild(remove);
+          const divider = document.createElement('div');
+          divider.className = 'popover-divider';
+          menu.appendChild(divider);
+        }
+        popoverSectionLabel(menu, 'Reference Library');
+        const grid = document.createElement('div');
+        grid.className = 'reference-grid';
+        if (!library) {
+          const wait = document.createElement('p');
+          wait.className = 'popover-hint';
+          wait.textContent = 'Loading…';
+          menu.appendChild(wait);
+        } else if (library.length === 0) {
+          const empty = document.createElement('p');
+          empty.className = 'popover-hint';
+          empty.textContent = 'Images added here can be used under any artwork.';
+          menu.appendChild(empty);
+        }
+        for (const r of library ?? []) {
+          const b = document.createElement('button');
+          b.className = 'reference-thumb' + (u?.refId === r.id ? ' active' : '');
+          b.setAttribute('aria-label', `${u?.refId === r.id ? 'Current reference' : 'Use reference'} ${r.name}`);
+          b.title = r.name;
+          const img = document.createElement('img');
+          img.src = thumbUrl(r);
+          img.alt = '';
+          b.appendChild(img);
+          b.addEventListener('click', (e) => {
+            e.stopPropagation();
+            if (controller.doc.underlay?.refId === r.id) return;
+            // Choosing (or replacing) the reference is one Undo step; it starts at the same place
+            // whichever workspace it is chosen in (underlay.ts — initialUnderlay).
+            controller.commit((d) => {
+              d.underlay = initialUnderlay(d, r);
+            });
+            onChange();
+            build();
+          });
+          grid.appendChild(b);
+        }
+        if (library?.length) menu.appendChild(grid);
+        const add = document.createElement('button');
+        add.className = 'popover-row reference-add';
+        add.textContent = adding ? 'Adding…' : '+ Add reference';
+        add.disabled = adding;
+        add.addEventListener('click', (e) => {
+          e.stopPropagation();
+          const input = document.createElement('input');
+          input.type = 'file';
+          input.accept = 'image/*';
+          input.multiple = true;
+          input.addEventListener('change', async () => {
+            const files = [...(input.files ?? [])];
+            if (files.length === 0) return;
+            adding = true;
+            build();
+            let added = 0;
+            for (const file of files) {
+              try {
+                await importReference(file);
+                added++;
+              } catch (err) {
+                showToast(err instanceof ReferenceImportError ? err.message : 'Couldn’t add the image');
+                if (err instanceof ReferenceImportError && err.reason === 'storage') break;
+              }
+            }
+            adding = false;
+            library = await listReferences().catch(() => library);
+            if (added > 0) showToast(added === 1 ? 'Reference added' : `${added} references added`);
+            if (menu.isConnected) build();
+          });
+          input.click();
+        });
+        menu.appendChild(add);
+      };
+      build();
+      listReferences()
+        .then((all) => {
+          library = all;
+        })
+        .catch(() => {
+          library = [];
+          showToast('Couldn’t open the Reference Library');
+        })
+        .finally(() => {
+          if (menu.isConnected) build();
+        });
+      // When the reference's image arrives (or turns out to be missing), say so.
+      const off = onUnderlayImage(() => (menu.isConnected ? build() : off()));
+    },
+    { shieldCanvas: true, panel: true },
+  );
+}
+
 /** Phase 5.1 item 7: Grid / Guides — interaction aids only, each independently switchable, with
  * one master row that turns them all on or off together. */
 function showRepeatGuidesPanel(anchor: HTMLElement, controller: AppController, onChange: () => void): void {
@@ -1296,8 +1481,41 @@ export function buildShell(
   fitBtn.innerHTML = iconSvg('fit');
   fitBtn.addEventListener('click', () => opts.onFit());
 
+  // The reference: a quick Show/Hide (only while this artwork has one) and the Reference panel,
+  // beside Fit — on the canvas's own control row, in every workspace.
+  const referenceEyeBtn = document.createElement('button');
+  referenceEyeBtn.className = 'fit-btn reference-eye';
+  const referencePanelBtn = document.createElement('button');
+  referencePanelBtn.className = 'fit-btn reference-btn';
+  referencePanelBtn.setAttribute('aria-label', 'Reference');
+  referencePanelBtn.innerHTML = iconSvg('reference');
+  function refreshReferenceButtons(): void {
+    const u = controller.doc.underlay;
+    referenceEyeBtn.style.display = u ? '' : 'none';
+    referencePanelBtn.classList.toggle('has-reference', !!u);
+    if (!u) return;
+    const shown = underlayViewOf(controller.doc, controller.doc.view.workspace).visible;
+    referenceEyeBtn.innerHTML = iconSvg(shown ? 'eye' : 'eyeOff');
+    referenceEyeBtn.setAttribute('aria-label', shown ? 'Hide reference' : 'Show reference');
+    referenceEyeBtn.setAttribute('aria-pressed', String(shown));
+  }
+  referenceEyeBtn.addEventListener('click', () => {
+    const shown = underlayViewOf(controller.doc, controller.doc.view.workspace).visible;
+    controller.doc.underlayView = withUnderlayView(controller.doc, controller.doc.view.workspace, { visible: !shown });
+    controller.notifyView();
+    refreshReferenceButtons();
+    // An open Reference panel follows.
+    if (openPopoverAnchor === referencePanelBtn) showReferencePanel(referencePanelBtn, controller, refreshReferenceButtons);
+  });
+  onTap(referencePanelBtn, () => togglePanel(referencePanelBtn, () => showReferencePanel(referencePanelBtn, controller, refreshReferenceButtons)));
+  const utilRight = document.createElement('div');
+  utilRight.className = 'util-right';
+  utilRight.appendChild(referenceEyeBtn);
+  utilRight.appendChild(referencePanelBtn);
+  utilRight.appendChild(fitBtn);
+
   utilRow.appendChild(undoRedoPill);
-  utilRow.appendChild(fitBtn);
+  utilRow.appendChild(utilRight);
 
   const contextSlot = document.createElement('div');
   contextSlot.className = 'context-slot';
@@ -2211,6 +2429,7 @@ export function buildShell(
     }
     undoBtn.disabled = !controller.canUndo();
     redoBtn.disabled = !controller.canRedo();
+    refreshReferenceButtons();
     refreshPointLockBtn();
 
     pointLockBtn.style.display = placing ? 'none' : '';

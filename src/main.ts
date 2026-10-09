@@ -15,6 +15,7 @@ import { render } from './render/renderer.ts';
 import { renderRepeat } from './render/repeatRenderer.ts';
 import { renderIntersection } from './render/intersectionRenderer.ts';
 import { intersectionBounds } from './geometry/intersection.ts';
+import { onUnderlayImage, screenLayers } from './render/underlay.ts';
 import { buildShell, closeAnyPopover } from './ui/shell.ts';
 import { openGuide, type CoachHost } from './tutorial/engine.ts';
 import { beginnerGuide } from './tutorial/guides/beginner.ts';
@@ -259,9 +260,12 @@ function boot(doc: Doc, opts: { fitToScreen: boolean; history?: { undo: Doc[]; r
     dirty = false;
     const t0 = performance.now();
     let copies: number | null = null;
-    if (controller.doc.view.workspace === 'repeat') copies = renderRepeat(ctx!, controller, getView());
-    else if (controller.doc.view.workspace === 'intersection') copies = renderIntersection(ctx!, controller, getView());
-    else render(ctx!, controller, getView());
+    const ws = controller.doc.view.workspace;
+    // The reference underlay and the artwork's viewing strength over it — on screen only.
+    const layers = screenLayers(controller.doc, ws);
+    if (ws === 'repeat') copies = renderRepeat(ctx!, controller, getView(), undefined, layers);
+    else if (ws === 'intersection') copies = renderIntersection(ctx!, controller, getView(), layers);
+    else render(ctx!, controller, getView(), undefined, layers);
     diagnostics?.record(performance.now() - t0, copies);
   }
   const requestDraw = () => {
@@ -274,6 +278,7 @@ function boot(doc: Doc, opts: { fitToScreen: boolean; history?: { undo: Doc[]; r
   // subscribeView: catches both view-only changes (pinch/pan) and full state changes, so the
   // canvas redraws for either — but this loop never touches the DOM itself either way.
   controller.subscribeView(requestDraw);
+  onUnderlayImage(requestDraw);
   const onVisibility = () => {
     if (!document.hidden && dirty && !scheduled && running) {
       scheduled = true;
