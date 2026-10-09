@@ -1,4 +1,5 @@
 import type { AppController, PointVisibility, SelectCandidate, ToolId, ViewTransform } from '../app/controller.ts';
+import { unturned } from '../app/controller.ts';
 import type { Doc, EntityId, PointId, SegmentKey, Vec2 } from '../model/types.ts';
 import {
   addCircleDivision,
@@ -1119,7 +1120,8 @@ function showExportPanel(anchor: HTMLElement, controller: AppController, getView
   const prepare = () => {
     readyFile = null;
     if (settings.format === 'timelapse') return;
-    const job = exportVisibleView(controller, getView(), still());
+    // Exports frame the same pan and zoom unturned: a turned camera is a way of looking, not the artwork.
+    const job = exportVisibleView(controller, unturned(getView()), still());
     ready = job;
     job.then((f) => {
       if (ready === job) readyFile = f;
@@ -1280,7 +1282,7 @@ function showExportPanel(anchor: HTMLElement, controller: AppController, getView
         go.disabled = true;
         go.textContent = 'Creating timelapse… 0%';
         refreshFormat();
-        const view = getView();
+        const view = unturned(getView()); // Timelapse, like exports, is never turned
         void timelapse!
           .prepare()
           .then(() =>
@@ -2025,6 +2027,19 @@ export function buildShell(
   overlay.appendChild(contextSlot);
   overlay.appendChild(dock);
   canvasWrap.appendChild(overlay);
+
+  // While two fingers turn the view: a quiet readout of the camera's angle, gone after the gesture.
+  const turnReadout = document.createElement('div');
+  turnReadout.className = 'turn-readout';
+  turnReadout.setAttribute('aria-hidden', 'true');
+  canvasWrap.appendChild(turnReadout);
+  controller.subscribeView(() => {
+    const turn = opts.getView().screen?.turn ?? 0;
+    const deg = Math.round((turn * 180) / Math.PI);
+    const show = controller.cameraTurning && turn !== 0;
+    if (show) turnReadout.textContent = `${deg === 0 ? 0 : deg}°`; // keep the last angle while fading
+    turnReadout.classList.toggle('show', show);
+  });
 
   shell.appendChild(topbar);
   shell.appendChild(canvasWrap);

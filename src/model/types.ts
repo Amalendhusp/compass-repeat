@@ -161,9 +161,16 @@ export interface RepeatDisplay {
   motifBoundary: boolean;
 }
 
-export interface ViewState {
+/** A workspace camera: how the artwork's own coordinates are shown — never the artwork itself. */
+export interface Camera {
   zoom: number;
-  pan: { x: number; y: number };
+  pan: Vec2;
+  /** The view's turn on screen (radians; absent = 0) — like turning the sheet under the hands:
+   * every coordinate stays exactly as it is. */
+  rotation?: number;
+}
+
+export interface ViewState extends Camera {
   workspace: Workspace;
 }
 
@@ -232,14 +239,14 @@ export interface Doc {
    * never moves the participant's Construct viewport (and vice versa). Not undo-tracked, exactly
    * like `view` (Phase 3.6 item 2's fix applies here too — see AppController.undo/redo). Which
    * workspace is showing right now is `view.workspace`, already part of the schema. */
-  repeatView: { zoom: number; pan: Vec2 };
+  repeatView: Camera;
   /** Phase 5.1: how Repeat draws the motif and its guides — display preferences only, never the
    * artwork's own stored Fair/fill state. Not undo-tracked (carried across undo/redo like
    * `repeatView`). Replaces Phase 5's single `repeatGuide` boolean. */
   repeatDisplay: RepeatDisplay;
   /** Intersection's own camera — like repeatView, never history. Absent until Intersection is first
    * entered. */
-  intersectionView?: { zoom: number; pan: Vec2 };
+  intersectionView?: Camera;
   /** Intersection: an exploratory composition of a few copies of the construction, entirely its own —
    * never Repeat's lattice. Per-copy analysis colour and whether its extensions are drawn (keyed by
    * the copy's key; the primary is "0,0"), and the arrangement itself. Absent or partial = defaults

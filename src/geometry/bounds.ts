@@ -11,6 +11,14 @@ export interface Bounds {
   maxY: number;
 }
 
+/** A world point as seen by a camera turned by `turn` (radians): its coordinates in that frame. */
+export function turned(p: { x: number; y: number }, turn: number): { x: number; y: number } {
+  if (!turn) return { x: p.x, y: p.y };
+  const c = Math.cos(turn);
+  const n = Math.sin(turn);
+  return { x: p.x * c - p.y * n, y: p.x * n + p.y * c };
+}
+
 function expand(b: Bounds | null, x: number, y: number): Bounds {
   if (!b) return { minX: x, maxX: x, minY: y, maxY: y };
   return { minX: Math.min(b.minX, x), maxX: Math.max(b.maxX, x), minY: Math.min(b.minY, y), maxY: Math.max(b.maxY, y) };
@@ -52,23 +60,39 @@ function isPointWithinFiniteSpan(doc: Doc, point: Point): boolean {
  * materialized point anywhere near one of its own ends). Null for a doc with nothing beyond a
  * still-hidden frame internals (fitView falls back to the frame radius in that case).
  */
-export function computeVisibleBounds(doc: Doc): Bounds | null {
+export function computeVisibleBounds(doc: Doc, turn = 0): Bounds | null {
+  // With `turn`, the bounds as a camera turned by it sees them (in its frame — see turned()), so a
+  // turned view is fitted to what it actually shows.
   let b: Bounds | null = null;
   for (const p of doc.points) {
     if (p.kind === 'free' && p.hidden) continue;
     if (!isPointWithinFiniteSpan(doc, p)) continue;
-    const at = resolvePoint(doc, p.id);
+    const at = turned(resolvePoint(doc, p.id), turn);
     b = expand(b, at.x, at.y);
   }
   for (const e of doc.entities) {
     const g = resolveEntityGeom(doc, e);
     if (g.kind === 'circle') {
-      b = expand(b, g.centre.x - g.radius, g.centre.y - g.radius);
-      b = expand(b, g.centre.x + g.radius, g.centre.y + g.radius);
+      const c = turned(g.centre, turn);
+      b = expand(b, c.x - g.radius, c.y - g.radius);
+      b = expand(b, c.x + g.radius, c.y + g.radius);
     } else {
-      b = expand(b, g.a.x, g.a.y);
-      b = expand(b, g.b.x, g.b.y);
+      const a = turned(g.a, turn);
+      const z = turned(g.b, turn);
+      b = expand(b, a.x, a.y);
+      b = expand(b, z.x, z.y);
     }
+  }
+  return b;
+}
+
+/** The bounds of a few discs (centre ± radius) as a camera turned by `turn` sees them. */
+export function discBounds(discs: { x: number; y: number; r: number }[], turn = 0): Bounds | null {
+  let b: Bounds | null = null;
+  for (const d of discs) {
+    const c = turned(d, turn);
+    b = expand(b, c.x - d.r, c.y - d.r);
+    b = expand(b, c.x + d.r, c.y + d.r);
   }
   return b;
 }

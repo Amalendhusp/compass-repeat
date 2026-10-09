@@ -18,7 +18,7 @@
 
 import type { Doc, Entity, PointId, SegmentKey, SegmentState, Vec2 } from '../../model/types.ts';
 import type { AppController, FairRun, ViewTransform } from '../../app/controller.ts';
-import { screenToWorld, worldToScreen } from '../../app/controller.ts';
+import { paperToScreen, screenToWorld, worldToScreen } from '../../app/controller.ts';
 import { resolveEntityGeom, resolvePoint } from '../../geometry/kernel.ts';
 import { deriveSegments, deriveSelectableGroups, fairSegmentState, groupContainingParam, segmentKey, unfairedSegmentState, type DerivedSegment } from '../../geometry/segments.ts';
 import { angleBetween, otherEndpoint, outgoingTangent, segmentsAtJunction } from '../../geometry/trace.ts';
@@ -237,7 +237,9 @@ function badgePoint(doc: Doc, view: ViewTransform, pieces: RunPiece[], tapScreen
   for (const p of pieces) {
     for (const w of pieceSamples(doc, p.entity, p.seg.fromParam, p.seg.toParam, 12)) {
       const s = worldToScreen(view, w);
-      if (s.x < 16 || s.y < 16 || s.x > view.w - 16 || s.y > view.h - 16) continue;
+      const c = paperToScreen(view, s); // on the canvas itself, however the camera is turned
+      const [cw, ch] = view.screen ? [view.screen.w, view.screen.h] : [view.w, view.h];
+      if (c.x < 16 || c.y < 16 || c.x > cw - 16 || c.y > ch - 16) continue;
       const score = Math.abs(dist(s, tapScreen) - BADGE_DISTANCE_PX);
       if (score < bestScore) {
         bestScore = score;

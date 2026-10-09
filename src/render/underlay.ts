@@ -135,7 +135,8 @@ export function drawUnderlay(ctx: CanvasRenderingContext2D, doc: Doc, view: View
   const w = u.width * view.zoom;
   const h = (u.width / u.aspect) * view.zoom;
   // The smallest level that is still at least as wide as it is drawn (in device pixels).
-  const device = w * Math.abs(ctx.getTransform().a);
+  const m = ctx.getTransform();
+  const device = w * Math.hypot(m.a, m.b); // the canvas's scale, whether or not the camera is turned
   const level = [...img.levels].reverse().find((l) => l.width >= device) ?? img.levels[0]!;
   const c = worldToScreen(view, u.centre);
   ctx.save();

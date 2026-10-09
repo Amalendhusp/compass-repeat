@@ -8,7 +8,7 @@ import { isFramePoint, isPointOrphanedByTrim, isPointUsed, pointById } from '../
 import { dist } from '../geometry/vec.ts';
 import { refLocation } from '../interaction/pointref.ts';
 import { color, font, stroke } from './tokens.ts';
-import { worldToScreen } from '../app/controller.ts';
+import { paperToScreen, screenToPaper, worldToScreen } from '../app/controller.ts';
 import { makePath } from './svgContext.ts';
 import { MARKER_R } from '../interaction/precision.ts';
 
@@ -397,10 +397,41 @@ const LOUPE_OFFSET = 86; // px above (or below) the target
 const LOUPE_MARGIN = 56; // keep clear of the top bar / canvas edges
 
 function loupeCenter(anchorScreen: Vec2, radius: number, view: ViewTransform): Vec2 {
-  let cy = anchorScreen.y - LOUPE_OFFSET;
-  if (cy - radius < LOUPE_MARGIN) cy = anchorScreen.y + LOUPE_OFFSET;
-  const cx = Math.min(Math.max(anchorScreen.x, LOUPE_MARGIN), view.w - LOUPE_MARGIN);
-  return { x: cx, y: cy };
+  // Above the finger as the screen shows it (and on it), however the camera is turned.
+  const a = paperToScreen(view, anchorScreen);
+  let cy = a.y - LOUPE_OFFSET;
+  if (cy - radius < LOUPE_MARGIN) cy = a.y + LOUPE_OFFSET;
+  const cx = Math.min(Math.max(a.x, LOUPE_MARGIN), (view.screen?.w ?? view.w) - LOUPE_MARGIN);
+  return screenToPaper(view, { x: cx, y: cy });
+}
+
+/** Draws `draw` in canvas px — upright on screen, however the camera is turned (the paper frame
+ * otherwise: ViewTransform). */
+function inScreenFrame(ctx: CanvasRenderingContext2D, view: ViewTransform, draw: () => void): void {
+  ctx.save();
+  if (view.screen) {
+    ctx.translate(view.w / 2, view.h / 2);
+    ctx.rotate(-view.screen.turn);
+    ctx.translate(-view.screen.w / 2, -view.screen.h / 2);
+  }
+  draw();
+  ctx.restore();
+}
+
+/** Text at `at`, upright on screen however the camera is turned (read off the canvas's own
+ * transform) — `dy` px below it on screen. */
+function uprightText(ctx: CanvasRenderingContext2D, text: string, at: Vec2, dy = 0): void {
+  const m = ctx.getTransform();
+  const t = Math.atan2(m.b, m.a);
+  if (Math.abs(t) < 1e-12) {
+    ctx.fillText(text, at.x, at.y + dy);
+    return;
+  }
+  ctx.save();
+  ctx.translate(at.x, at.y);
+  ctx.rotate(-t);
+  ctx.fillText(text, 0, dy);
+  ctx.restore();
 }
 
 const NODE_INSET_RADIUS = 46;
@@ -584,6 +615,13 @@ function drawNodeInset(ctx: CanvasRenderingContext2D, controller: AppController,
 
 /** A small rounded label, centred on `at` and kept on screen. First line Signal, the rest muted. */
 function drawLabelPill(ctx: CanvasRenderingContext2D, at: Vec2, lines: string[], view: ViewTransform, alpha = 1): void {
+  // Upright, and kept on the canvas itself, however the camera is turned.
+  if (view.screen) {
+    const screenAt = paperToScreen(view, at);
+    const flat: ViewTransform = { zoom: view.zoom, pan: view.pan, w: view.screen.w, h: view.screen.h };
+    inScreenFrame(ctx, view, () => drawLabelPill(ctx, screenAt, lines, flat, alpha));
+    return;
+  }
   ctx.save();
   ctx.globalAlpha = alpha;
   ctx.font = `600 11px ${font.ui}`;
@@ -709,7 +747,7 @@ function drawNumberBadge(ctx: CanvasRenderingContext2D, at: Vec2, n: number, fil
   ctx.font = `700 12px ${font.ui}`;
   ctx.textAlign = 'center';
   ctx.textBaseline = 'middle';
-  ctx.fillText(String(n), at.x, at.y + 0.5);
+  uprightText(ctx, String(n), at, 0.5);
   ctx.restore();
 }
 
@@ -1124,7 +1162,7 @@ function drawArcMeasure(ctx: CanvasRenderingContext2D, controller: AppController
     ctx.font = `600 11px ${font.ui}`;
     ctx.textAlign = 'center';
     ctx.textBaseline = 'middle';
-    ctx.fillText(label, p.x, p.y - 15);
+    uprightText(ctx, label, p, -15);
   }
   ctx.restore();
 }
@@ -1402,7 +1440,7 @@ function drawPendingAnchor(ctx: CanvasRenderingContext2D, controller: AppControl
       ctx.font = `600 12px ${font.ui}`;
       ctx.textAlign = 'center';
       ctx.textBaseline = 'middle';
-      ctx.fillText('A', s.x, s.y - 22);
+      uprightText(ctx, 'A', s, -22);
     }
   });
 }

@@ -1,10 +1,16 @@
 // Gesture arbitration, spec §2. Single-finger gestures delegate to the active
-// tool; two-or-more fingers are always a view gesture (pinch/pan) and never
+// tool; two-or-more fingers are always a view gesture (pinch/pan/twist) and never
 // edit the doc; a short low-travel 2-finger touch is undo, 3-finger is redo.
+//
+// A turned camera (ViewTransform.screen): fingers arrive in canvas px and are turned into the
+// paper frame before any tool sees them, so every tool works exactly as with an unturned camera.
+// The camera gesture itself is worked out on the canvas, where the fingers really are.
 // Precision mode (press ≥350ms then slide) is deferred — see project notes.
 
 import type { Vec2 } from '../model/types.ts';
 import type { AppController, GestureSnapshot, ViewTransform } from '../app/controller.ts';
+import { screenToPaper, screenToWorld } from '../app/controller.ts';
+import type { Camera } from '../model/types.ts';
 import type { Gesture, ToolModule } from './tools/types.ts';
 
 // Phase 5.2 item 30: screen px of involuntary finger movement that still counts as a tap — sized
@@ -61,7 +67,7 @@ export class PointerManager {
   /** Phase 5 item 12: the mutable `{zoom, pan}` pinch/pan actually writes into — Construct's
    * `doc.view` or Repeat's own `doc.repeatView`, chosen by the caller per current workspace, so
    * navigating one workspace's canvas never moves the other's. */
-  private getViewState: () => { zoom: number; pan: Vec2 };
+  private getViewState: () => Camera;
 
   private active = new Map<number, PointerRecord>();
   private mode: 'idle' | 'single' | 'multi' = 'idle';
@@ -69,6 +75,8 @@ export class PointerManager {
   private session: Session | null = null;
   private lastCentroid: Vec2 | null = null;
   private lastPinchDist = 0;
+  /** The direction (radians) from the first finger to the second, last sample — for the twist. */
+  private lastPinchAngle = 0;
   /** Phase 5.12a: the state as it was when the first finger of the current touch went down. */
   private before: GestureSnapshot | null = null;
   /** Asked at each touch's first finger: whether something takes the whole touch over. */
@@ -81,7 +89,7 @@ export class PointerManager {
     controller: AppController,
     getView: () => ViewTransform,
     getTool: () => ToolModule | null,
-    getViewState: () => { zoom: number; pan: Vec2 },
+    getViewState: () => Camera,
   ) {
     this.canvas = canvas;
     this.controller = controller;
@@ -114,15 +122,41 @@ export class PointerManager {
 
   /** Scales the view by `factor` about `anchor` (canvas px), keeping the world point there fixed. */
   zoomAt(anchor: Vec2, factor: number): void {
-    const view = this.getView();
     const viewState = this.getViewState();
     const oldZoom = viewState.zoom;
     const newZoom = Math.min(MAX_ZOOM, Math.max(MIN_ZOOM, oldZoom * factor));
     if (newZoom === oldZoom) return;
-    const world = { x: (anchor.x - view.w / 2) / oldZoom - viewState.pan.x, y: (anchor.y - view.h / 2) / oldZoom - viewState.pan.y };
-    viewState.zoom = newZoom;
-    viewState.pan = { x: (anchor.x - view.w / 2) / newZoom - world.x, y: (anchor.y - view.h / 2) / newZoom - world.y };
+    this.pinCamera(this.worldAt(anchor), anchor, newZoom, viewState.rotation ?? 0);
     this.markViewGesture();
+  }
+
+  /** The world point under a canvas point (canvas px), with the camera as it is. */
+  private worldAt(sp: Vec2): Vec2 {
+    const view = this.getView();
+    return screenToWorld(view, screenToPaper(view, sp));
+  }
+
+  /** A canvas point (canvas px) in the paper frame — what the tools work in. */
+  private paper(sp: Vec2): Vec2 {
+    return screenToPaper(this.getView(), sp);
+  }
+
+  /**
+   * Sets the camera to `zoom` and `rotation` with world point `world` exactly under canvas point
+   * `at`. On the canvas a world point p lands at canvas-centre + turn((p + pan) × zoom), so
+   * pan = turn⁻¹(at − canvas-centre) / zoom − world. (Unturned, this is the pinch formula as ever.)
+   */
+  private pinCamera(world: Vec2, at: Vec2, zoom: number, rotation: number): void {
+    const viewState = this.getViewState();
+    const w = this.canvas.clientWidth;
+    const h = this.canvas.clientHeight;
+    const dx = (at.x - w / 2) / zoom;
+    const dy = (at.y - h / 2) / zoom;
+    const c = Math.cos(rotation);
+    const n = Math.sin(rotation);
+    viewState.zoom = zoom;
+    if (rotation || viewState.rotation) viewState.rotation = rotation;
+    viewState.pan = { x: dx * c + dy * n - world.x, y: -dx * n + dy * c - world.y };
   }
 
   /** Continuous wheel/gesture zoom and pan draw light, like a touch pinch, until input pauses. */
@@ -150,7 +184,11 @@ export class PointerManager {
     }
     const viewState = this.getViewState();
     const [px, py] = e.shiftKey && dx === 0 ? [dy, 0] : [dx, dy];
-    viewState.pan = { x: viewState.pan.x - px / viewState.zoom, y: viewState.pan.y - py / viewState.zoom };
+    // A scroll moves the drawing along the screen, whichever way the camera is turned.
+    const t = viewState.rotation ?? 0;
+    const qx = px * Math.cos(t) + py * Math.sin(t);
+    const qy = -px * Math.sin(t) + py * Math.cos(t);
+    viewState.pan = { x: viewState.pan.x - qx / viewState.zoom, y: viewState.pan.y - qy / viewState.zoom };
     this.markViewGesture();
   };
 
@@ -181,8 +219,7 @@ export class PointerManager {
 
   /** Focus construction follows the working finger (kept in world space, so it stays put under pan). */
   private noteFocus(x: number, y: number): void {
-    const v = this.getView();
-    this.controller.focusWorld = { x: (x - v.w / 2) / v.zoom - v.pan.x, y: (y - v.h / 2) / v.zoom - v.pan.y };
+    this.controller.focusWorld = this.worldAt({ x, y });
   }
 
   private centroid(): Vec2 {
@@ -196,9 +233,22 @@ export class PointerManager {
     return { x: x / n, y: y / n };
   }
 
-  /** Every finger down, in the order they went down. */
+  /** Every finger down, in the order they went down (in the paper frame). */
   private points(): Vec2[] {
-    return [...this.active.values()].map((r) => ({ x: r.x, y: r.y }));
+    return [...this.active.values()].map((r) => this.paper({ x: r.x, y: r.y }));
+  }
+
+  private pinchAngle(): number {
+    const pts = [...this.active.values()];
+    if (pts.length < 2) return 0;
+    return Math.atan2(pts[1]!.y - pts[0]!.y, pts[1]!.x - pts[0]!.x);
+  }
+
+  /** The two-finger gesture carries on from the fingers as they are now (one added or lifted). */
+  private rebaseline(): void {
+    this.lastCentroid = this.centroid();
+    this.lastPinchDist = this.pinchDistance();
+    this.lastPinchAngle = this.pinchAngle();
   }
 
   private pinchDistance(): number {
@@ -249,10 +299,11 @@ export class PointerManager {
       this.mode = 'single';
       // Item 7: the "near finger" reveal radius follows the actual touch point, independent
       // of whichever tool is active.
-      this.controller.pointerScreenPos = { x, y };
+      const p = this.paper({ x, y });
+      this.controller.pointerScreenPos = p;
       this.noteFocus(x, y);
       const tool = this.getTool();
-      this.gesture = tool ? tool.beginGesture(this.controller, this.getView(), { x, y }) : null;
+      this.gesture = tool ? tool.beginGesture(this.controller, this.getView(), p) : null;
       this.controller.notifyView();
     } else {
       if (this.gesture) {
@@ -263,8 +314,7 @@ export class PointerManager {
       this.controller.viewGesture = true;
       this.controller.pointerScreenPos = null;
       if (this.session) this.session.maxConcurrent = Math.max(this.session.maxConcurrent, this.active.size);
-      this.lastCentroid = this.centroid();
-      this.lastPinchDist = this.pinchDistance();
+      this.rebaseline();
       this.controller.notifyView();
     }
   };
@@ -283,9 +333,10 @@ export class PointerManager {
     if (this.session) this.session.maxTravel = Math.max(this.session.maxTravel, rec.maxTravel);
 
     if (this.mode === 'single') {
-      this.controller.pointerScreenPos = { x, y };
+      const p = this.paper({ x, y });
+      this.controller.pointerScreenPos = p;
       this.noteFocus(x, y);
-      this.gesture?.onMove({ x, y });
+      this.gesture?.onMove(p);
       this.controller.notifyView();
     } else if (this.mode === 'multi') {
       this.applyPinchPan();
@@ -294,35 +345,33 @@ export class PointerManager {
 
   /**
    * Phase 1.1 item 2: one coherent update per sample — the world point that was under the
-   * PREVIOUS centroid is anchored to the NEW centroid, with zoom scaled by the distance ratio.
-   * This is the standard combined pinch formula (translate + scale in a single step, not two
-   * sequential adjustments), so geometry stays visually attached to the fingers with no
-   * compounding drift across a long, high-frequency real-touch sample stream. Uses notifyView()
-   * — the cheap channel — so this never rebuilds the dock/context-bar DOM per sample; see
+   * PREVIOUS centroid is anchored to the NEW centroid, with zoom scaled by the distance ratio and
+   * the camera turned by the fingers' twist. This is the standard combined formula (translate +
+   * scale + turn in a single step, not sequential adjustments), so the drawing stays attached to
+   * the fingers with no compounding drift across a long, high-frequency real-touch sample stream —
+   * like turning a sheet of paper under them. Free, never snapped. Uses notifyView() — the cheap
+   * channel — so this never rebuilds the dock/context-bar DOM per sample; see
    * AppController.notifyView().
    */
   private applyPinchPan(): void {
-    const view = this.getView();
     const centroid = this.centroid();
     const dist = this.pinchDistance();
+    const angle = this.pinchAngle();
     const viewState = this.getViewState();
 
     if (this.lastCentroid && this.lastPinchDist > 0 && dist > 0) {
-      const oldZoom = viewState.zoom;
-      const oldPan = viewState.pan;
-      const worldAnchor = {
-        x: (this.lastCentroid.x - view.w / 2) / oldZoom - oldPan.x,
-        y: (this.lastCentroid.y - view.h / 2) / oldZoom - oldPan.y,
-      };
-      const newZoom = Math.min(MAX_ZOOM, Math.max(MIN_ZOOM, oldZoom * (dist / this.lastPinchDist)));
-      viewState.zoom = newZoom;
-      viewState.pan = {
-        x: (centroid.x - view.w / 2) / newZoom - worldAnchor.x,
-        y: (centroid.y - view.h / 2) / newZoom - worldAnchor.y,
-      };
+      const world = this.worldAt(this.lastCentroid);
+      const zoom = Math.min(MAX_ZOOM, Math.max(MIN_ZOOM, viewState.zoom * (dist / this.lastPinchDist)));
+      let twist = angle - this.lastPinchAngle;
+      twist = Math.atan2(Math.sin(twist), Math.cos(twist)); // never a jump across ±180°
+      let rotation = (viewState.rotation ?? 0) + twist;
+      rotation = Math.atan2(Math.sin(rotation), Math.cos(rotation));
+      this.pinCamera(world, centroid, zoom, rotation);
+      this.controller.cameraTurning = true;
     }
     this.lastCentroid = centroid;
     this.lastPinchDist = dist;
+    this.lastPinchAngle = angle;
     this.controller.notifyView();
   }
 
@@ -347,7 +396,7 @@ export class PointerManager {
 
     if (this.mode === 'single') {
       const wasDrag = rec.maxTravel > TAP_MOVE_THRESHOLD;
-      this.gesture?.onUp({ x, y }, wasDrag);
+      this.gesture?.onUp(this.paper({ x, y }), wasDrag);
       this.gesture = null;
       this.mode = 'idle';
       this.session = null;
@@ -356,8 +405,11 @@ export class PointerManager {
       return;
     }
 
+    // A finger lifted while others stay: carry on from the fingers left, without a jump.
+    if (this.mode === 'multi' && this.active.size > 0) this.rebaseline();
     if (this.mode === 'multi' && this.active.size === 0) {
       this.controller.viewGesture = false;
+      this.controller.cameraTurning = false;
       this.controller.notifyView(); // back to full quality
       const s = this.session;
       if (s && s.maxTravel <= MULTI_TAP_MAX_TRAVEL && performance.now() - s.startTime <= MULTI_TAP_MAX_MS) {
@@ -404,6 +456,7 @@ export class PointerManager {
     this.lastCentroid = null;
     this.lastPinchDist = 0;
     this.controller.viewGesture = false;
+    this.controller.cameraTurning = false;
     this.controller.pointerScreenPos = null;
     if (wasSingle && this.before) this.controller.restoreGestureState(this.before);
     this.before = null;

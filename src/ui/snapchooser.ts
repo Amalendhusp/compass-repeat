@@ -6,8 +6,8 @@
 //
 // Also here: the small "No point here yet" bubble, with its optional "Divide in 2" shortcut.
 
-import type { AppController } from '../app/controller.ts';
-import { worldToScreen } from '../app/controller.ts';
+import type { AppController, ViewTransform } from '../app/controller.ts';
+import { paperToScreen, worldToScreen } from '../app/controller.ts';
 import type { Vec2 } from '../model/types.ts';
 import { addSegmentDivisionPoints } from '../model/doc.ts';
 import { lineChoiceBadges } from '../render/renderer.ts';
@@ -115,8 +115,8 @@ function modelFor(controller: AppController): Model | null {
   return null;
 }
 
-export function syncSnapChooser(controller: AppController, canvas: HTMLCanvasElement, view?: () => { zoom: number; pan: Vec2; w: number; h: number } | null): void {
-  syncNoPoint(controller, canvas);
+export function syncSnapChooser(controller: AppController, canvas: HTMLCanvasElement, view?: () => ViewTransform | null): void {
+  syncNoPoint(controller, canvas, view);
   const model = modelFor(controller);
   if (mounted && model && mounted.key === model.key) return;
   unmount();
@@ -183,14 +183,20 @@ export function syncSnapChooser(controller: AppController, canvas: HTMLCanvasEle
   const preferred: Vec2[] = [];
   const lc = controller.lineChoice;
   if (lc) {
-    const anchor = { x: r.left + lc.anchorScreen.x, y: r.top + lc.anchorScreen.y };
-    keepOut.push({ x: anchor.x, y: anchor.y, r: ANCHOR_KEEPOUT + 6 });
+    // Tool positions are in the paper frame; on the page they are where the (maybe turned) canvas shows them.
     const v = view?.();
+    const onCanvas = (p: Vec2) => (v ? paperToScreen(v, p) : p);
+    const a = onCanvas(lc.anchorScreen);
+    const anchor = { x: r.left + a.x, y: r.top + a.y };
+    keepOut.push({ x: anchor.x, y: anchor.y, r: ANCHOR_KEEPOUT + 6 });
     if (v) {
-      for (const b of lineChoiceBadges(controller, v)) keepOut.push({ x: r.left + b.x, y: r.top + b.y, r: 18 });
+      for (const b0 of lineChoiceBadges(controller, v)) {
+        const b = onCanvas(b0);
+        keepOut.push({ x: r.left + b.x, y: r.top + b.y, r: 18 });
+      }
       // keep the candidates' own nearby stretch clear too, where it can be seen
       for (const c of lc.candidates) {
-        const s = worldToScreen(v, c.badgeAt);
+        const s = onCanvas(worldToScreen(v, c.badgeAt));
         keepOut.push({ x: r.left + s.x, y: r.top + s.y, r: 16 });
       }
     }
@@ -220,7 +226,7 @@ export function syncSnapChooser(controller: AppController, canvas: HTMLCanvasEle
 
 let hint: { key: object; el: HTMLElement } | null = null;
 
-function syncNoPoint(controller: AppController, canvas: HTMLCanvasElement): void {
+function syncNoPoint(controller: AppController, canvas: HTMLCanvasElement, view?: () => ViewTransform | null): void {
   const np = controller.noPoint;
   if (hint && hint.key === np) return;
   hint?.el.remove();
@@ -252,7 +258,10 @@ function syncNoPoint(controller: AppController, canvas: HTMLCanvasElement): void
   document.body.appendChild(el);
   const r = canvas.getBoundingClientRect();
   const area = visibleArea(canvas);
-  const anchor = { x: r.left + np.anchorScreen.x, y: r.top + np.anchorScreen.y };
+  // The tap was in the paper frame; on the page it is where the (maybe turned) canvas shows it.
+  const v = view?.();
+  const a = v ? paperToScreen(v, np.anchorScreen) : np.anchorScreen;
+  const anchor = { x: r.left + a.x, y: r.top + a.y };
   const w = el.offsetWidth;
   const h = el.offsetHeight;
   const keepOut: Circle[] = [{ x: anchor.x, y: anchor.y, r: 24 }];

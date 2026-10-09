@@ -1,6 +1,6 @@
 import './style.css';
 import { cloneDoc, createDoc, defaultRepeatDisplay, placeFrame } from './model/doc.ts';
-import { AppController, type ToolId, type ViewTransform } from './app/controller.ts';
+import { AppController, cameraView, paperToScreen, type ToolId, type ViewTransform } from './app/controller.ts';
 import { PointerManager } from './interaction/pointer.ts';
 import { selectTool } from './interaction/tools/select.ts';
 import { circleTool } from './interaction/tools/circle.ts';
@@ -14,7 +14,7 @@ import { intersectionTool } from './interaction/tools/intersectionTool.ts';
 import { render } from './render/renderer.ts';
 import { renderRepeat } from './render/repeatRenderer.ts';
 import { renderIntersection } from './render/intersectionRenderer.ts';
-import { intersectionBounds } from './geometry/intersection.ts';
+import { intersectionCopies } from './geometry/intersection.ts';
 import { drawUnderlayOutline, onUnderlayImage, screenLayers } from './render/underlay.ts';
 import { referenceTakeover } from './interaction/referenceTransform.ts';
 import { buildShell, closeAnyPopover } from './ui/shell.ts';
@@ -24,7 +24,7 @@ import { openStartScreen, type CardActions } from './ui/startscreen.ts';
 import { buildDrawFrameHud } from './ui/drawframehud.ts';
 import { attachDrawFrame } from './interaction/drawframe.ts';
 import { initToast } from './ui/toast.ts';
-import type { Doc, FrameKind } from './model/types.ts';
+import type { Camera, Doc, FrameKind } from './model/types.ts';
 import { resolvePoint } from './geometry/kernel.ts';
 import { worldToScreen } from './app/controller.ts';
 import { attachAutosave, type AutosaveHandle } from './persist/autosave.ts';
@@ -40,8 +40,8 @@ import { showToast } from './ui/toast.ts';
 import { genId } from './model/id.ts';
 import { setupCanvasDPR } from './render/canvasSetup.ts';
 import { attachDiagnostics } from './ui/diagnostics.ts';
-import { computeVisibleBounds } from './geometry/bounds.ts';
-import { ensureRepeatDefaults, fitBounds as repeatFitBounds, firstEntryBounds } from './geometry/lattice.ts';
+import { computeVisibleBounds, discBounds, turned } from './geometry/bounds.ts';
+import { ensureRepeatDefaults, firstEntryBounds, fitInstances, motifRadius } from './geometry/lattice.ts';
 import { preventSafariPageZoom } from './interaction/preventPageZoom.ts';
 import { migrateLegacyFillKeys } from './geometry/regions.ts';
 
@@ -77,8 +77,11 @@ const FIT_PADDING = 0.86; // consistent margin around the fitted geometry, both 
 /** Shared by fitView and fitRepeatView: fits `bounds` into whatever usable rectangle the canvas
  * currently has, writing the result into `viewState` directly (never through commit — Fit is a
  * view action, same as Phase 3.6 item 2 established for pan/zoom generally). The usable rectangle
- * excludes wherever the floating context-bar/dock overlay obstructs the bottom of the canvas. */
-function fitViewState(viewState: { zoom: number; pan: { x: number; y: number } }, bounds: { minX: number; minY: number; maxX: number; maxY: number } | null, fallbackRadius: number, fallbackCentre: { x: number; y: number }, canvas: HTMLCanvasElement, overlay: HTMLElement): void {
+ * excludes wherever the floating context-bar/dock overlay obstructs the bottom of the canvas.
+ *
+ * A turned camera keeps its turn: `boundsFor(turn)` gives the bounds as that turned view sees them
+ * (geometry/bounds.ts — turned()), so what is fitted is what is actually shown, corners and all. */
+function fitViewState(viewState: Camera, boundsFor: (turn: number) => { minX: number; minY: number; maxX: number; maxY: number } | null, fallbackRadius: number, fallbackCentre: { x: number; y: number }, canvas: HTMLCanvasElement, overlay: HTMLElement): void {
   const canvasW = canvas.clientWidth || 1;
   const canvasH = canvas.clientHeight || 1;
   const canvasRect = canvas.getBoundingClientRect();
@@ -89,9 +92,11 @@ function fitViewState(viewState: { zoom: number; pan: { x: number; y: number } }
   const usableTop = strip ? Math.min(Math.max(strip.bottom + 8 - canvasRect.top, 0), usableBottom * 0.5) : 0;
   const usableW = canvasW;
   const usableH = Math.min(Math.max(usableBottom - usableTop, canvasH * 0.25), canvasH);
+  const turn = viewState.rotation ?? 0;
+  const bounds = boundsFor(turn);
 
   let zoom: number;
-  let centre: { x: number; y: number };
+  let centre: { x: number; y: number }; // in the turned view's frame
   if (bounds) {
     const bw = Math.max(bounds.maxX - bounds.minX, 1e-6);
     const bh = Math.max(bounds.maxY - bounds.minY, 1e-6);
@@ -99,17 +104,16 @@ function fitViewState(viewState: { zoom: number; pan: { x: number; y: number } }
     centre = { x: (bounds.minX + bounds.maxX) / 2, y: (bounds.minY + bounds.maxY) / 2 };
   } else {
     zoom = (Math.min(usableW, usableH) * FIT_PADDING) / Math.max(fallbackRadius, 1);
-    centre = fallbackCentre;
+    centre = turned(fallbackCentre, turn);
   }
   zoom = Math.max(0.15, Math.min(8, zoom));
 
   viewState.zoom = zoom;
-  // worldToScreen(p) = (p + pan) * zoom + canvas-half — solve pan so `centre` lands on the
-  // usable rectangle's centre (canvas-local coordinates) rather than the full canvas's centre.
-  viewState.pan = {
-    x: (usableW / 2 - canvasW / 2) / zoom - centre.x,
-    y: (usableTop + usableH / 2 - canvasH / 2) / zoom - centre.y,
-  };
+  // On the canvas, a world point p lands at canvas-centre + turn((p + pan) * zoom) — solve pan so
+  // `centre` lands on the usable rectangle's centre rather than the full canvas's centre (with no
+  // turn: worldToScreen(p) = (p + pan) * zoom + canvas-half, as always).
+  const want = turned({ x: (usableW / 2 - canvasW / 2) / zoom - centre.x, y: (usableTop + usableH / 2 - canvasH / 2) / zoom - centre.y }, -turn);
+  viewState.pan = { x: want.x, y: want.y };
 }
 
 /**
@@ -124,16 +128,19 @@ function fitViewState(viewState: { zoom: number; pan: { x: number; y: number } }
  * the design. Never touches document geometry, only view.zoom/view.pan.
  */
 function fitView(controller: AppController, canvas: HTMLCanvasElement, overlay: HTMLElement): void {
-  const bounds = computeVisibleBounds(controller.doc);
-  fitViewState(controller.doc.view, bounds, controller.doc.frame.radius, controller.doc.frame.origin, canvas, overlay);
+  fitViewState(controller.doc.view, (turn) => computeVisibleBounds(controller.doc, turn), controller.doc.frame.radius, controller.doc.frame.origin, canvas, overlay);
   controller.notify();
 }
 
 /** Phase 5 item 13: Repeat's own Fit — a small 3×3 tessellation sample (geometry/lattice.ts's
- * fitBounds), never the Construct viewport, never an unbounded lattice extent. */
+ * fitInstances), never the Construct viewport, never an unbounded lattice extent: each instance's
+ * own frame extent (the same as lattice.ts's fitBounds when unturned). */
 function fitRepeatView(controller: AppController, canvas: HTMLCanvasElement, overlay: HTMLElement): void {
-  const bounds = repeatFitBounds(controller.doc);
-  fitViewState(controller.doc.repeatView, bounds, controller.doc.frame.radius, controller.doc.frame.origin, canvas, overlay);
+  const doc = controller.doc;
+  const pivot = doc.frame.origin;
+  const r = motifRadius(doc);
+  const discs = fitInstances(doc).map((pose) => ({ x: pivot.x + pose.translate.x, y: pivot.y + pose.translate.y, r }));
+  fitViewState(doc.repeatView, (turn) => discBounds(discs, turn), doc.frame.radius, doc.frame.origin, canvas, overlay);
   controller.notifyView();
 }
 
@@ -141,16 +148,22 @@ function fitRepeatView(controller: AppController, canvas: HTMLCanvasElement, ove
  * than fitRepeatView's own 3×3 sample (see firstEntryBounds): "here is my motif, with room for a
  * neighbour," not "here is the whole pattern." */
 function fitRepeatFirstEntry(controller: AppController, canvas: HTMLCanvasElement, overlay: HTMLElement): void {
-  const bounds = firstEntryBounds(controller.doc);
-  fitViewState(controller.doc.repeatView, bounds, controller.doc.frame.radius, controller.doc.frame.origin, canvas, overlay);
+  const doc = controller.doc;
+  const b = firstEntryBounds(doc);
+  const disc = { x: (b.minX + b.maxX) / 2, y: (b.minY + b.maxY) / 2, r: (b.maxX - b.minX) / 2 };
+  fitViewState(doc.repeatView, (turn) => discBounds([disc], turn), doc.frame.radius, doc.frame.origin, canvas, overlay);
   controller.notifyView();
 }
 
-/** Intersection's own Fit — the primary and its neighbours shown, into Intersection's own view. */
+/** Intersection's own Fit — the primary and its neighbours shown, into Intersection's own view
+ * (each construction's own frame extent — intersectionBounds' discs). */
 function fitIntersectionView(controller: AppController, canvas: HTMLCanvasElement, overlay: HTMLElement): void {
   const doc = controller.doc;
   doc.intersectionView ??= { zoom: 1, pan: { x: 0, y: 0 } };
-  fitViewState(doc.intersectionView, intersectionBounds(doc), doc.frame.radius, doc.frame.origin, canvas, overlay);
+  const pivot = doc.frame.origin;
+  const r = motifRadius(doc);
+  const discs = intersectionCopies(doc).map((c) => ({ x: pivot.x + c.pose.translate.x, y: pivot.y + c.pose.translate.y, r }));
+  fitViewState(doc.intersectionView, (turn) => discBounds(discs, turn), doc.frame.radius, doc.frame.origin, canvas, overlay);
   controller.notifyView();
 }
 
@@ -211,13 +224,13 @@ function boot(doc: Doc, opts: { fitToScreen: boolean; history?: { undo: Doc[]; r
   const ctx = canvas.getContext('2d');
   if (!ctx) throw new Error('2d context unavailable');
 
+  /** The current workspace's camera on this canvas — turned, when its camera is (see ViewTransform). */
   function getView(): ViewTransform {
-    const vs = viewState();
-    return { zoom: vs.zoom, pan: vs.pan, w: canvas.clientWidth, h: canvas.clientHeight };
+    return cameraView(viewState(), canvas.clientWidth, canvas.clientHeight);
   }
 
   /** Each workspace navigates its own camera. */
-  function viewState(): { zoom: number; pan: { x: number; y: number } } {
+  function viewState(): Camera {
     const doc = controller.doc;
     if (doc.view.workspace === 'repeat') return doc.repeatView;
     if (doc.view.workspace === 'intersection') return (doc.intersectionView ??= { zoom: 1, pan: { x: 0, y: 0 } });
@@ -247,7 +260,7 @@ function boot(doc: Doc, opts: { fitToScreen: boolean; history?: { undo: Doc[]; r
       canvas,
       getView,
       resolvePoint: (id: string) => resolvePoint(controller.doc, id),
-      pointScreen: (id: string) => worldToScreen(getView(), resolvePoint(controller.doc, id)),
+      pointScreen: (id: string) => paperToScreen(getView(), worldToScreen(getView(), resolvePoint(controller.doc, id))),
     };
   }
 
@@ -266,12 +279,22 @@ function boot(doc: Doc, opts: { fitToScreen: boolean; history?: { undo: Doc[]; r
     const ws = controller.doc.view.workspace;
     // The reference underlay and the artwork's viewing strength over it — on screen only.
     const layers = screenLayers(controller.doc, ws, controller.underlayDraft);
-    if (ws === 'repeat') copies = renderRepeat(ctx!, controller, getView(), undefined, layers);
-    else if (ws === 'intersection') copies = renderIntersection(ctx!, controller, getView(), layers);
-    else render(ctx!, controller, getView(), undefined, layers);
+    const view = getView();
+    // A turned camera: the paper frame (view) is drawn turned about the canvas centre — the whole
+    // world together; nothing drawn needs to know (ViewTransform).
+    ctx!.save();
+    if (view.screen) {
+      ctx!.translate(view.screen.w / 2, view.screen.h / 2);
+      ctx!.rotate(view.screen.turn);
+      ctx!.translate(-view.w / 2, -view.h / 2);
+    }
+    if (ws === 'repeat') copies = renderRepeat(ctx!, controller, view, undefined, layers);
+    else if (ws === 'intersection') copies = renderIntersection(ctx!, controller, view, layers);
+    else render(ctx!, controller, view, undefined, layers);
     // Reference Transform: the reference's bounds, over everything, while it can be moved.
     const moving = controller.underlayDraft ?? controller.doc.underlay;
-    if (controller.referenceTransform && moving) drawUnderlayOutline(ctx!, moving, getView());
+    if (controller.referenceTransform && moving) drawUnderlayOutline(ctx!, moving, view);
+    ctx!.restore();
     diagnostics?.record(performance.now() - t0, copies);
   }
   const requestDraw = () => {

@@ -11,7 +11,7 @@
 
 import type { Doc, Vec2 } from '../model/types.ts';
 import type { AppController, PrecisionCandidate, ViewTransform } from '../app/controller.ts';
-import { worldToScreen } from '../app/controller.ts';
+import { paperToScreen, screenToPaper, worldToScreen } from '../app/controller.ts';
 import { resolvePoint } from '../geometry/kernel.ts';
 import { isPointOrphanedByTrim } from '../geometry/usage.ts';
 import { dist } from '../geometry/vec.ts';
@@ -95,10 +95,12 @@ export function spreadMarkers(points: Vec2[], centre: Vec2, minGap: number, boun
 }
 
 function loupeCentre(anchor: Vec2, view: ViewTransform): Vec2 {
-  let y = anchor.y - LOUPE_OFFSET;
-  if (y - LOUPE_R < LOUPE_MARGIN) y = anchor.y + LOUPE_OFFSET;
-  const x = Math.min(Math.max(anchor.x, LOUPE_R + LOUPE_MARGIN), view.w - LOUPE_R - LOUPE_MARGIN);
-  return { x, y };
+  // Above the finger as the screen shows it (and on it), however the camera is turned.
+  const a = paperToScreen(view, anchor);
+  let y = a.y - LOUPE_OFFSET;
+  if (y - LOUPE_R < LOUPE_MARGIN) y = a.y + LOUPE_OFFSET;
+  const x = Math.min(Math.max(a.x, LOUPE_R + LOUPE_MARGIN), (view.screen?.w ?? view.w) - LOUPE_R - LOUPE_MARGIN);
+  return screenToPaper(view, { x, y });
 }
 
 /**

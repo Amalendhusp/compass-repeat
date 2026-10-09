@@ -383,6 +383,8 @@ export class AppController {
   intersectionPicks: IntersectionPick[] = [];
   /** Intersection: whether a tap picks lines or points (the Snap row's switch). */
   intersectionPickKind: PickKind = 'line';
+  /** While a two-finger camera gesture is under way (for the brief turn readout). */
+  cameraTurning = false;
   /** Reference Transform mode: while on, the canvas's fingers move, scale and turn the reference
    * (interaction/referenceTransform.ts) instead of reaching the tools or the camera. Session state. */
   referenceTransform = false;
@@ -686,11 +688,63 @@ export class AppController {
   }
 }
 
+/**
+ * How the artwork's coordinates are drawn: `worldToScreen` maps them into this frame. Without
+ * `screen` that frame is the canvas itself. With it, the workspace camera is turned: the frame is
+ * the "paper" — the unturned view, large enough (w × h) to cover the whole canvas once turned —
+ * and the canvas shows it turned by `screen.turn` about the canvas centre. Every tool, hit test
+ * and renderer works in the paper frame exactly as with an unturned camera; only the canvas
+ * drawing (main.ts) and the pointer (interaction/pointer.ts) turn it — and anything placed in the
+ * page itself (paperToScreen).
+ */
 export interface ViewTransform {
   zoom: number;
   pan: Vec2;
   w: number;
   h: number;
+  /** The canvas's own size and the camera's turn, when turned. */
+  screen?: { w: number; h: number; turn: number };
+}
+
+/** The view for a workspace camera on a canvas of w × h (CSS px). */
+export function cameraView(camera: { zoom: number; pan: Vec2; rotation?: number }, w: number, h: number): ViewTransform {
+  const turn = camera.rotation ?? 0;
+  if (!turn) return { zoom: camera.zoom, pan: camera.pan, w, h };
+  const c = Math.abs(Math.cos(turn));
+  const n = Math.abs(Math.sin(turn));
+  return { zoom: camera.zoom, pan: camera.pan, w: w * c + h * n, h: w * n + h * c, screen: { w, h, turn } };
+}
+
+/** A point in the paper frame, on the canvas itself (canvas px). */
+export function paperToScreen(v: ViewTransform, p: Vec2): Vec2 {
+  const s = v.screen;
+  if (!s) return p;
+  const dx = p.x - v.w / 2;
+  const dy = p.y - v.h / 2;
+  const c = Math.cos(s.turn);
+  const n = Math.sin(s.turn);
+  return { x: s.w / 2 + dx * c - dy * n, y: s.h / 2 + dx * n + dy * c };
+}
+
+/** A canvas point (canvas px), in the paper frame. */
+export function screenToPaper(v: ViewTransform, p: Vec2): Vec2 {
+  const s = v.screen;
+  if (!s) return p;
+  const dx = p.x - s.w / 2;
+  const dy = p.y - s.h / 2;
+  const c = Math.cos(s.turn);
+  const n = Math.sin(s.turn);
+  return { x: v.w / 2 + dx * c + dy * n, y: v.h / 2 - dx * n + dy * c };
+}
+
+/** The same pan and zoom on the canvas, unturned — what exports and Timelapse frame. */
+export function unturned(v: ViewTransform): ViewTransform {
+  return v.screen ? { zoom: v.zoom, pan: v.pan, w: v.screen.w, h: v.screen.h } : v;
+}
+
+/** The camera's turn on screen (radians), for what must stay upright on screen (text). */
+export function screenTurn(v: ViewTransform): number {
+  return v.screen?.turn ?? 0;
 }
 
 export function worldToScreen(v: ViewTransform, p: Vec2): Vec2 {

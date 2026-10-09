@@ -2079,3 +2079,24 @@ canvas.stage {
 .popover-menu.panel .reference-transform {
   font-weight: 600;
 }
+/* A turned camera: the angle, quietly, only while two fingers are turning the view. */
+.turn-readout {
+  position: absolute;
+  top: 10px;
+  left: 50%;
+  transform: translateX(-50%);
+  padding: 3px 9px;
+  border-radius: 9px;
+  background: rgba(251, 249, 245, 0.85);
+  color: var(--muted);
+  font-size: 12px;
+  font-weight: 600;
+  font-variant-numeric: tabular-nums;
+  pointer-events: none;
+  opacity: 0;
+  transition: opacity 0.4s ease;
+}
+.turn-readout.show {
+  opacity: 1;
+  transition: opacity 0.1s ease;
+}
