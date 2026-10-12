@@ -986,12 +986,13 @@ function showReferencePanel(anchor: HTMLElement, controller: AppController, root
             if (controller.doc.underlay?.refId === r.id) return;
             // Choosing (or replacing) the reference is one Undo step; it starts at the same place
             // whichever workspace it is chosen in (underlay.ts — initialUnderlay) — except that a
-            // reference replacing a missing one takes over its placement, proportions apart.
+            // reference replacing a missing one takes over every workspace's placement of it,
+            // proportions apart.
             const old = controller.doc.underlay;
             const replacingMissing = !!old && (!library?.some((x) => x.id === old.refId) || underlayImage(old.refId).state === 'missing');
             controller.commit((d) => {
-              const fresh = initialUnderlay(d, r);
-              d.underlay = replacingMissing && old ? { ...old, centre: { ...old.centre }, refId: fresh.refId, aspect: fresh.aspect } : fresh;
+              const fresh = initialUnderlay(d, r, d.view.workspace);
+              d.underlay = replacingMissing && old ? { ...structuredClone(old), refId: fresh.refId, aspect: fresh.aspect } : fresh;
             });
             onChange();
             build();

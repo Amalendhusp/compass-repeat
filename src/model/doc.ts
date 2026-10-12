@@ -545,7 +545,7 @@ export function cloneDoc(doc: Doc): Doc {
     },
     view: { ...doc.view, pan: { ...doc.view.pan } },
     ...(doc.intersection ? { intersection: structuredClone(doc.intersection) } : null),
-    ...(doc.underlay ? { underlay: { ...doc.underlay, centre: { ...doc.underlay.centre } } } : null),
+    ...(doc.underlay ? { underlay: structuredClone(doc.underlay) } : null),
   };
 }
 

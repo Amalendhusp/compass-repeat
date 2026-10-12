@@ -1,9 +1,9 @@
 // Reference Transform: while it is on (controller.referenceTransform), every finger on the canvas
 // moves the reference instead of reaching a tool or the camera (PointerManager's takeover). One
 // finger slides it; two fingers scale it uniformly and turn it together, about the point between
-// them — as if the image were held under the fingers. Only Doc.underlay's centre, width and
-// rotation change: in the artwork's own coordinates, so every workspace sees the same result; no
-// camera and no geometry is touched.
+// them — as if the image were held under the fingers. Only this workspace's placement of it changes
+// (centre, width, rotation, in the artwork's own coordinates — render/underlay.ts): never another
+// workspace's, no camera and no geometry.
 //
 // The touch is shown live (controller.underlayDraft) and committed once, when the last finger
 // lifts — one Undo step per complete gesture. A pointercancel puts it back untouched.
@@ -12,6 +12,7 @@ import type { Underlay, Vec2 } from '../model/types.ts';
 import type { AppController, ViewTransform } from '../app/controller.ts';
 import { screenToWorld } from '../app/controller.ts';
 import type { PointerTakeover } from './pointer.ts';
+import { underlayIn, withPlacement } from '../render/underlay.ts';
 
 /** The reference stays between these widths, as multiples of the frame radius. */
 const MIN_WIDTH = 0.05;
@@ -53,7 +54,8 @@ export function transformedUnderlay(base: Underlay, basePts: Vec2[], pts: Vec2[]
 export function referenceTakeover(controller: AppController, getView: () => ViewTransform): PointerTakeover | null {
   if (!controller.referenceTransform || !controller.doc.underlay) return null;
   const view = getView(); // the camera can't move during the touch: every finger is the reference's
-  const start = controller.doc.underlay;
+  const ws = controller.doc.view.workspace;
+  const start = underlayIn(controller.doc.underlay, ws); // as this workspace shows it
   let base: Underlay = start;
   let basePts: Vec2[] = [];
   const world = (pts: Vec2[]) => pts.slice(0, 2).map((p) => screenToWorld(view, p));
@@ -75,7 +77,7 @@ export function referenceTakeover(controller: AppController, getView: () => View
       const moved = next && (next.centre.x !== start.centre.x || next.centre.y !== start.centre.y || next.width !== start.width || next.rotation !== start.rotation);
       if (moved) {
         controller.commit((d) => {
-          if (d.underlay) d.underlay = { ...d.underlay, centre: { ...next.centre }, width: next.width, rotation: next.rotation };
+          if (d.underlay) d.underlay = withPlacement(d.underlay, ws, next);
         });
       } else controller.notifyView();
     },

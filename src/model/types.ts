@@ -112,18 +112,31 @@ export interface IntersectionLayout {
 export type Workspace = 'construct' | 'intersection' | 'repeat';
 
 /** A reference image placed in an artwork's own coordinates (see Doc.underlay). */
-export interface Underlay {
-  /** Its Reference Library id. */
-  refId: string;
+/** Where a reference lies in the artwork's own coordinates. */
+export interface UnderlayPlacement {
   /** Where its centre lies, in the artwork's coordinates. */
   centre: Vec2;
-  /** Its width, in the artwork's units; its height follows from `aspect`. */
+  /** Its width, in the artwork's units; its height follows from the image's `aspect`. */
   width: number;
-  /** Its turn about its centre (radians). */
+  /** Its turn about its centre (radians) — relative to the artwork, never the camera. */
   rotation: number;
+}
+
+/**
+ * A reference image under an artwork: one Reference Library image (one `refId`, never copied), and
+ * where it lies in each workspace — Construct, Intersection and Repeat each keep their own
+ * placement (render/underlay.ts — placementOf). The placement fields of the underlay itself are
+ * the most recently established placement: what a workspace that has none yet starts from, and
+ * the one shared placement of artworks made before placements were per workspace.
+ */
+export interface Underlay extends UnderlayPlacement {
+  /** Its Reference Library id. */
+  refId: string;
   /** The image's own width ÷ height, as imported — so it is always drawn undistorted, and still
    * known if the library image goes missing. */
   aspect: number;
+  /** Each workspace's own placement, once it has one. */
+  placements?: Partial<Record<Workspace, UnderlayPlacement>>;
 }
 
 /** One workspace's viewing balance between the reference and the artwork. */
@@ -257,9 +270,9 @@ export interface Doc {
    * Redo never adds or removes one (carried across them like the cameras). */
   intersectionSnapshots?: IntersectionSnapshot[];
   /** The reference image under this artwork (one at most): which Reference Library image, and
-   * where it lies in the artwork's own coordinates — the same in every workspace, each of which
-   * only looks at it through its own camera. Never image data (that stays in the library). Part of
-   * Undo; never part of the recorded artwork, its exports or its Timelapse. */
+   * where it lies in the artwork's own coordinates in each workspace (each also looking at it
+   * through its own camera). Never image data (that stays in the library). Part of Undo; never
+   * part of the recorded artwork, its exports or its Timelapse. */
   underlay?: Underlay;
   /** How the reference and the artwork are balanced for viewing, in each workspace — not history
    * (carried across Undo/Redo like the cameras). Absent = the defaults (underlay.ts). */

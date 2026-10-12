@@ -1,7 +1,13 @@
 // The reference underlay on screen: one image, fixed in the artwork's own coordinates
-// (Doc.underlay), drawn just above the background and below the artwork in every workspace —
-// each workspace only looks at it through its own camera, so it never moves when a camera does,
-// nor with Intersection's copies or Repeat's tiles. And the viewing balance (Doc.underlayView, per
+// (Doc.underlay), drawn just above the background and below the artwork in every workspace — at
+// that workspace's own placement of it, looked at through that workspace's own camera, so it never
+// moves when a camera does, nor with Intersection's copies or Repeat's tiles.
+//
+// Placements per workspace: one image, one refId, and in each of Construct, Intersection and Repeat
+// its own centre, width and turn. A workspace that has none yet takes the most recently established
+// one the first time it shows the reference, and from then on keeps its own (settleUnderlay) —
+// never following another workspace again. An artwork from before placements were per workspace
+// gives all three its one shared placement. And the viewing balance (Doc.underlayView, per
 // workspace): how strongly the reference shows, and how strongly the artwork shows over it.
 //
 // Artwork opacity is a view only: the artwork part of a frame is drawn exactly as always, onto a
@@ -9,7 +15,7 @@
 // styling changes, overlaps don't darken, and the interaction aids drawn after it (selection, snap
 // feedback, handles, rings) keep full strength. Exports, thumbnails and Timelapse never come here.
 
-import type { Doc, Underlay, UnderlayView, Workspace } from '../model/types.ts';
+import type { Doc, Underlay, UnderlayPlacement, UnderlayView, Workspace } from '../model/types.ts';
 import type { ViewTransform } from '../app/controller.ts';
 import { worldToScreen } from '../app/controller.ts';
 import type { ReferenceRecord } from '../persist/referenceStore.ts';
@@ -33,10 +39,46 @@ export function withUnderlayView(doc: Doc, ws: Workspace, patch: Partial<Underla
  * chosen from: centred on the frame's centre, unturned, its shorter side twice the frame's
  * diameter (4 × the frame radius), its proportions exactly its own.
  */
-export function initialUnderlay(doc: Doc, ref: Pick<ReferenceRecord, 'id' | 'sourceWidth' | 'sourceHeight'>): Underlay {
+export function initialUnderlay(doc: Doc, ref: Pick<ReferenceRecord, 'id' | 'sourceWidth' | 'sourceHeight'>, ws: Workspace): Underlay {
   const aspect = ref.sourceWidth / ref.sourceHeight;
   const shorter = 4 * doc.frame.radius;
-  return { refId: ref.id, centre: { ...doc.frame.origin }, width: aspect >= 1 ? shorter * aspect : shorter, rotation: 0, aspect };
+  const p: UnderlayPlacement = { centre: { ...doc.frame.origin }, width: aspect >= 1 ? shorter * aspect : shorter, rotation: 0 };
+  // The workspace it is chosen in has it from the start; the others take it when first shown.
+  return { refId: ref.id, aspect, ...p, placements: { [ws]: { ...p, centre: { ...p.centre } } } };
+}
+
+const WORKSPACES: Workspace[] = ['construct', 'intersection', 'repeat'];
+const placementCopy = (p: UnderlayPlacement): UnderlayPlacement => ({ centre: { ...p.centre }, width: p.width, rotation: p.rotation });
+
+/** A workspace's placement of the reference — its own, or (until it has one) the most recently
+ * established. */
+export function placementOf(u: Underlay, ws: Workspace): UnderlayPlacement {
+  return u.placements?.[ws] ?? u;
+}
+
+/** The reference as a workspace shows it: the image, at that workspace's placement. */
+export function underlayIn(u: Underlay, ws: Workspace): Underlay {
+  return { ...u, ...placementCopy(placementOf(u, ws)) };
+}
+
+/** The underlay with one workspace's placement set — which becomes the most recently established. */
+export function withPlacement(u: Underlay, ws: Workspace, p: UnderlayPlacement): Underlay {
+  return { ...u, ...placementCopy(p), placements: { ...u.placements, [ws]: placementCopy(p) } };
+}
+
+/**
+ * Gives the workspace now showing the reference its own placement, if it has none yet: from the
+ * most recently established placement, at this moment — after which it never follows another
+ * workspace. An artwork from before placements were per workspace gives all three its one shared
+ * placement, so it looks exactly as it did. A view matter like the cameras: written into the
+ * current artwork state in place (never an Undo step, never a recorded change). True if it wrote.
+ */
+export function settleUnderlay(doc: Doc, ws: Workspace): boolean {
+  const u = doc.underlay;
+  if (!u || u.placements?.[ws]) return false;
+  const placements = u.placements ? { ...u.placements, [ws]: placementCopy(u) } : Object.fromEntries(WORKSPACES.map((w) => [w, placementCopy(u)]));
+  doc.underlay = { ...u, placements };
+  return true;
 }
 
 // ---- the images themselves, decoded only when shown ----
@@ -126,7 +168,7 @@ export function screenLayers(doc: Doc, ws: Workspace, draft?: Underlay | null): 
 }
 
 export function drawUnderlay(ctx: CanvasRenderingContext2D, doc: Doc, view: ViewTransform, ws: Workspace, draft?: Underlay | null): void {
-  const u = draft ?? doc.underlay;
+  const u = draft ?? (doc.underlay && underlayIn(doc.underlay, ws));
   if (!u) return;
   const v = underlayViewOf(doc, ws);
   if (!v.visible || v.referenceOpacity <= 0) return;

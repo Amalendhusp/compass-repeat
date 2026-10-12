@@ -15,7 +15,7 @@ import { render } from './render/renderer.ts';
 import { renderRepeat } from './render/repeatRenderer.ts';
 import { renderIntersection } from './render/intersectionRenderer.ts';
 import { intersectionCopies } from './geometry/intersection.ts';
-import { drawUnderlayOutline, onUnderlayImage, screenLayers } from './render/underlay.ts';
+import { drawUnderlayOutline, onUnderlayImage, screenLayers, settleUnderlay, underlayIn } from './render/underlay.ts';
 import { referenceTakeover } from './interaction/referenceTransform.ts';
 import { buildShell, closeAnyPopover } from './ui/shell.ts';
 import { openGuide, type CoachHost } from './tutorial/engine.ts';
@@ -175,6 +175,11 @@ function boot(doc: Doc, opts: { fitToScreen: boolean; history?: { undo: Doc[]; r
   const controller = new AppController(doc);
   // §9 restore: "the tool reset to Select" — AppController already defaults tool to 'select'.
   if (opts.history) controller.restoreHistory(opts.history.undo, opts.history.redo);
+  // The reference: a workspace showing it for the first time takes its own placement from the most
+  // recently established one (an older artwork's one shared placement goes to all three) — now,
+  // and whenever the artwork state or workspace changes (render/underlay.ts — settleUnderlay).
+  settleUnderlay(controller.doc, controller.doc.view.workspace);
+  controller.subscribe(() => settleUnderlay(controller.doc, controller.doc.view.workspace));
 
   const fitFor = (ws: Doc['view']['workspace']) => (ws === 'repeat' ? fitRepeatView : ws === 'intersection' ? fitIntersectionView : fitView);
   const fit = () => fitFor(controller.doc.view.workspace)(controller, canvas, overlay);
@@ -292,7 +297,7 @@ function boot(doc: Doc, opts: { fitToScreen: boolean; history?: { undo: Doc[]; r
     else if (ws === 'intersection') copies = renderIntersection(ctx!, controller, view, layers);
     else render(ctx!, controller, view, undefined, layers);
     // Reference Transform: the reference's bounds, over everything, while it can be moved.
-    const moving = controller.underlayDraft ?? controller.doc.underlay;
+    const moving = controller.underlayDraft ?? (controller.doc.underlay && underlayIn(controller.doc.underlay, ws));
     if (controller.referenceTransform && moving) drawUnderlayOutline(ctx!, moving, view);
     ctx!.restore();
     diagnostics?.record(performance.now() - t0, copies);
