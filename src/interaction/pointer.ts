@@ -79,6 +79,10 @@ export class PointerManager {
   private lastPinchAngle = 0;
   /** Phase 5.12a: the state as it was when the first finger of the current touch went down. */
   private before: GestureSnapshot | null = null;
+  /** The view the single-finger tool works in. Usually the camera's own; in Intersect, while a
+   * construction tool is on, the active instance's (geometry/intersectionLink.ts — instanceCamera),
+   * so the tool works in the construction's own coordinates. The camera gesture never uses it. */
+  getToolView: () => ViewTransform = () => this.getView();
   /** Asked at each touch's first finger: whether something takes the whole touch over. */
   getTakeover: () => PointerTakeover | null = () => null;
   /** The current touch's takeover, if it has one. */
@@ -219,7 +223,13 @@ export class PointerManager {
 
   /** Focus construction follows the working finger (kept in world space, so it stays put under pan). */
   private noteFocus(x: number, y: number): void {
-    this.controller.focusWorld = this.worldAt({ x, y });
+    const view = this.getToolView();
+    this.controller.focusWorld = screenToWorld(view, screenToPaper(view, { x, y }));
+  }
+
+  /** A canvas point (canvas px) in the tool's paper frame. */
+  private toolPaper(sp: Vec2): Vec2 {
+    return screenToPaper(this.getToolView(), sp);
   }
 
   private centroid(): Vec2 {
@@ -299,11 +309,11 @@ export class PointerManager {
       this.mode = 'single';
       // Item 7: the "near finger" reveal radius follows the actual touch point, independent
       // of whichever tool is active.
-      const p = this.paper({ x, y });
+      const p = this.toolPaper({ x, y });
       this.controller.pointerScreenPos = p;
       this.noteFocus(x, y);
       const tool = this.getTool();
-      this.gesture = tool ? tool.beginGesture(this.controller, this.getView(), p) : null;
+      this.gesture = tool ? tool.beginGesture(this.controller, this.getToolView(), p) : null;
       this.controller.notifyView();
     } else {
       if (this.gesture) {
@@ -333,7 +343,7 @@ export class PointerManager {
     if (this.session) this.session.maxTravel = Math.max(this.session.maxTravel, rec.maxTravel);
 
     if (this.mode === 'single') {
-      const p = this.paper({ x, y });
+      const p = this.toolPaper({ x, y });
       this.controller.pointerScreenPos = p;
       this.noteFocus(x, y);
       this.gesture?.onMove(p);
@@ -396,7 +406,7 @@ export class PointerManager {
 
     if (this.mode === 'single') {
       const wasDrag = rec.maxTravel > TAP_MOVE_THRESHOLD;
-      this.gesture?.onUp(this.paper({ x, y }), wasDrag);
+      this.gesture?.onUp(this.toolPaper({ x, y }), wasDrag);
       this.gesture = null;
       this.mode = 'idle';
       this.session = null;

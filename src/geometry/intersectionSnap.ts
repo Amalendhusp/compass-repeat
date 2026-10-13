@@ -99,7 +99,7 @@ function localLines(doc: Doc): LocalLine[] {
 const pointCache = new WeakMap<Doc, { id: PointId; at: Vec2 }[]>();
 
 /** The construction's own points (unplaced) — every point but the hidden internal ones. */
-function localPoints(doc: Doc): { id: PointId; at: Vec2 }[] {
+export function localPoints(doc: Doc): { id: PointId; at: Vec2 }[] {
   let pts = pointCache.get(doc);
   if (pts) return pts;
   pts = [];
@@ -162,7 +162,7 @@ function drawnAt(doc: Doc, id: EntityId, extensions: boolean, at?: Vec2): boolea
  * copy shows — a crossing of two drawn pieces, a drawn line's end or corner, an arc's end, or the
  * centre of a drawn circle. Not the many points that only mark a place on a line (divisions,
  * midpoints, points on a curve), and never anything on trimmed or hidden geometry. */
-function pointShown(doc: Doc, id: PointId, at: Vec2, extensions: boolean): boolean {
+export function pointShown(doc: Doc, id: PointId, at: Vec2, extensions: boolean): boolean {
   const point = findPoint(doc, id);
   if (!point) return false;
   if (point.kind === 'centre') return drawnAt(doc, point.entity, extensions);

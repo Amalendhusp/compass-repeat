@@ -309,6 +309,12 @@ export class AppController {
    * Construction line or a through-both-points Extension line (spec's extension-line logic,
    * dashed/subdued). Sticky across gestures, like Fair's old stroke default was. */
   lineMode: 'construction' | 'extension' = 'construction';
+  /** Line: how its direction is given — freely (A → B), or exactly parallel / perpendicular to a
+   * reference line, through one point. A tool mode like `lineMode`. */
+  lineGuide: 'free' | 'parallel' | 'perpendicular' = 'free';
+  /** Line → Parallel / Perpendicular: the reference line chosen (its two ends, in the
+   * construction's coordinates), until another is chosen or the mode is left. */
+  lineReference: { a: Vec2; b: Vec2 } | null = null;
   /** Phase 5.6 item 19: Repeat's Space action — while on, a one-finger tap colours negative-space
    * classes instead of reaching the lattice handles. Session state, never saved. */
   spaceMode = false;

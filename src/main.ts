@@ -1,6 +1,6 @@
 import './style.css';
 import { cloneDoc, createDoc, defaultRepeatDisplay, placeFrame } from './model/doc.ts';
-import { AppController, cameraView, paperToScreen, type ToolId, type ViewTransform } from './app/controller.ts';
+import { AppController, cameraView, paperToScreen, screenToPaper, screenToWorld, type ToolId, type ViewTransform } from './app/controller.ts';
 import { PointerManager } from './interaction/pointer.ts';
 import { selectTool } from './interaction/tools/select.ts';
 import { circleTool } from './interaction/tools/circle.ts';
@@ -11,10 +11,14 @@ import { fairTool } from './interaction/tools/fair.ts';
 import { fillTool } from './interaction/tools/fill.ts';
 import { repeatTool } from './interaction/tools/repeatTool.ts';
 import { intersectionTool } from './interaction/tools/intersectionTool.ts';
-import { render } from './render/renderer.ts';
+import { drawInteraction, render } from './render/renderer.ts';
 import { renderRepeat } from './render/repeatRenderer.ts';
 import { renderIntersection } from './render/intersectionRenderer.ts';
-import { intersectionCopies } from './geometry/intersection.ts';
+import { intersectionCopies, layoutOf, type IntersectionCopy } from './geometry/intersection.ts';
+import { contextLineNear, contextPointNear, instanceCamera, instanceUnder } from './geometry/intersectionLink.ts';
+import { setContextProvider } from './interaction/context.ts';
+import { isNearAnyCurve, pickPointTarget } from './interaction/hittest.ts';
+import type { ToolModule } from './interaction/tools/types.ts';
 import { drawUnderlayOutline, onUnderlayImage, screenLayers, settleUnderlay, underlayIn } from './render/underlay.ts';
 import { referenceTakeover } from './interaction/referenceTransform.ts';
 import { buildShell, closeAnyPopover } from './ui/shell.ts';
@@ -180,6 +184,16 @@ function boot(doc: Doc, opts: { fitToScreen: boolean; history?: { undo: Doc[]; r
   // and whenever the artwork state or workspace changes (render/underlay.ts — settleUnderlay).
   settleUnderlay(controller.doc, controller.doc.view.workspace);
   controller.subscribe(() => settleUnderlay(controller.doc, controller.doc.view.workspace));
+  // A Parallel / Perpendicular reference is given in the active instance's frame as arranged: it
+  // goes when the workspace, the active instance or the arrangement changes (and with the tool).
+  let referenceFor = '';
+  controller.subscribe(() => {
+    const doc = controller.doc;
+    const now = doc.view.workspace === 'intersection' ? `${controller.intersectionSelected ?? ''}|${JSON.stringify(layoutOf(doc))}` : doc.view.workspace;
+    if (now !== referenceFor || controller.tool !== 'line' || controller.lineGuide === 'free') controller.lineReference = null;
+    referenceFor = now;
+  });
+
 
   const fitFor = (ws: Doc['view']['workspace']) => (ws === 'repeat' ? fitRepeatView : ws === 'intersection' ? fitIntersectionView : fitView);
   const fit = () => fitFor(controller.doc.view.workspace)(controller, canvas, overlay);
@@ -190,6 +204,7 @@ function boot(doc: Doc, opts: { fitToScreen: boolean; history?: { undo: Doc[]; r
     onSave: () => saveArtwork(),
     onSaveAs: () => saveAsNewArtwork(),
     getView: () => getView(),
+    getToolView: () => getToolView(),
     // vNext Phase 4B: Timelapse reads the history after every change so far is recorded.
     timelapse: guideReturn
       ? null
@@ -207,7 +222,11 @@ function boot(doc: Doc, opts: { fitToScreen: boolean; history?: { undo: Doc[]; r
       // automatic Fit (a first look at the motif) or should leave the last Repeat view exactly
       // where the participant left it (item 12/18: Repeat's own viewport persists across visits).
       const firstEntry = ws === 'repeat' && controller.doc.repeat.family === undefined;
+      // A half-made step belongs to the workspace it was started in.
+      controller.cancelPending();
       controller.doc.view.workspace = ws;
+      // Intersect offers the construction tools but not Fill.
+      if (ws === 'intersection' && controller.tool === 'fill') controller.setTool('select');
       if (ws === 'repeat') {
         ensureRepeatDefaults(controller.doc);
         if (firstEntry) fitRepeatFirstEntry(controller, canvas, overlay);
@@ -242,16 +261,85 @@ function boot(doc: Doc, opts: { fitToScreen: boolean; history?: { undo: Doc[]; r
     return doc.view;
   }
 
+  // ---- Intersect as a linked editing workspace (geometry/intersectionLink.ts) ----
+  // Select arranges the instances, as before. A construction tool works on the ACTIVE instance —
+  // the one selected (the Primary until another is) — through that instance's own view, so the
+  // tool itself is Construct's, unchanged, and what it commits is an edit of the one construction.
+  const LINKED_TOOLS: ToolId[] = ['circle', 'line', 'arc', 'divide', 'fair'];
+  function linkedTool(): ToolModule | null {
+    if (controller.doc.view.workspace !== 'intersection' || !LINKED_TOOLS.includes(controller.tool)) return null;
+    return tools[controller.tool] ?? null;
+  }
+  function activeCopy(): IntersectionCopy {
+    const copies = intersectionCopies(controller.doc);
+    return copies.find((c) => c.key === controller.intersectionSelected) ?? copies[0]!;
+  }
+  /** The view the single-finger tool works in: the camera's own — or, for a construction tool in
+   * Intersect, the active instance's (its placement, then the camera). */
+  function getToolView(): ViewTransform {
+    if (!linkedTool()) return getView();
+    return cameraView(instanceCamera(viewState(), controller.doc.frame.origin, activeCopy().pose), canvas.clientWidth, canvas.clientHeight);
+  }
+  /** Whether a construction step is under way that belongs to the active instance as it is — or
+   * the tool is Line's Parallel / Perpendicular, where a tap on another instance's line means
+   * "this is the reference", never "work on that instance". */
+  const midStep = () =>
+    !!controller.pending || !!controller.incircle || !!controller.copyRadius || !!controller.divide || !!controller.precision || (controller.tool === 'line' && controller.lineGuide !== 'free');
+  /**
+   * A construction tool in Intersect. A touch on the active instance (its points, its curves, or a
+   * contextual place) is the tool's, as it stands. Otherwise — and only between steps — a touch on
+   * another instance's geometry makes THAT instance the active one, and the tool works there.
+   */
+  function onActiveInstance(tool: ToolModule): ToolModule {
+    return {
+      id: tool.id,
+      hint: (c) => tool.hint(c),
+      beginGesture(c, view, sp) {
+        const doc = c.doc;
+        if (!midStep() && !pickPointTarget(doc, view, sp) && !isNearAnyCurve(doc, view, sp)) {
+          const other = instanceUnder(doc, intersectionCopies(doc), activeCopy().key, screenToWorld(view, sp), 16 / view.zoom);
+          if (other) {
+            const onCanvas = paperToScreen(view, sp);
+            c.intersectionSelected = other;
+            const next = getToolView();
+            c.notify();
+            return tool.beginGesture(c, next, screenToPaper(next, onCanvas));
+          }
+        }
+        return tool.beginGesture(c, view, sp);
+      },
+    };
+  }
+  // Contextual places for the construction tools: only in Intersect, only around the finger.
+  setContextProvider({
+    point(view, sp, radiusPx) {
+      if (!linkedTool()) return null;
+      const doc = controller.doc;
+      const hit = contextPointNear(doc, intersectionCopies(doc), activeCopy().key, screenToWorld(view, sp), radiusPx / view.zoom);
+      return hit && { at: hit.at, screenD: hit.d * view.zoom, label: hit.label };
+    },
+    line(view, sp, radiusPx) {
+      if (!linkedTool()) return null;
+      const doc = controller.doc;
+      return contextLineNear(doc, intersectionCopies(doc), activeCopy().key, screenToWorld(view, sp), radiusPx / view.zoom);
+    },
+  });
   const pointer = new PointerManager(
     canvas,
     controller,
     getView,
     () => {
       const ws = controller.doc.view.workspace;
-      return ws === 'repeat' ? repeatTool : ws === 'intersection' ? intersectionTool : (tools[controller.tool] ?? null);
+      if (ws === 'repeat') return repeatTool;
+      if (ws === 'intersection') {
+        const linked = linkedTool();
+        return linked ? onActiveInstance(linked) : intersectionTool;
+      }
+      return tools[controller.tool] ?? null;
     },
     () => viewState(),
   );
+  pointer.getToolView = getToolView;
   // While the reference's Transform mode is on, a touch moves the reference, not a tool or the camera.
   pointer.getTakeover = () => referenceTakeover(controller, getView);
   const autosave = guideReturn ? inertAutosave : attachAutosave(controller);
@@ -264,6 +352,7 @@ function boot(doc: Doc, opts: { fitToScreen: boolean; history?: { undo: Doc[]; r
       controller,
       canvas,
       getView,
+      getToolView,
       resolvePoint: (id: string) => resolvePoint(controller.doc, id),
       pointScreen: (id: string) => paperToScreen(getView(), worldToScreen(getView(), resolvePoint(controller.doc, id))),
     };
@@ -300,6 +389,19 @@ function boot(doc: Doc, opts: { fitToScreen: boolean; history?: { undo: Doc[]; r
     const moving = controller.underlayDraft ?? (controller.doc.underlay && underlayIn(controller.doc.underlay, ws));
     if (controller.referenceTransform && moving) drawUnderlayOutline(ctx!, moving, view);
     ctx!.restore();
+    // Intersect, a construction tool at work: its own feedback (previews, points, snap marks) on
+    // the active instance, through that instance's view.
+    if (linkedTool()) {
+      const toolView = getToolView();
+      ctx!.save();
+      if (toolView.screen) {
+        ctx!.translate(toolView.screen.w / 2, toolView.screen.h / 2);
+        ctx!.rotate(toolView.screen.turn);
+        ctx!.translate(-toolView.w / 2, -toolView.h / 2);
+      }
+      drawInteraction(ctx!, controller, toolView);
+      ctx!.restore();
+    }
     diagnostics?.record(performance.now() - t0, copies);
   }
   const requestDraw = () => {
@@ -349,6 +451,7 @@ function boot(doc: Doc, opts: { fitToScreen: boolean; history?: { undo: Doc[]; r
     fit,
     teardown: () => {
       running = false;
+      setContextProvider(null);
       offUnderlayImage();
       stopResizing();
       document.removeEventListener('visibilitychange', onVisibility);

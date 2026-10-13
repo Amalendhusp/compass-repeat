@@ -26,7 +26,8 @@ import { deriveSelectableGroups, groupContainingParam } from '../geometry/segmen
 import { isCrossingPoint, isPointOrphanedByTrim } from '../geometry/usage.ts';
 import { dist } from '../geometry/vec.ts';
 import type { Gesture } from './tools/types.ts';
-import { curveCandidatesAt, isPointTargetEligibleIn, pickPointTarget, POINT_HIT_RADIUS, type PointHit } from './hittest.ts';
+import { CONTEXT_YIELD_PX, curveCandidatesAt, isPointTargetEligibleIn, pickPointTarget, POINT_HIT_RADIUS, type PointHit } from './hittest.ts';
+import { contextPointAt } from './context.ts';
 import { closePrecision, movePrecision, openPrecision } from './precision.ts';
 
 export const SWITCH_PX = 6;
@@ -164,6 +165,15 @@ export class SnapTracker {
   pick(view: ViewTransform, screenPos: Vec2): SnapHit | null {
     let cands = snapCandidates(this.doc, view, screenPos);
     this.noPoint = null;
+    // A contextual place (Intersect: another instance's point, or a crossing between instances —
+    // context.ts) is taken when it is plainly the nearest thing under the finger; a point of the
+    // construction itself wins a near-tie. Never one of the loupe's candidates.
+    const ctx = contextPointAt(view, screenPos);
+    if (ctx && (!cands[0] || ctx.screenD + CONTEXT_YIELD_PX < cands[0].screenD)) {
+      this.candidates = [];
+      this.current = null;
+      return { id: null, at: ctx.at, screenD: ctx.screenD, label: ctx.label, context: true };
+    }
     const onCurve = this.onCurveWithoutPoint(view, screenPos, cands[0]);
     if (onCurve) {
       cands = [];
@@ -288,7 +298,7 @@ export function noPointGesture(controller: AppController, info: Omit<NoPointHint
 export function confirmSnap(controller: AppController, hit: SnapHit | null, hint?: string): void {
   if (!hit) return;
   const p = hit.id ? controller.doc.points.find((q) => q.id === hit.id) : undefined;
-  const label = hit.label ?? (p ? snapLabel(p) : 'New point on curve');
+  const label = hit.label ?? (p ? snapLabel(p) : hit.context ? 'Crossing' : 'New point on curve');
   const ms = hint ? CONFIRM_WITH_HINT_MS : CONFIRM_MS;
   const record = { at: hit.at, label, hint, until: performance.now() + ms };
   controller.snapConfirm = record;

@@ -1369,6 +1369,9 @@ export function buildShell(
     onSaveAs: () => void;
     onSwitchWorkspace: (ws: 'construct' | 'intersection' | 'repeat') => void;
     getView: () => ViewTransform;
+    /** The view the single-finger tool works in (Intersect: the active instance's) — where tool-placed
+     * page elements belong. */
+    getToolView: () => ViewTransform;
     /** vNext Phase 4B: null for the Beginner Guide's practice artwork (no history, no Timelapse). */
     timelapse: TimelapseSupport | null;
   },
@@ -2022,9 +2025,35 @@ export function buildShell(
   }
 
 
+  // Line: how its direction is given — a compact strip over the ribbon, only while Line is the tool
+  // (Construct and Intersect alike). Parallel / Perpendicular take a reference line, then a point.
+  const lineStrip = document.createElement('div');
+  lineStrip.className = 'segmented-mini line-strip';
+  lineStrip.setAttribute('role', 'group');
+  lineStrip.setAttribute('aria-label', 'Line direction');
+  const lineGuideBtns = new Map<AppController['lineGuide'], HTMLButtonElement>();
+  for (const [id, label] of [
+    ['free', 'Free'],
+    ['parallel', 'Parallel'],
+    ['perpendicular', 'Perpendicular'],
+  ] as const) {
+    const b = document.createElement('button');
+    b.textContent = label;
+    onTap(b, () => {
+      if (controller.lineGuide === id) return;
+      controller.cancelPending();
+      controller.lineGuide = id;
+      controller.lineReference = null;
+      controller.notify();
+    });
+    lineGuideBtns.set(id, b);
+    lineStrip.appendChild(b);
+  }
+
   overlay.appendChild(transformBar);
   overlay.appendChild(utilRow);
   overlay.appendChild(repeatPanel);
+  overlay.appendChild(lineStrip);
   overlay.appendChild(contextSlot);
   overlay.appendChild(dock);
   canvasWrap.appendChild(overlay);
@@ -2441,7 +2470,16 @@ export function buildShell(
           controller.notify();
         },
       );
-      if (pending?.kind === 'line') cue('A selected → choose B');
+      if (controller.lineGuide !== 'free') {
+        if (!controller.lineReference) cue('Tap the reference line');
+        else {
+          cue('Tap the point it goes through');
+          chip('Change line', () => {
+            controller.lineReference = null;
+            controller.notify();
+          });
+        }
+      } else if (pending?.kind === 'line') cue('A selected → choose B');
       const extendFor = controller.extendChip;
       if (extendFor && !pending) {
         chip('Extend', () => {
@@ -2547,10 +2585,13 @@ export function buildShell(
   let shownWorkspace = controller.doc.view.workspace;
 
   function update(): void {
-    syncSnapChooser(controller, canvas, opts.getView);
+    syncSnapChooser(controller, canvas, opts.getToolView);
     const inRepeat = controller.doc.view.workspace === 'repeat';
     const inIntersection = controller.doc.view.workspace === 'intersection';
-    const placing = inRepeat || inIntersection; // both use the bottom panel instead of the dock
+    const placing = inRepeat || inIntersection; // both have a bottom panel of their own
+    // Intersect is also a linked editing workspace: the construction tools (not Fill) work on the
+    // active instance; Select arranges the instances. Repeat has no tools.
+    const building = inIntersection && controller.tool !== 'select';
     // Phase 5.3 item 1: a panel never outlives the workspace it belongs to.
     if (controller.doc.view.workspace !== shownWorkspace) {
       shownWorkspace = controller.doc.view.workspace;
@@ -2580,8 +2621,11 @@ export function buildShell(
     exportBtn.style.display = inIntersection ? 'none' : ''; // Intersection has nothing to share yet
     if (inRepeat) refreshGuidesBtn();
 
-    dock.style.display = placing ? 'none' : 'flex';
-    contextSlot.style.display = placing ? 'none' : 'flex';
+    dock.style.display = inRepeat ? 'none' : 'flex';
+    dockButtonEls.get('fill')!.style.display = inIntersection ? 'none' : '';
+    contextSlot.style.display = inRepeat || (inIntersection && !building) ? 'none' : 'flex';
+    lineStrip.style.display = !inRepeat && controller.tool === 'line' ? '' : 'none';
+    for (const [id, b] of lineGuideBtns) b.classList.toggle('active', controller.lineGuide === id);
     repeatPanel.style.display = placing ? 'flex' : 'none';
     // Repeat's lattice controls belong to Repeat; Intersection has its own rows.
     familyRow.style.display = inRepeat ? '' : 'none';
@@ -2601,6 +2645,11 @@ export function buildShell(
         refreshIxSnapshotsBtn();
         refreshIntersectionRows();
         refreshSnapRow();
+        // The Snap row belongs to arranging (Select); a construction tool has its own ribbon.
+        if (building) {
+          ixSnapRow.style.display = 'none';
+          renderRibbon();
+        }
       }
       updateRepeatStatus();
       return;

@@ -1,4 +1,11 @@
-// Line tool, spec §4.3, Point Lock per Phase 1.2a. Both endpoints must be point targets —
+// Line tool, spec §4.3, Point Lock per Phase 1.2a.
+//
+// Three ways of giving the line (controller.lineGuide): Free — A → B, as ever — and two exact
+// constructions from a reference line and one point: Parallel (the line through the point parallel
+// to the reference) and Perpendicular (the line through the point at 90° to it — a perpendicular
+// THROUGH A POINT, not a perpendicular bisector). Both land exactly as Line does, as Construction
+// or as an Extension line (controller.lineMode). See beginGuidedGesture.
+// Both endpoints must be point targets —
 // unlike Circle's radius, Line has no free-point fallback, so an empty-space release cancels
 // the pending step (§1.3) rather than planting a point.
 //
@@ -13,7 +20,8 @@ import type { AppController, ViewTransform } from '../../app/controller.ts';
 import { screenToWorld } from '../../app/controller.ts';
 import { epsilon, resolveEntityGeom, resolvePoint } from '../../geometry/kernel.ts';
 import { defaultSegmentKind, deriveSegments, effectiveSegmentKind } from '../../geometry/segments.ts';
-import { isNearAnyCurve } from '../hittest.ts';
+import { curveCandidatesAt, isNearAnyCurve } from '../hittest.ts';
+import { contextLineAt } from '../context.ts';
 import { buildNodeInset } from '../nodeinset.ts';
 import { confirmSnap, noPointGesture, PointHold, resolveTap, showNoPoint, SnapTracker } from '../snap.ts';
 import { materializeRef, refFromHit, refLocation, type PointRef } from '../pointref.ts';
@@ -288,50 +296,169 @@ function resolveOnSupportingLine(controller: AppController, aRef: PointRef, bRef
   return true;
 }
 
+/** What a new line between two points becomes, as Line always lands it: Construction, or — in
+ * Extension mode — an extended line whose every piece is Extension. (Phase 3.4 item 2: Line only
+ * ever creates Construction or Extension geometry, chosen by the context bar's mode toggle before
+ * the gesture starts — never Fair. An Extension line commits already `extended` AND with every one
+ * of its derived segments explicitly marked `state: 'extension'`; future splits inherit this
+ * automatically via segmentstate.ts's state-agnostic migration.) */
+function landLine(controller: AppController, d: Doc, aId: PointId, bId: PointId): EntityId {
+  const entity = addLineEntity(d, aId, bId);
+  if (controller.lineMode === 'extension' && entity.kind === 'line') {
+    entity.extended = true;
+    for (const seg of deriveSegments(d, entity)) d.segmentStates.set(seg.key, { state: 'extension' });
+  }
+  return entity.id;
+}
+
+/** After a line lands: the brief Extend / Promote to Fair offers. */
+function offerAfterLine(controller: AppController, newId: EntityId | null): void {
+  if (!newId) return;
+  const entity = controller.doc.entities.find((e) => e.id === newId);
+  if (entity?.kind === 'line' && !entity.extended) {
+    controller.setExtendChip(newId);
+    setTimeout(() => {
+      if (controller.extendChip?.entityId === newId) controller.setExtendChip(null);
+    }, 4000);
+  }
+  // Phase 3.4 item 3: offered for either mode — an Extension line "may later be promoted
+  // where appropriate" just as much as a Construction one.
+  controller.setFairPromoteChip(newId);
+  setTimeout(() => {
+    if (controller.fairPromoteChip?.entityId === newId) controller.setFairPromoteChip(null);
+  }, 4000);
+}
+
+// ---- Parallel / Perpendicular: a reference line, then the point the new line goes through ----
+
+const GUIDE_LINE_REACH_PX = 16;
+
+/** The straight line under the finger: one of the construction's own, else (in Intersect) another
+ * instance's — its two ends, in the construction's coordinates. */
+function straightLineAt(doc: Doc, view: ViewTransform, sp: Vec2): { a: Vec2; b: Vec2 } | null {
+  const own = curveCandidatesAt(doc, view, sp, GUIDE_LINE_REACH_PX).find((c) => c.entity.kind === 'line');
+  if (own) {
+    const g = resolveEntityGeom(doc, own.entity);
+    if (g.kind === 'line') return { a: { ...g.a }, b: { ...g.b } };
+  }
+  return contextLineAt(view, sp, GUIDE_LINE_REACH_PX);
+}
+
+/**
+ * The guided line through `at`: exactly parallel, or exactly perpendicular, to the reference —
+ * as long as the reference itself, centred on the point (an Extension line then runs on through).
+ * Exact: the direction is the reference's own (or that turned a quarter), never a measured angle.
+ */
+export function guidedLine(ref: { a: Vec2; b: Vec2 }, guide: 'parallel' | 'perpendicular', at: Vec2): { a: Vec2; b: Vec2 } {
+  const dx = ref.b.x - ref.a.x;
+  const dy = ref.b.y - ref.a.y;
+  const hx = (guide === 'parallel' ? dx : -dy) / 2;
+  const hy = (guide === 'parallel' ? dy : dx) / 2;
+  return { a: { x: at.x - hx, y: at.y - hy }, b: { x: at.x + hx, y: at.y + hy } };
+}
+
+function beginGuidedGesture(controller: AppController, view: ViewTransform, screenPos: Vec2, guide: 'parallel' | 'perpendicular'): Gesture | null {
+  const doc = controller.doc;
+  const ref = controller.lineReference;
+  if (!ref) {
+    // First the reference: a tap on a straight line.
+    return {
+      onMove() {},
+      onUp(sp, wasDrag) {
+        if (wasDrag) return;
+        const line = straightLineAt(doc, view, sp);
+        if (!line) {
+          showToast('Tap a straight line first');
+          return;
+        }
+        controller.lineReference = line;
+        controller.notify();
+      },
+      onCancel() {},
+    };
+  }
+  // Then the point: the line through it is previewed under the finger and made on release.
+  const tracker = new SnapTracker(doc);
+  let hit = tracker.pick(view, screenPos);
+  const show = (sp: Vec2) => {
+    controller.preview = hit ? { kind: 'line', ...guidedLine(ref, guide, hit.at) } : null;
+    controller.nodeInset = hit ? buildNodeInset(doc, view, sp, hit.at, tracker) : null;
+  };
+  show(screenPos);
+  controller.notifyView();
+  const clear = () => {
+    controller.preview = null;
+    controller.nodeInset = null;
+  };
+  return {
+    onMove(sp) {
+      hit = tracker.pick(view, sp);
+      show(sp);
+      controller.notifyView();
+    },
+    onUp(sp, wasDrag) {
+      hit = tracker.pick(view, sp);
+      clear();
+      if (!hit) {
+        if (!wasDrag && tracker.noPoint) showNoPoint(controller, tracker.noPoint);
+        controller.notify();
+        return;
+      }
+      const through = refFromHit(hit);
+      const ends = guidedLine(ref, guide, hit.at);
+      const aRef: PointRef = { kind: 'free', at: ends.a, reuse: true };
+      const bRef: PointRef = { kind: 'free', at: ends.b, reuse: true };
+      confirmSnap(controller, hit);
+      // Along a line that already exists: never a second, coincident line. In Extension mode that
+      // line gains its Extension role (as Line does); otherwise there is nothing to add.
+      const along = supportingLines(doc, ends.a, ends.b);
+      if (along.length > 0) {
+        if (controller.lineMode === 'extension' && !along.some((l) => l.line.extended)) {
+          const lineId = along[0]!.line.id;
+          controller.commit((d) => {
+            materializeRef(d, through);
+            const line = d.entities.find((e) => e.id === lineId);
+            if (line?.kind === 'line') line.extended = true;
+            invalidateGeometryCaches(d);
+          });
+        } else showToast('Already drawn');
+        controller.notify();
+        return;
+      }
+      let newId: EntityId | null = null;
+      controller.commit((d) => {
+        materializeRef(d, through); // the point itself, so the line can be built on there
+        const aId = materializeRef(d, aRef);
+        const bId = materializeRef(d, bRef);
+        if (aId !== bId) newId = landLine(controller, d, aId, bId);
+      });
+      offerAfterLine(controller, newId);
+      controller.notify();
+    },
+    onCancel() {
+      clear();
+      controller.notify();
+    },
+  };
+}
+
 export const lineTool: ToolModule = {
   id: 'line',
   hint(controller) {
+    if (controller.lineGuide !== 'free') return controller.lineReference ? 'Tap or drag to the point the line goes through' : 'Tap the reference line';
     if (controller.pending?.kind === 'line') {
       return controller.pointLockHint ? 'Point Targets · choose an existing point' : 'Tap or drag to the second point';
     }
     return 'Tap a point or a curve';
   },
   beginGesture(controller, view, screenPos): Gesture | null {
+    if (controller.lineGuide !== 'free') return beginGuidedGesture(controller, view, screenPos, controller.lineGuide);
     return beginLineLikeGesture(
       controller,
       view,
       screenPos,
-      // Phase 3.4 item 2: Line only ever creates Construction or Extension geometry, chosen by
-      // the context bar's mode toggle before the gesture starts — never Fair (that's Fair's own
-      // promotion job, item 1). An Extension line commits already `extended` (drives the existing
-      // dashed-tail rendering) AND with every one of its derived segments explicitly marked
-      // `state: 'extension'` (dashed/subdued for the between-points span too, not just the
-      // tails) — future splits inherit this automatically via segmentstate.ts's existing,
-      // state-agnostic migration, the same mechanism Fair state has always relied on.
-      (d, aId, bId) => {
-        const entity = addLineEntity(d, aId, bId);
-        if (controller.lineMode === 'extension' && entity.kind === 'line') {
-          entity.extended = true;
-          for (const seg of deriveSegments(d, entity)) d.segmentStates.set(seg.key, { state: 'extension' });
-        }
-        return entity.id;
-      },
-      (newId) => {
-        if (!newId) return;
-        const entity = controller.doc.entities.find((e) => e.id === newId);
-        if (entity?.kind === 'line' && !entity.extended) {
-          controller.setExtendChip(newId);
-          setTimeout(() => {
-            if (controller.extendChip?.entityId === newId) controller.setExtendChip(null);
-          }, 4000);
-        }
-        // Phase 3.4 item 3: offered for either mode — an Extension line "may later be promoted
-        // where appropriate" just as much as a Construction one.
-        controller.setFairPromoteChip(newId);
-        setTimeout(() => {
-          if (controller.fairPromoteChip?.entityId === newId) controller.setFairPromoteChip(null);
-        }, 4000);
-      },
+      (d, aId, bId) => landLine(controller, d, aId, bId),
+      (newId) => offerAfterLine(controller, newId),
       (aRef, bRef) => resolveOnSupportingLine(controller, aRef, bRef),
     );
   },

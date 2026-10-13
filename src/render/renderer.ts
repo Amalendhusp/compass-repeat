@@ -1815,12 +1815,18 @@ export function render(ctx: CanvasRenderingContext2D, controller: AppController,
     ctx.restore();
     return;
   }
+  drawInteractionLayers(ctx, controller, view);
+  ctx.restore();
+}
+
+function drawInteractionLayers(ctx: CanvasRenderingContext2D, controller: AppController, view: ViewTransform): void {
   drawSelectionHighlights(ctx, controller.doc, view, controller.selection);
   drawPressHighlight(ctx, controller, view);
   drawIncircle(ctx, controller, view);
   drawCopyRadius(ctx, controller, view);
   drawFairTracePreview(ctx, controller, view);
   drawArcMeasure(ctx, controller, view);
+  drawLineGuide(ctx, controller, view);
   drawPreview(ctx, controller, view);
   drawDividePreview(ctx, controller, view);
   drawSweep(ctx, controller);
@@ -1833,5 +1839,37 @@ export function render(ctx: CanvasRenderingContext2D, controller: AppController,
   drawSnapFeedback(ctx, controller, view);
   drawNodeInset(ctx, controller, view);
   drawPrecisionLoupe(ctx, controller, view);
+}
+
+/**
+ * The construction tools' own feedback alone — previews, points, snap marks, loupes — with no
+ * background and no geometry: for Intersect, where the instances are already drawn and the tools
+ * work on the active one through its own view (geometry/intersectionLink.ts — instanceCamera).
+ */
+export function drawInteraction(ctx: CanvasRenderingContext2D, controller: AppController, view: ViewTransform): void {
+  ctx.save();
+  drawFairRunHalo(ctx, controller, view);
+  drawInteractionLayers(ctx, controller, view);
+  ctx.restore();
+}
+
+/** Line → Parallel / Perpendicular: the reference line chosen, quietly marked. */
+function drawLineGuide(ctx: CanvasRenderingContext2D, controller: AppController, view: ViewTransform): void {
+  const ref = controller.lineReference;
+  if (!ref || controller.tool !== 'line' || controller.lineGuide === 'free') return;
+  const a = worldToScreen(view, ref.a);
+  const b = worldToScreen(view, ref.b);
+  ctx.save();
+  ctx.lineCap = 'round';
+  ctx.strokeStyle = color.signal;
+  ctx.globalAlpha = 0.28;
+  ctx.lineWidth = 7;
+  ctx.beginPath();
+  ctx.moveTo(a.x, a.y);
+  ctx.lineTo(b.x, b.y);
+  ctx.stroke();
+  ctx.globalAlpha = 1;
+  ctx.lineWidth = 1.6;
+  ctx.stroke();
   ctx.restore();
 }

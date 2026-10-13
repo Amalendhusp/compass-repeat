@@ -9,8 +9,11 @@ import { computeConstructionRegions, computeFairRegions, findRegionAt } from '..
 import { isCrossingPoint, isPointOrphanedByTrim } from '../geometry/usage.ts';
 import { dist, sub } from '../geometry/vec.ts';
 import { screenToWorld, type SelectCandidate, type ViewTransform, worldToScreen } from '../app/controller.ts';
+import { contextPointAt } from './context.ts';
 
 export const POINT_HIT_RADIUS = 22;
+/** A contextual place must be this much nearer (px) than a point of the construction to be taken instead. */
+export const CONTEXT_YIELD_PX = 6;
 const CURVE_HIT_RADIUS = 16;
 
 export interface PointHit {
@@ -19,6 +22,8 @@ export interface PointHit {
   at: Vec2;
   screenD: number;
   implicit?: { host: EntityId; param: number };
+  /** A contextual place (interaction/context.ts) — not a point of the construction until used. */
+  context?: boolean;
 }
 
 /**
@@ -102,6 +107,12 @@ export function pickPointTarget(
     const d = dist(worldToScreen(view, at), screenPos);
     if (d > POINT_HIT_RADIUS) continue;
     if (d < (best?.screenD ?? Infinity)) best = { id: p.id, at, screenD: d };
+  }
+  // A contextual place (Intersect: another instance's point, or a crossing between instances) is
+  // taken when it is plainly the nearest thing; the construction's own point wins a near-tie.
+  if (!opts.explicitOnly) {
+    const ctx = contextPointAt(view, screenPos);
+    if (ctx && (!best || ctx.screenD + CONTEXT_YIELD_PX < best.screenD)) return { id: null, at: ctx.at, screenD: ctx.screenD, context: true };
   }
   if (best || opts.explicitOnly || !doc.pointTargets.free) return best;
 

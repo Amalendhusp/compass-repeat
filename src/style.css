@@ -2100,3 +2100,11 @@ canvas.stage {
   opacity: 1;
   transition: opacity 0.1s ease;
 }
+/* Line → Free | Parallel | Perpendicular: a compact strip over the ribbon, only while Line is the tool. */
+.line-strip {
+  align-self: flex-start;
+  box-shadow: 0 4px 12px rgba(30, 42, 54, 0.08);
+}
+.line-strip button {
+  padding: 6px 11px;
+}

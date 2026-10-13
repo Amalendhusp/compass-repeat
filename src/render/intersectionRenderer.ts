@@ -123,8 +123,11 @@ export function renderIntersection(ctx: CanvasRenderingContext2D, controller: Ap
     if (r?.kind === 'point') drawPointMark(ctx, view, r, n === 0 ? color.ink : colourOf(r.carrier ?? ''), n === 0);
   });
 
-  const selected = copies.find((c) => c.key === controller.intersectionSelected);
-  if (selected) drawRotationRing(ctx, doc, view, selected, controller.intersectionDrag?.key === selected.key && controller.intersectionDrag.mode === 'turn');
+  // Select arranges: the selected construction shows its rotation ring. A construction tool builds
+  // on the ACTIVE instance (the selected one — the Primary until another is): only a quiet ring.
+  const building = !!controller.tool && controller.tool !== 'select';
+  const selected = copies.find((c) => c.key === controller.intersectionSelected) ?? (building ? copies[0] : undefined);
+  if (selected) drawRotationRing(ctx, doc, view, selected, controller.intersectionDrag?.key === selected.key && controller.intersectionDrag.mode === 'turn', !building);
   ctx.restore();
   return copies.length;
 }
@@ -204,7 +207,7 @@ export function ringRadius(doc: Doc, view: ViewTransform): number {
 }
 
 /** The selected construction's rotation ring about its own centre, its marker at its rotation. */
-function drawRotationRing(ctx: CanvasRenderingContext2D, doc: Doc, view: ViewTransform, copy: IntersectionCopy, active: boolean): void {
+function drawRotationRing(ctx: CanvasRenderingContext2D, doc: Doc, view: ViewTransform, copy: IntersectionCopy, active: boolean, handle = true): void {
   const pivot = doc.frame.origin;
   const centre = worldToScreen(view, { x: pivot.x + copy.pose.translate.x, y: pivot.y + copy.pose.translate.y });
   const r = ringRadius(doc, view);
@@ -217,6 +220,7 @@ function drawRotationRing(ctx: CanvasRenderingContext2D, doc: Doc, view: ViewTra
   ctx.arc(centre.x, centre.y, r, 0, Math.PI * 2);
   ctx.stroke();
   ctx.restore();
+  if (!handle) return; // the active instance while building: no handle, nothing to grab
   const handleAngle = -Math.PI / 2 + copy.pose.rotation; // marker starts "up" at zero rotation
   const hx = centre.x + r * Math.cos(handleAngle);
   const hy = centre.y + r * Math.sin(handleAngle);
