@@ -3,10 +3,13 @@
 // stroke colours), so where lines cross it is plain which copy each one belongs to. The selected
 // construction shows a rotation ring about its own centre, in Repeat's rotation-ring style.
 //
-// Drawn: every copy's bounded construction, always — every piece that isn't trimmed or Extension:
-// Construction solid, Fair a little heavier — and, where that copy's Extensions switch is on, its
-// extension geometry, dashed: each extended line as the whole line through the view, and any
-// piece set to Extension. No fills, no points.
+// Drawn: every copy's bounded construction, always — every piece that isn't trimmed or Extension —
+// and, where that copy's Extensions switch is on, its extension geometry: each extended line as the
+// whole line through the view, and any piece set to Extension. No fills, no points.
+//
+// Scaffold and design read apart at a glance, in the instance's own colour throughout: Extension
+// thin, dashed and light; Construction thin and light; Fair solid, heavy and at full strength.
+// (Weight and strength never mark the active instance — that is the ring's job.)
 //
 // Picks for Snap (geometry/intersectionSnap.ts), kept quiet in a dense drawing: a picked line is
 // redrawn a little heavier over everything, the reference on a soft ink halo (or as an ink ring about
@@ -132,6 +135,10 @@ export function renderIntersection(ctx: CanvasRenderingContext2D, controller: Ap
   return copies.length;
 }
 
+const EXTENSION_ALPHA = 0.36;
+const CONSTRUCTION_ALPHA = 0.45;
+const FAIR_WIDTH = 2.8;
+
 /** Every construction, each in its own colour (the artwork part of the frame). */
 function drawCopies(ctx: CanvasRenderingContext2D, doc: Doc, view: ViewTransform, sc: Scaffold, copies: IntersectionCopy[]): void {
   ctx.lineCap = 'round';
@@ -145,15 +152,19 @@ function drawCopies(ctx: CanvasRenderingContext2D, doc: Doc, view: ViewTransform
       if (piece.kind === 'extension' && !copy.extensions) continue;
       appendPiece(piece.kind === 'fair' ? fair : piece.kind === 'extension' ? dashed : solid, doc, view, copy.pose, piece);
     }
+    // Scaffold and design, at a glance — in the instance's own colour throughout: Extension thin,
+    // dashed and light; Construction thin and light; Fair solid, heavy and at full strength.
     ctx.strokeStyle = copy.colour;
-    ctx.globalAlpha = 0.9;
-    ctx.lineWidth = 1.1;
+    ctx.globalAlpha = EXTENSION_ALPHA;
+    ctx.lineWidth = 0.9;
     ctx.setLineDash([...stroke.extensionDash]);
     ctx.stroke(dashed);
     ctx.setLineDash([]);
-    ctx.lineWidth = 1.3;
+    ctx.globalAlpha = CONSTRUCTION_ALPHA;
+    ctx.lineWidth = 1;
     ctx.stroke(solid);
-    ctx.lineWidth = 2.2;
+    ctx.globalAlpha = 1;
+    ctx.lineWidth = FAIR_WIDTH;
     ctx.stroke(fair);
   }
   ctx.globalAlpha = 1;

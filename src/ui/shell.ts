@@ -33,6 +33,7 @@ import { rotationFractionLabel } from '../render/repeatRenderer.ts';
 import { asReference, intersectionCopies, layoutOf, MAX_CONSTRUCTIONS, placedAt, PRIMARY, referenceCurrent, sliderToSpread, SPREAD_SLIDER_MAX, spreadToSlider, withAddedCopy, withCopySetting, withLayout, withoutCopy, withSpread } from '../geometry/intersection.ts';
 import { canMoveAgainst, convertPick, isPointPick, planSnap, resolvePick, type PickKind } from '../geometry/intersectionSnap.ts';
 import { PICK_REACH_PX } from '../interaction/tools/intersectionTool.ts';
+import { repeatSource, type RepeatSource } from '../geometry/repeatUnit.ts';
 import { artworksUsing, deleteReference, listReferences, type ReferenceRecord } from '../persist/referenceStore.ts';
 import { importReference, ReferenceImportError } from '../reference/importReference.ts';
 import { forgetUnderlayImage, initialUnderlay, onUnderlayImage, underlayImage, underlayViewOf, withUnderlayView } from '../render/underlay.ts';
@@ -1791,9 +1792,45 @@ export function buildShell(
       }),
     ),
   );
+  // Source: what stands at each lattice position — the motif (as ever), or the current Intersect
+  // arrangement as one unit (geometry/repeatUnit.ts). Only the choice is kept; nothing is copied.
+  // It shares Space's row (and steps aside while Space's own controls are out), so the panel is no
+  // taller. Spaces belong to the single motif's repeat, so Space rests while the source is Intersect.
+  const sourceGroup = document.createElement('div');
+  sourceGroup.className = 'source-group';
+  const sourceLabel = document.createElement('span');
+  sourceLabel.className = 'space-label';
+  sourceLabel.textContent = 'Source';
+  const sourceSeg = document.createElement('div');
+  sourceSeg.className = 'segmented-mini';
+  sourceSeg.setAttribute('role', 'group');
+  sourceSeg.setAttribute('aria-label', 'Repeat source');
+  const sourceBtns = new Map<RepeatSource, HTMLButtonElement>();
+  for (const [id, label, title] of [
+    ['motif', 'Motif', 'Repeat the motif itself'],
+    ['intersect', 'Intersect', 'Repeat the Intersect arrangement as one unit'],
+  ] as const) {
+    const b = document.createElement('button');
+    b.textContent = label;
+    b.title = title;
+    onTap(b, () => {
+      if (repeatSource(controller.doc) === id) return;
+      closeAnyPopover();
+      controller.spaceMode = false;
+      // A way of repeating, kept with Repeat's own settings: no geometry is made or changed.
+      controller.doc.repeatDisplay = { ...controller.doc.repeatDisplay, source: id };
+      controller.notify();
+    });
+    sourceBtns.set(id, b);
+    sourceSeg.appendChild(b);
+  }
+  sourceGroup.appendChild(sourceLabel);
+  sourceGroup.appendChild(sourceSeg);
+
   spaceRow.appendChild(spaceBtn);
   spaceRow.appendChild(spaceColourBtn);
   spaceRow.appendChild(spaceOpacityBtn);
+  spaceRow.appendChild(sourceGroup);
   repeatPanel.appendChild(spaceRow);
 
   // Spread: centres in or out about the reference group's centre (100% = the reference); Reference
@@ -2018,6 +2055,11 @@ export function buildShell(
     spaceBtn.setAttribute('aria-pressed', String(on));
     spaceColourBtn.style.display = on ? '' : 'none';
     spaceOpacityBtn.style.display = on ? '' : 'none';
+    const source = repeatSource(controller.doc);
+    sourceGroup.style.display = on ? 'none' : '';
+    for (const [id, b] of sourceBtns) b.classList.toggle('active', source === id);
+    spaceBtn.disabled = source === 'intersect';
+    spaceBtn.title = source === 'intersect' ? 'Space belongs to the motif’s own repeat — choose Source: Motif' : '';
     spaceDot.classList.toggle('none', !pref.colour);
     spaceDot.style.background = pref.colour ? withAlpha(pref.colour, pref.opacity) : '';
     spaceColourBtn.setAttribute('aria-label', `Space colour ${pref.colour ?? 'no fill'}`);

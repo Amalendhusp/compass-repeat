@@ -116,6 +116,25 @@ export function instancePose(repeat: RepeatSystem, i: number, j: number): Instan
   };
 }
 
+/**
+ * One placement after another, as one: `inner` first (never mirrored), then `outer`. With a
+ * placement p ↦ turn(mirror(p − pivot)) + pivot + t: the result mirrors as `outer` does, turns by
+ * outer's angle plus inner's (minus, when mirrored — a mirror reverses the inner turn), and lands
+ * inner's shift where `outer` carries it.
+ */
+export function composePose(outer: InstancePose, inner: InstancePose): InstancePose {
+  const y = outer.mirror ? -inner.translate.y : inner.translate.y;
+  const c = Math.cos(outer.rotation);
+  const n = Math.sin(outer.rotation);
+  return {
+    i: outer.i,
+    j: outer.j,
+    translate: { x: outer.translate.x + inner.translate.x * c - y * n, y: outer.translate.y + inner.translate.x * n + y * c },
+    rotation: outer.mirror ? outer.rotation - inner.rotation : outer.rotation + inner.rotation,
+    mirror: outer.mirror,
+  };
+}
+
 /** Maps a point in the ORIGINAL Construct-world onto where it sits for one repeat instance —
  * mirror (reflect across the pivot's local x-axis) applies before rotation, matching the angle
  * convention `poseArcAngles` below relies on. */
@@ -144,8 +163,10 @@ const MAX_INSTANCES = 400; // a hard safety cap — never render/iterate more th
 /** Phase 5 items 9/10: every (i, j) whose motif bound could touch the visible viewport (plus a
  * margin for the motif's own radius) — generated from the viewport itself, so pan/zoom reveals
  * more copies naturally and nothing needs to be pre-baked for "infinite" extent. */
-export function visibleInstances(doc: Doc, view: ViewTransform): InstancePose[] {
-  const reach = motifExtent(doc);
+export function visibleInstances(doc: Doc, view: ViewTransform, unitReach?: number): InstancePose[] {
+  // `unitReach`: how far what is drawn at each lattice position reaches from it, when that is more
+  // than one motif (Repeat from an Intersect arrangement — geometry/repeatUnit.ts).
+  const reach = unitReach ?? motifExtent(doc);
   const range = visibleLatticeRange(doc, view, reach);
   if (!range) return [instancePose(doc.repeat, 0, 0)]; // degenerate basis — just the reference
   const { i0, i1, j0, j1 } = range;

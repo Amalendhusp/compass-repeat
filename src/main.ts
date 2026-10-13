@@ -45,7 +45,8 @@ import { genId } from './model/id.ts';
 import { setupCanvasDPR } from './render/canvasSetup.ts';
 import { attachDiagnostics } from './ui/diagnostics.ts';
 import { computeVisibleBounds, discBounds, turned } from './geometry/bounds.ts';
-import { ensureRepeatDefaults, firstEntryBounds, fitInstances, motifRadius } from './geometry/lattice.ts';
+import { composePose, ensureRepeatDefaults, firstEntryBounds, fitInstances, motifRadius } from './geometry/lattice.ts';
+import { repeatUnit } from './geometry/repeatUnit.ts';
 import { preventSafariPageZoom } from './interaction/preventPageZoom.ts';
 import { migrateLegacyFillKeys } from './geometry/regions.ts';
 
@@ -143,7 +144,14 @@ function fitRepeatView(controller: AppController, canvas: HTMLCanvasElement, ove
   const doc = controller.doc;
   const pivot = doc.frame.origin;
   const r = motifRadius(doc);
-  const discs = fitInstances(doc).map((pose) => ({ x: pivot.x + pose.translate.x, y: pivot.y + pose.translate.y, r }));
+  // From an Intersect arrangement, each lattice position holds the whole unit: every instance's frame.
+  const members = repeatUnit(doc)?.members ?? [null];
+  const discs = fitInstances(doc).flatMap((lattice) =>
+    members.map((member) => {
+      const pose = member ? composePose(lattice, member) : lattice;
+      return { x: pivot.x + pose.translate.x, y: pivot.y + pose.translate.y, r };
+    }),
+  );
   fitViewState(doc.repeatView, (turn) => discBounds(discs, turn), doc.frame.radius, doc.frame.origin, canvas, overlay);
   controller.notifyView();
 }
@@ -222,8 +230,11 @@ function boot(doc: Doc, opts: { fitToScreen: boolean; history?: { undo: Doc[]; r
       // automatic Fit (a first look at the motif) or should leave the last Repeat view exactly
       // where the participant left it (item 12/18: Repeat's own viewport persists across visits).
       const firstEntry = ws === 'repeat' && controller.doc.repeat.family === undefined;
-      // A half-made step belongs to the workspace it was started in.
+      // A half-made step belongs to the workspace it was started in — and Line is Free again: an
+      // exact Parallel / Perpendicular mode is only ever on because it was just asked for.
       controller.cancelPending();
+      controller.lineGuide = 'free';
+      controller.lineReference = null;
       controller.doc.view.workspace = ws;
       // Intersect offers the construction tools but not Fill.
       if (ws === 'intersection' && controller.tool === 'fill') controller.setTool('select');

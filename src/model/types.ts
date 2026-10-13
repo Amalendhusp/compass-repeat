@@ -172,6 +172,10 @@ export interface RepeatDisplay {
   grid: boolean;
   handles: boolean;
   motifBoundary: boolean;
+  /** What Repeat repeats: the construction itself ('motif' — absent means this), or the current
+   * Intersect arrangement as one unit ('intersect': every instance, placed as arranged). Only the
+   * choice is kept — never a copy of any geometry (geometry/repeatUnit.ts). */
+  source?: 'motif' | 'intersect';
 }
 
 /** A workspace camera: how the artwork's own coordinates are shown — never the artwork itself. */

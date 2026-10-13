@@ -4,6 +4,12 @@
 // (item 19: never recompute motif topology per copy — only its placement changes per instance).
 // Phase 5.1: everything Appearance and Grid/Guides control is applied here at draw time only —
 // nothing in doc.repeatDisplay ever writes back into Fair/fill state.
+//
+// Repeat's source (geometry/repeatUnit.ts): at each lattice position stands the motif — or, from
+// Intersect, the whole arrangement as one unit: every instance drawn as the motif is, placed by its
+// own placement and then the lattice's. Within a unit, a Fair piece lying exactly on one an earlier
+// instance already draws (same place, same stroke) is drawn once (unitSkips) — decided here, at
+// draw time; the construction is never touched.
 
 import { drawArtworkLayer, type ScreenLayers } from './underlay.ts';
 import type { Doc, Entity, RepeatDisplay, RepeatSystem, SegmentState, Vec2 } from '../model/types.ts';
@@ -15,6 +21,7 @@ import { deriveSegments, type DerivedSegment } from '../geometry/segments.ts';
 import { computeDirectHoles, computeFairRegions, type FairRegion } from '../geometry/regions.ts';
 import { effectiveDpr } from './canvasSetup.ts';
 import {
+  composePose,
   instancePose,
   motifExtent,
   motifRadius,
@@ -24,6 +31,7 @@ import {
   visibleLatticeRange,
   type InstancePose,
 } from '../geometry/lattice.ts';
+import { repeatUnit, type RepeatUnit } from '../geometry/repeatUnit.ts';
 import { color, stroke } from './tokens.ts';
 import { makePath } from './svgContext.ts';
 import type { ArtworkExport } from './renderer.ts';
@@ -362,7 +370,7 @@ const IDENTITY: InstancePose = { i: 0, j: 0, translate: { x: 0, y: 0 }, rotation
 
 /** One copy's fills and Fair strokes, exactly as the vector path draws them. `lineScale` converts
  * the on-screen stroke widths into this target's pixels (1 on screen; DPR × detail in a sprite). */
-function drawCopy(ctx: CanvasRenderingContext2D, doc: Doc, view: ViewTransform, pose: InstancePose, flat: FlatMotif, display: RepeatDisplay, showFills: boolean, showStrokes: boolean, lineScale: number): void {
+function drawCopy(ctx: CanvasRenderingContext2D, doc: Doc, view: ViewTransform, pose: InstancePose, flat: FlatMotif, display: RepeatDisplay, showFills: boolean, showStrokes: boolean, lineScale: number, skip?: ReadonlySet<number> | null): void {
   const pivot = doc.frame.origin;
   const filledMap = doc.fills.get(doc.activeColourway);
   if (showFills && flat.holesOf && filledMap) {
@@ -383,7 +391,9 @@ function drawCopy(ctx: CanvasRenderingContext2D, doc: Doc, view: ViewTransform, 
   const colourOverride = display.strokeColour ?? null;
   const widthOverride = display.strokeWidth ?? null;
   if (!showStrokes || widthOverride === 0) return;
-  for (const { entity, seg, state } of flat.strokes) {
+  for (let n = 0; n < flat.strokes.length; n++) {
+    if (skip?.has(n)) continue; // already drawn, exactly here, by an earlier instance of the unit
+    const { entity, seg, state } = flat.strokes[n]!;
     ctx.strokeStyle = colourOverride ?? state.stroke?.colour ?? color.ink;
     ctx.lineWidth = (widthOverride ?? state.stroke?.width ?? stroke.fairDefault) * lineScale;
     ctx.lineCap = 'round';
@@ -391,6 +401,58 @@ function drawCopy(ctx: CanvasRenderingContext2D, doc: Doc, view: ViewTransform, 
     pathTransformedPiece(ctx, view, pivot, pose, doc, entity, seg.fromParam, seg.toParam);
     ctx.stroke();
   }
+}
+
+// ---- Repeat from an Intersect arrangement: the unit ----
+
+const skipCache = new WeakMap<Doc, { key: string; skips: (Set<number> | null)[] }>();
+
+/**
+ * For each instance of the unit, the Fair pieces it must not draw again: those lying exactly on a
+ * piece an earlier instance draws — same ends, same middle (so the same line piece, or the same
+ * arc), same stroke. Compared as placed, on a grid a millionth of the frame fine.
+ */
+function unitSkips(doc: Doc, flat: FlatMotif, unit: RepeatUnit): (Set<number> | null)[] {
+  const cached = skipCache.get(doc);
+  if (cached && cached.key === unit.key) return cached.skips;
+  const pivot = doc.frame.origin;
+  const q = Math.max(doc.frame.radius, 1e-6) * 1e-6;
+  const cell = (p: Vec2) => `${Math.round(p.x / q)},${Math.round(p.y / q)}`;
+  const seen = new Set<string>();
+  const skips: (Set<number> | null)[] = [];
+  for (const member of unit.members) {
+    let skip: Set<number> | null = null;
+    flat.strokes.forEach(({ entity, seg, state }, n) => {
+      const g = resolveEntityGeom(doc, entity);
+      let ends: [Vec2, Vec2];
+      let mid: Vec2;
+      if (g.kind === 'circle') {
+        let span = seg.toParam - seg.fromParam;
+        if (span <= 0) span += Math.PI * 2;
+        const at = (a: number): Vec2 => ({ x: g.centre.x + g.radius * Math.cos(a), y: g.centre.y + g.radius * Math.sin(a) });
+        ends = [at(seg.fromParam), at(seg.toParam)];
+        mid = at(seg.fromParam + span / 2);
+      } else {
+        const at = (t: number): Vec2 => ({ x: g.a.x + (g.b.x - g.a.x) * t, y: g.a.y + (g.b.y - g.a.y) * t });
+        ends = [at(seg.fromParam), at(seg.toParam)];
+        mid = at((seg.fromParam + seg.toParam) / 2);
+      }
+      const [e0, e1] = ends.map((p) => cell(transformPoint(pivot, member, p))).sort() as [string, string];
+      const key = `${g.kind}|${e0}|${e1}|${cell(transformPoint(pivot, member, mid))}|${state.stroke?.colour ?? ''}|${state.stroke?.width ?? ''}`;
+      if (seen.has(key)) (skip ??= new Set()).add(n);
+      else seen.add(key);
+    });
+    skips.push(skip);
+  }
+  skipCache.set(doc, { key: unit.key, skips });
+  return skips;
+}
+
+/** A whole unit at one lattice placement: each instance as the motif is drawn, placed by its own
+ * placement and then the lattice's. */
+function drawUnit(ctx: CanvasRenderingContext2D, doc: Doc, view: ViewTransform, pose: InstancePose, unit: RepeatUnit, flat: FlatMotif, display: RepeatDisplay, showFills: boolean, showStrokes: boolean, lineScale: number): void {
+  const skips = unitSkips(doc, flat, unit);
+  unit.members.forEach((member, k) => drawCopy(ctx, doc, view, composePose(pose, member), flat, display, showFills, showStrokes, lineScale, skips[k]));
 }
 
 interface Sprite {
@@ -410,11 +472,13 @@ const LOD_COPIES = 150;
  * mirrored per copy as its pose says). While fingers are pinching/panning, the last bitmap is simply
  * scaled (`allowStale`) and redrawn sharp on release. Null when it would be too large to be worth it.
  */
-function motifSprite(doc: Doc, display: RepeatDisplay, zoom: number, detail: number, allowStale: boolean, showFills: boolean, showStrokes: boolean): Sprite | null {
-  const key = `${display.artwork}|${display.fillOpacity}|${display.strokeColour ?? ''}|${display.strokeWidth ?? ''}|${detail}`;
-  if (sprite && sprite.doc === doc && (allowStale || (sprite.key === key && Math.abs(sprite.zoom / zoom - 1) < 0.005))) return sprite;
+function motifSprite(doc: Doc, display: RepeatDisplay, zoom: number, detail: number, allowStale: boolean, showFills: boolean, showStrokes: boolean, unit: RepeatUnit | null = null): Sprite | null {
+  // With a unit (Repeat from Intersect) the bitmap is the whole unit, about the lattice position.
+  const key = `${display.artwork}|${display.fillOpacity}|${display.strokeColour ?? ''}|${display.strokeWidth ?? ''}|${detail}${unit ? `|unit:${unit.key}` : ''}`;
+  const sameKind = !!sprite && sprite.key.includes('|unit:') === !!unit;
+  if (sprite && sprite.doc === doc && ((allowStale && sameKind) || (sprite.key === key && Math.abs(sprite.zoom / zoom - 1) < 0.005))) return sprite;
   const flat = flatMotif(doc);
-  const half = motifExtent(doc) * zoom + (display.strokeWidth ?? flat.maxStroke) + 2; // CSS px
+  const half = (unit ? unit.extent : motifExtent(doc)) * zoom + (display.strokeWidth ?? flat.maxStroke) + 2; // CSS px
   const scale = effectiveDpr() * detail;
   const px = Math.ceil(half * 2 * scale);
   if (px > MAX_SPRITE_PX || px < 4) return null;
@@ -427,7 +491,8 @@ function motifSprite(doc: Doc, display: RepeatDisplay, zoom: number, detail: num
   sctx.clearRect(0, 0, px, px);
   const pivot = doc.frame.origin;
   const local: ViewTransform = { zoom: zoom * scale, pan: { x: -pivot.x, y: -pivot.y }, w: px, h: px };
-  drawCopy(sctx, doc, local, IDENTITY, flat, display, showFills, showStrokes, scale);
+  if (unit) drawUnit(sctx, doc, local, IDENTITY, unit, flat, display, showFills, showStrokes, scale);
+  else drawCopy(sctx, doc, local, IDENTITY, flat, display, showFills, showStrokes, scale);
   sprite = { canvas, doc, key, zoom, cssSize: px / scale };
   return sprite;
 }
@@ -459,7 +524,9 @@ export function renderRepeat(ctx: CanvasRenderingContext2D, controller: AppContr
   const draftDoc = drag || rotating ? { ...doc, repeat } : doc;
 
   const pivot = doc.frame.origin;
-  const instances = visibleInstances(draftDoc, view);
+  // What stands at each lattice position: the motif, or the Intersect arrangement as one unit.
+  const unit = repeatUnit(doc);
+  const instances = visibleInstances(draftDoc, view, unit?.extent);
   // Repeat now always shows the whole design. A state recorded in the old Stroke-only or Fill-only
   // view (a Timelapse replays these) is still drawn as it looked then.
   const showFills = display.artwork !== 'stroke';
@@ -471,12 +538,13 @@ export function renderRepeat(ctx: CanvasRenderingContext2D, controller: AppContr
   layers?.underlay(ctx, view);
 
   const detail = instances.length > LOD_COPIES ? 0.5 : 1;
-  const bitmap = exp ? null : motifSprite(doc, display, view.zoom, detail, controller.viewGesture, showFills, showStrokes);
+  const bitmap = exp ? null : motifSprite(doc, display, view.zoom, detail, controller.viewGesture, showFills, showStrokes, unit);
 
   drawArtworkLayer(ctx, layers, (ctx) => {
     // Spaces sit on the background, under every motif. While a handle or the ring is being dragged
     // the arrangement is still changing, so they wait for release rather than show a stale shape.
-    if (showFills && !drag && !rotating) drawSpaces(ctx, doc, view);
+    // (Spaces are worked out for the single motif's own repeat; a unit of several instances has none.)
+    if (showFills && !drag && !rotating && !unit) drawSpaces(ctx, doc, view);
 
     for (const pose of instances) {
       if (bitmap) {
@@ -488,6 +556,8 @@ export function renderRepeat(ctx: CanvasRenderingContext2D, controller: AppContr
         if (pose.mirror) ctx.scale(1, -1);
         ctx.drawImage(bitmap.canvas, -size / 2, -size / 2, size, size);
         ctx.restore();
+      } else if (unit) {
+        drawUnit(ctx, doc, view, pose, unit, flat, display, showFills, showStrokes, 1);
       } else {
         drawCopy(ctx, doc, view, pose, flat, display, showFills, showStrokes, 1);
       }
@@ -501,7 +571,11 @@ export function renderRepeat(ctx: CanvasRenderingContext2D, controller: AppContr
       drawLatticeGrid(ctx, doc, repeat, view, !!drag, guideInk);
       if (!display.handles) drawBasisArrows(ctx, doc, repeat, view, guideInk);
     }
-    if (display.motifBoundary) drawFrameOutline(ctx, view, pivot, instancePose(repeat, 0, 0), doc, 0.6);
+    if (display.motifBoundary) {
+      const reference = instancePose(repeat, 0, 0);
+      if (unit) for (const member of unit.members) drawFrameOutline(ctx, view, pivot, composePose(reference, member), doc, 0.6);
+      else drawFrameOutline(ctx, view, pivot, reference, doc, 0.6);
+    }
   }
   if (!exp && display.handles && !controller.spaceMode) {
     drawLatticeHandles(ctx, controller, repeat, view);

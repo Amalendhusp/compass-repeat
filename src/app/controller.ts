@@ -643,6 +643,10 @@ export class AppController {
     this.pointEdit = null;
     this.clearFillDiagnostic();
     this.tool = tool === this.tool || tool === 'select' ? 'select' : tool;
+    // Line always starts Free: Parallel / Perpendicular last only for the Line session they were
+    // chosen in (Construction / Extension — lineMode — is kept, as ever).
+    this.lineGuide = 'free';
+    this.lineReference = null;
     if (this.tool !== 'select') this.selection = [];
     this.notify();
   }
