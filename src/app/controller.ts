@@ -340,8 +340,13 @@ export class AppController {
   /** Phase 5.2 item 11: non-null while a long-press has started collecting regions of one type. */
   multiRegion: { fair: boolean } | null = null;
   pointEdit: PointEditState | null = null;
-  /** Phase 5.2 item 21: the current Divide target and N, shown in the compact ribbon. */
-  divide: { target: DivideTarget; n: number } | null = null;
+  /** Phase 5.2 item 21: the current Divide target and N, shown in the compact ribbon. `angle` is
+   * where a whole circle's first point goes (radians, 0 = its rightmost point): turned by dragging
+   * a preview point (tools/divide.ts), used by Apply, never stored anywhere else. */
+  divide: { target: DivideTarget; n: number; angle: number } | null = null;
+  /** While a finger is turning a whole circle's preview: which preview point it holds, and the
+   * places already on the circle that preview points have met exactly — read only by the renderer. */
+  divideTurn: { index: number; met: Vec2[] } | null = null;
   /** Phase 1.2a: true while the active tool's current touch is over a curve that Point Lock is
    * blocking from becoming a point — drives the "Point Lock · choose an existing point" hint. */
   pointLockHint = false;
@@ -574,6 +579,7 @@ export class AppController {
     this.pointEdit = null;
     this.divide = null;
     this.dividePreview = null;
+    this.divideTurn = null;
     this.lineChoice = null;
     // Phase 5.12b: chosen lines may not exist in the other snapshot — choose again.
     this.incircle = null;
@@ -636,6 +642,7 @@ export class AppController {
     this.precision = null;
     this.divide = null;
     this.dividePreview = null;
+    this.divideTurn = null;
     this.fairTrace = null;
     this.fillPreview = null;
     this.sweep = null;

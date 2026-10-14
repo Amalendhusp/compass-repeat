@@ -1759,10 +1759,21 @@ function drawFairTracePreview(ctx: CanvasRenderingContext2D, controller: AppCont
 function drawDividePreview(ctx: CanvasRenderingContext2D, controller: AppController, view: ViewTransform): void {
   const preview = controller.dividePreview;
   if (!preview) return;
-  for (const at of preview.points) {
+  // While a finger turns a whole circle's preview: the point it holds stands out, and each place
+  // already on the circle that a preview point has landed on exactly is ringed.
+  const turn = controller.divideTurn;
+  for (const met of turn?.met ?? []) {
+    const m = worldToScreen(view, met);
+    ctx.beginPath();
+    ctx.arc(m.x, m.y, 10, 0, Math.PI * 2);
+    ctx.strokeStyle = color.signal;
+    ctx.lineWidth = 1.6;
+    ctx.stroke();
+  }
+  preview.points.forEach((at, i) => {
     const s = worldToScreen(view, at);
     ctx.beginPath();
-    ctx.arc(s.x, s.y, 4, 0, Math.PI * 2);
+    ctx.arc(s.x, s.y, turn?.index === i ? 6.5 : 4, 0, Math.PI * 2);
     ctx.fillStyle = color.signal;
     ctx.globalAlpha = 0.85;
     ctx.fill();
@@ -1770,7 +1781,7 @@ function drawDividePreview(ctx: CanvasRenderingContext2D, controller: AppControl
     ctx.strokeStyle = color.paper;
     ctx.lineWidth = 1.2;
     ctx.stroke();
-  }
+  });
 }
 
 /** Phase 5.3: what an export asks the renderers for — artwork layers only, never app UI. */

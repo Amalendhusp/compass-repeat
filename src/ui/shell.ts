@@ -2440,7 +2440,7 @@ export function buildShell(
       const d = controller.divide;
       if (!d) return;
       d.n = Math.max(DIVIDE_MIN, Math.min(DIVIDE_MAX, Math.round(n)));
-      controller.dividePreview = { target: d.target, points: dividePreviewPoints(controller.doc, d.target, d.n) };
+      controller.dividePreview = { target: d.target, points: dividePreviewPoints(controller.doc, d.target, d.n, d.angle) };
       count.textContent = String(d.n);
       slider.value = String(d.n);
       minus.disabled = d.n <= DIVIDE_MIN;
@@ -2464,12 +2464,12 @@ export function buildShell(
   function applyDivide(): void {
     const state = controller.divide;
     if (!state) return;
-    const { target, n } = state;
+    const { target, n, angle } = state;
     let created: PointId[] = [];
     controller.commit((d) => {
       const entity = d.entities.find((e) => e.id === target.entityId);
       if (!entity) return;
-      created = target.kind === 'circle-whole' ? addCircleDivision(d, entity.id, n, d.frame.rotation) : addSegmentDivisionPoints(d, target, n);
+      created = target.kind === 'circle-whole' ? addCircleDivision(d, entity.id, n, angle) : addSegmentDivisionPoints(d, target, n);
     });
     controller.doc.dividePrefs.lastN = n;
     setDivideTarget(controller, null);

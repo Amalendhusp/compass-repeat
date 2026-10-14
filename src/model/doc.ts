@@ -230,8 +230,8 @@ export function addSegmentDivisionPoints(doc: Doc, seg: SegmentSpan, of: number)
   return created;
 }
 
-/** Phase 2C: divides a whole closed circle into `of` equal parts, anchored at `anchorAngle`
- * (the nearest existing point on the circle, or the frame's −90° alignment — spec §4.5). */
+/** Phase 2C: divides a whole closed circle into `of` equal parts, the first at `anchorAngle` —
+ * the angle Divide's preview was showing (0, the circle's rightmost point, unless turned by hand). */
 export function addCircleDivision(doc: Doc, hostId: EntityId, of: number, anchorAngle: number): PointId[] {
   const host = doc.entities.find((e) => e.id === hostId);
   if (!host || host.kind !== 'circle') return [];

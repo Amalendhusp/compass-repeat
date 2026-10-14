@@ -39,7 +39,8 @@ export function segmentDivisionPositions(doc: Doc, host: Entity, seg: SegmentSpa
   return positions;
 }
 
-/** All `of` points around a whole closed circle, anchored at `anchorAngle`. */
+/** All `of` points around a whole closed circle, the first at `anchorAngle` (0 = its rightmost
+ * point) and the rest at exactly equal steps from it. */
 export function circleDivisionPositions(doc: Doc, host: Entity, of: number, anchorAngle: number): Vec2[] {
   const g = resolveEntityGeom(doc, host) as CircleGeom;
   const positions: Vec2[] = [];
@@ -48,4 +49,33 @@ export function circleDivisionPositions(doc: Doc, host: Entity, of: number, anch
     positions.push({ x: g.centre.x + g.radius * Math.cos(angle), y: g.centre.y + g.radius * Math.sin(angle) });
   }
   return positions;
+}
+
+/** An angle as 0 ≤ a < 2π. */
+export function wholeAngle(a: number): number {
+  const t = a % (Math.PI * 2);
+  return t < 0 ? t + Math.PI * 2 : t;
+}
+
+/** Turning a whole-circle division by hand: if one of its `of` points is within `reach` (radians)
+ * of one of `candidates` (angles on the circle that already mean something — its existing points),
+ * the whole set turns that last little way so the two coincide exactly. `met` is every candidate a
+ * point of the set then sits on. */
+export function snapDivisionAngle(angle: number, of: number, candidates: number[], reach: number): { angle: number; met: number[] } {
+  const step = (Math.PI * 2) / of;
+  /** How far the set would have to turn for one of its points to be at `c`. */
+  const offset = (c: number, from: number): number => {
+    let off = (c - from) % step;
+    if (off > step / 2) off -= step;
+    else if (off <= -step / 2) off += step;
+    return off;
+  };
+  let best: number | null = null;
+  for (const c of candidates) {
+    const off = offset(c, angle);
+    if (Math.abs(off) <= reach && (best === null || Math.abs(off) < Math.abs(best))) best = off;
+  }
+  if (best === null) return { angle: wholeAngle(angle), met: [] };
+  const snapped = wholeAngle(angle + best);
+  return { angle: snapped, met: candidates.filter((c) => Math.abs(offset(c, snapped)) < 1e-9) };
 }
