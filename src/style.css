@@ -496,17 +496,17 @@ canvas.stage {
   touch-action: pan-x;
 }
 /* Phase 3.2 item 5: a plain, noninteractive status readout ("A → B", "Centre → Radius") in
- * place of the old two anonymous progress dots. */
+ * place of the old two anonymous progress dots. An instruction, never a control: plain text with no
+ * fill or box, so it can't be mistaken for the filled, rounded chips beside it. */
 .context-bar .step-badge {
-  font-size: 11px;
-  font-weight: 600;
+  font-size: 12px;
+  font-weight: 500;
   color: var(--muted);
-  background: var(--well);
-  padding: 0 9px;
+  background: none;
+  padding: 0 2px;
   height: 26px;
   display: flex;
   align-items: center;
-  border-radius: 8px;
   flex-shrink: 0;
   white-space: nowrap;
   letter-spacing: 0.01em;
@@ -623,7 +623,7 @@ canvas.stage {
     padding: 0 7px;
   }
   .context-bar.circle-bar .step-badge {
-    padding: 0 6px;
+    padding: 0 1px;
   }
   .context-bar.circle-bar .chip {
     padding: 0 9px;
@@ -1905,16 +1905,17 @@ canvas.stage {
   align-items: flex-start;
   gap: 4px;
 }
+/* An instruction over the canvas: plain text, kept legible over the drawing by a soft paper halo
+ * rather than a box (a box reads as a control). */
 .snap-status {
   display: flex;
   align-items: center;
   gap: 6px;
   max-width: calc(100vw - 24px);
-  padding: 3px 9px 3px 8px;
-  border-radius: 9px;
-  background: rgba(251, 249, 245, 0.88);
+  padding: 0 2px;
   font-size: 12px;
   color: var(--ink);
+  text-shadow: 0 0 3px var(--plaster), 0 0 3px var(--plaster), 0 0 6px var(--plaster);
 }
 .snap-kind button {
   padding: 6px 10px;

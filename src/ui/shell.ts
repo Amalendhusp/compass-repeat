@@ -2068,14 +2068,15 @@ export function buildShell(
 
 
   // Line: how its direction is given — a compact strip over the ribbon, only while Line is the tool
-  // (Construct and Intersect alike). Parallel / Perpendicular take a reference line, then a point.
+  // (Construct and Intersect alike). Connect joins two points; Parallel / Perpendicular take a
+  // reference line, then a point.
   const lineStrip = document.createElement('div');
   lineStrip.className = 'segmented-mini line-strip';
   lineStrip.setAttribute('role', 'group');
   lineStrip.setAttribute('aria-label', 'Line direction');
   const lineGuideBtns = new Map<AppController['lineGuide'], HTMLButtonElement>();
   for (const [id, label] of [
-    ['free', 'Free'],
+    ['free', 'Connect'],
     ['parallel', 'Parallel'],
     ['perpendicular', 'Perpendicular'],
   ] as const) {
@@ -2673,7 +2674,8 @@ export function buildShell(
     familyRow.style.display = inRepeat ? '' : 'none';
     ruleRow.style.display = inRepeat ? '' : 'none';
     spaceRow.style.display = inRepeat ? '' : 'none';
-    ixSpreadRow.style.display = inIntersection ? '' : 'none';
+    // Spread arranges the instances: it belongs to Select, never under a construction tool's ribbon.
+    ixSpreadRow.style.display = inIntersection && !building ? '' : 'none';
     if (!inIntersection) ixSnapRow.style.display = 'none';
     ixCopiesBtn.style.display = inIntersection ? '' : 'none';
     ixSnapshotsBtn.style.display = inIntersection ? '' : 'none';

@@ -1,6 +1,6 @@
 // Line tool, spec §4.3, Point Lock per Phase 1.2a.
 //
-// Three ways of giving the line (controller.lineGuide): Free — A → B, as ever — and two exact
+// Three ways of giving the line (controller.lineGuide): Connect ('free' — A → B, as ever) and two exact
 // constructions from a reference line and one point: Parallel (the line through the point parallel
 // to the reference) and Perpendicular (the line through the point at 90° to it — a perpendicular
 // THROUGH A POINT, not a perpendicular bisector). Both land exactly as Line does, as Construction
