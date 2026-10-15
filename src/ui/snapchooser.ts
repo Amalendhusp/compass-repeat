@@ -236,7 +236,7 @@ function syncNoPoint(controller: AppController, canvas: HTMLCanvasElement, view?
   el.className = 'no-point-hint';
   el.setAttribute('role', 'status');
   const text = document.createElement('span');
-  text.textContent = 'No point here yet';
+  text.textContent = np.text ?? 'No point here yet';
   el.appendChild(text);
   if (np.divide) {
     const b = document.createElement('button');

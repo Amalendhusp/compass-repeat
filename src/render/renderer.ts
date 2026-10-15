@@ -1838,6 +1838,7 @@ function drawInteractionLayers(ctx: CanvasRenderingContext2D, controller: AppCon
   drawFairTracePreview(ctx, controller, view);
   drawArcMeasure(ctx, controller, view);
   drawLineGuide(ctx, controller, view);
+  drawLineFlash(ctx, controller, view);
   drawPreview(ctx, controller, view);
   drawDividePreview(ctx, controller, view);
   drawSweep(ctx, controller);
@@ -1861,6 +1862,34 @@ export function drawInteraction(ctx: CanvasRenderingContext2D, controller: AppCo
   ctx.save();
   drawFairRunHalo(ctx, controller, view);
   drawInteractionLayers(ctx, controller, view);
+  ctx.restore();
+}
+
+/** The existing line a refused Line duplicates, briefly marked (its own span; an extended line
+ * through the view) — so "This line already exists" shows which one. */
+function drawLineFlash(ctx: CanvasRenderingContext2D, controller: AppController, view: ViewTransform): void {
+  const flash = controller.lineFlash;
+  if (!flash || performance.now() > flash.until) return;
+  const entity = controller.doc.entities.find((e) => e.id === flash.entityId);
+  if (entity?.kind !== 'line') return;
+  const g = resolveEntityGeom(controller.doc, entity);
+  if (g.kind !== 'line') return;
+  const from = entity.extended ? { x: g.a.x - g.dir.x * FAR, y: g.a.y - g.dir.y * FAR } : g.a;
+  const to = entity.extended ? { x: g.b.x + g.dir.x * FAR, y: g.b.y + g.dir.y * FAR } : g.b;
+  const a = worldToScreen(view, from);
+  const b = worldToScreen(view, to);
+  ctx.save();
+  ctx.lineCap = 'round';
+  ctx.strokeStyle = color.signal;
+  ctx.globalAlpha = 0.3;
+  ctx.lineWidth = 9;
+  ctx.beginPath();
+  ctx.moveTo(a.x, a.y);
+  ctx.lineTo(b.x, b.y);
+  ctx.stroke();
+  ctx.globalAlpha = 1;
+  ctx.lineWidth = 2;
+  ctx.stroke();
   ctx.restore();
 }
 

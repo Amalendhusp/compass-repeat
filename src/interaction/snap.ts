@@ -318,9 +318,10 @@ const CONFIRM_WITH_HINT_MS = 2200;
  * distinct points were about as close, the confirmation says what was taken and that holding
  * the finger there would have opened the precision loupe.
  */
-export function resolveTap(controller: AppController, tracker: SnapTracker, hit: SnapHit | null, use: (hit: PointHit) => void): void {
+export function resolveTap(controller: AppController, tracker: SnapTracker, hit: SnapHit | null, use: (hit: PointHit) => void | boolean): void {
   if (!hit) return;
-  use(hit);
+  // `use` answering false means nothing was made with the point: then it is not announced either.
+  if (use(hit) === false) return;
   confirmSnap(controller, hit, hit.id && tracker.ambiguous() ? 'Crowded here · hold to choose' : undefined);
 }
 

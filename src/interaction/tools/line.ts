@@ -26,10 +26,35 @@ import { buildNodeInset } from '../nodeinset.ts';
 import { confirmSnap, noPointGesture, PointHold, resolveTap, showNoPoint, SnapTracker } from '../snap.ts';
 import { materializeRef, refFromHit, refLocation, type PointRef } from '../pointref.ts';
 import { showToast } from '../../ui/toast.ts';
+import type { NoPointHint } from '../../app/controller.ts';
 import type { Gesture, ToolModule } from './types.ts';
 
 function sameExisting(a: PointRef, b: PointRef): boolean {
   return a.kind === 'existing' && b.kind === 'existing' && a.id === b.id;
+}
+
+/** Line takes only existing points: on a bare curve it says so plainly — never offering to Divide
+ * (Divide is its own tool) and never making a point. */
+function tapAPoint(info: Omit<NoPointHint, 'until'>): Omit<NoPointHint, 'until'> {
+  return { ...info, divide: null, midAt: null, text: 'Tap an existing point' };
+}
+
+const LINE_FLASH_MS = 1600;
+
+/** Nothing was made because the line is already there: say so, and briefly mark that line. */
+function lineExists(controller: AppController, entityId: EntityId | undefined): void {
+  showToast('This line already exists');
+  controller.snapConfirm = null; // no point label (not even A's, still showing): no line was made
+  if (!entityId) return;
+  const record = { entityId, until: performance.now() + LINE_FLASH_MS };
+  controller.lineFlash = record;
+  controller.notifyView();
+  setTimeout(() => {
+    if (controller.lineFlash === record) {
+      controller.lineFlash = null;
+      controller.notifyView();
+    }
+  }, LINE_FLASH_MS + 20);
 }
 
 /** The shared A→B point-to-point gesture. `land` runs inside the commit and decides what the
@@ -42,9 +67,9 @@ export function beginLineLikeGesture(
   screenPos: { x: number; y: number },
   land: (d: Doc, aId: PointId, bId: PointId) => EntityId | null,
   onLanded?: (newId: EntityId | null) => void,
-  /** Phase 5.6: a chance to resolve A→B some other way (a role on an existing supporting line);
-   * true means it was handled — committed, or refused with its own message. */
-  intercept?: (aRef: PointRef, bRef: PointRef) => boolean,
+  /** Phase 5.6: a chance to resolve A→B some other way (a role on an existing supporting line):
+   * 'made' or 'refused' (with its own message) when it handled it, null when it didn't. */
+  intercept?: (aRef: PointRef, bRef: PointRef) => 'made' | 'refused' | null,
 ): Gesture | null {
   const doc = controller.doc;
   const tracker = new SnapTracker(doc);
@@ -57,7 +82,7 @@ export function beginLineLikeGesture(
     aRef = controller.pending.a;
   } else {
     const hit = tracker.pick(view, screenPos);
-    if (!hit) return tracker.noPoint ? noPointGesture(controller, tracker.noPoint) : null;
+    if (!hit) return tracker.noPoint ? noPointGesture(controller, tapAPoint(tracker.noPoint)) : null;
     aHit = hit;
     aRef = refFromHit(hit);
     controller.pending = { kind: 'line', a: aRef };
@@ -71,30 +96,33 @@ export function beginLineLikeGesture(
   if (!justSetA) tracker.pick(view, screenPos);
   const hold = new PointHold(controller, view, tracker, screenPos);
 
-  const finish = (bRef: PointRef) => {
-    if (!sameExisting(aRef, bRef) && intercept?.(aRef, bRef)) {
+  /** Lands the line on B. False when nothing was made (so B isn't announced as used). */
+  const finish = (bRef: PointRef): boolean => {
+    const handled = sameExisting(aRef, bRef) ? null : (intercept?.(aRef, bRef) ?? null);
+    if (handled) {
       controller.pending = null;
       controller.preview = null;
       controller.nodeInset = null;
       controller.pointLockHint = false;
       controller.notify();
-      return;
+      return handled === 'made';
     }
     // Phase 5.5: the exact same line again is never useful — and a doubled edge used to merge the
     // regions on either side of it. Nothing is created (and no undo step).
     const a0 = aRef;
-    if (a0.kind === 'existing' && bRef.kind === 'existing' && doc.entities.some((e) => e.kind === 'line' && ((e.a === a0.id && e.b === bRef.id) || (e.a === bRef.id && e.b === a0.id)))) {
-      showToast('Already drawn');
+    const same = a0.kind === 'existing' && bRef.kind === 'existing' ? doc.entities.find((e) => e.kind === 'line' && ((e.a === a0.id && e.b === bRef.id) || (e.a === bRef.id && e.b === a0.id))) : undefined;
+    if (same) {
+      lineExists(controller, same.id);
       controller.cancelPending();
       controller.nodeInset = null;
-      return;
+      return false;
     }
     if (sameExisting(aRef, bRef)) {
       controller.pending = null;
       controller.preview = null;
       controller.nodeInset = null;
       controller.notify();
-      return;
+      return false;
     }
     let newId: EntityId | null = null;
     controller.commit((d) => {
@@ -108,6 +136,7 @@ export function beginLineLikeGesture(
     controller.pointLockHint = false;
     onLanded?.(newId);
     controller.notify();
+    return true;
   };
 
   return {
@@ -139,14 +168,14 @@ export function beginLineLikeGesture(
       const held = hold.release();
       if (held) {
         // The loupe chose: A stays armed for B, or B completes the line.
-        confirmSnap(controller, held);
         if (justSetA) {
+          confirmSnap(controller, held);
           aRef = refFromHit(held);
           controller.pending = { kind: 'line', a: aRef };
           controller.preview = null;
           controller.nodeInset = null;
           controller.notify();
-        } else finish(refFromHit(held));
+        } else if (finish(refFromHit(held))) confirmSnap(controller, held);
         return;
       }
       if (!wasDrag && justSetA) {
@@ -163,8 +192,7 @@ export function beginLineLikeGesture(
       const hit = tracker.pick(view, sp);
       if (hit) {
         if (wasDrag) {
-          confirmSnap(controller, hit);
-          finish(refFromHit(hit));
+          if (finish(refFromHit(hit))) confirmSnap(controller, hit);
         } else {
           resolveTap(controller, tracker, hit, (h) => finish(refFromHit(h)));
         }
@@ -173,7 +201,7 @@ export function beginLineLikeGesture(
       if (!doc.pointTargets.free && isNearAnyCurve(doc, view, sp)) {
         // Point Lock: touched a curve with no explicit point there — stay armed for a fresh
         // attempt at B rather than cancelling A (§Phase 1.2a acceptance: A survives).
-        if (tracker.noPoint && !wasDrag) showNoPoint(controller, tracker.noPoint);
+        if (tracker.noPoint && !wasDrag) showNoPoint(controller, tapAPoint(tracker.noPoint));
         controller.preview = { kind: 'line', a: aAt, b: aAt };
         controller.nodeInset = null;
         controller.pointLockHint = true;
@@ -245,17 +273,18 @@ function spanAlreadyDrawn(doc: Doc, line: LineEntity, lo: number, hi: number): b
  *   were trimmed), unless they already are — then it's a true duplicate.
  * Anything else (e.g. a Construction span running past a finite line's end) is an ordinary new line.
  */
-function resolveOnSupportingLine(controller: AppController, aRef: PointRef, bRef: PointRef): boolean {
+function resolveOnSupportingLine(controller: AppController, aRef: PointRef, bRef: PointRef): 'made' | 'refused' | null {
   const doc = controller.doc;
   const pa = refLocation(doc, aRef);
   const pb = refLocation(doc, bRef);
   const lines = supportingLines(doc, pa, pb);
-  if (lines.length === 0) return false;
+  if (lines.length === 0) return null;
 
   if (controller.lineMode === 'extension') {
-    if (lines.some((l) => l.line.extended)) {
-      showToast('Already drawn');
-      return true;
+    const extended = lines.find((l) => l.line.extended);
+    if (extended) {
+      lineExists(controller, extended.line.id);
+      return 'refused';
     }
     const lineId = lines[0]!.line.id;
     controller.commit((d) => {
@@ -265,14 +294,14 @@ function resolveOnSupportingLine(controller: AppController, aRef: PointRef, bRef
       if (line?.kind === 'line') line.extended = true;
       invalidateGeometryCaches(d);
     });
-    return true;
+    return 'made';
   }
 
   const host = lines.find((l) => covers(l.line, l.ta) && covers(l.line, l.tb));
-  if (!host) return false;
+  if (!host) return null;
   if (spanAlreadyDrawn(doc, host.line, Math.min(host.ta, host.tb), Math.max(host.ta, host.tb))) {
-    showToast('Already drawn');
-    return true;
+    lineExists(controller, host.line.id);
+    return 'refused';
   }
   const lineId = host.line.id;
   controller.commit((d) => {
@@ -293,7 +322,7 @@ function resolveOnSupportingLine(controller: AppController, aRef: PointRef, bRef
       else d.segmentStates.set(s.key, { state: 'construction' });
     }
   });
-  return true;
+  return 'made';
 }
 
 /** What a new line between two points becomes, as Line always lands it: Construction, or — in
@@ -400,7 +429,7 @@ function beginGuidedGesture(controller: AppController, view: ViewTransform, scre
       hit = tracker.pick(view, sp);
       clear();
       if (!hit) {
-        if (!wasDrag && tracker.noPoint) showNoPoint(controller, tracker.noPoint);
+        if (!wasDrag && tracker.noPoint) showNoPoint(controller, tapAPoint(tracker.noPoint));
         controller.notify();
         return;
       }
@@ -408,9 +437,9 @@ function beginGuidedGesture(controller: AppController, view: ViewTransform, scre
       const ends = guidedLine(ref, guide, hit.at);
       const aRef: PointRef = { kind: 'free', at: ends.a, reuse: true };
       const bRef: PointRef = { kind: 'free', at: ends.b, reuse: true };
-      confirmSnap(controller, hit);
       // Along a line that already exists: never a second, coincident line. In Extension mode that
-      // line gains its Extension role (as Line does); otherwise there is nothing to add.
+      // line gains its Extension role (as Line does); otherwise there is nothing to add — and then
+      // the point isn't announced either, only the line that is already there.
       const along = supportingLines(doc, ends.a, ends.b);
       if (along.length > 0) {
         if (controller.lineMode === 'extension' && !along.some((l) => l.line.extended)) {
@@ -421,10 +450,12 @@ function beginGuidedGesture(controller: AppController, view: ViewTransform, scre
             if (line?.kind === 'line') line.extended = true;
             invalidateGeometryCaches(d);
           });
-        } else showToast('Already drawn');
+          confirmSnap(controller, hit);
+        } else lineExists(controller, (along.find((l) => l.line.extended) ?? along[0]!).line.id);
         controller.notify();
         return;
       }
+      confirmSnap(controller, hit);
       let newId: EntityId | null = null;
       controller.commit((d) => {
         materializeRef(d, through); // the point itself, so the line can be built on there

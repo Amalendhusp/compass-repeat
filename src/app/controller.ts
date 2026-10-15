@@ -216,6 +216,8 @@ export interface NoPointHint {
   at: Vec2;
   divide: { label: 'Segment'; scope: 'segment'; entityId: EntityId; kind: 'segment'; from: PointId; to: PointId; fromParam: number; toParam: number } | null;
   midAt: Vec2 | null;
+  /** What the bubble says, when not the default "No point here yet". */
+  text?: string;
   until: number;
 }
 
@@ -301,6 +303,8 @@ export class AppController {
   /** Phase 5.8/5.9: "No point here yet" feedback; the advanced "Which line?" chooser (Fair
    * long-press only); a brief canvas cue such as "Trace the line you want". Never history. */
   noPoint: NoPointHint | null = null;
+  /** An existing line briefly marked on the canvas — the one a refused Line duplicates. Never history. */
+  lineFlash: { entityId: EntityId; until: number } | null = null;
   /** Phase 5.10: the segment under a finger that is still down (Select) — emphasised before release. */
   pressHighlight: SegmentKey[] | null = null;
   lineChoice: LineChoice | null = null;
