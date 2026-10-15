@@ -20,8 +20,8 @@ import type { AppController, ViewTransform } from '../../app/controller.ts';
 import { screenToWorld } from '../../app/controller.ts';
 import { epsilon, resolveEntityGeom, resolvePoint } from '../../geometry/kernel.ts';
 import { defaultSegmentKind, deriveSegments, effectiveSegmentKind } from '../../geometry/segments.ts';
-import { curveCandidatesAt, isNearAnyCurve } from '../hittest.ts';
-import { contextLineAt } from '../context.ts';
+import { curveCandidatesAt, isNearAnyCurve, pickPointTarget } from '../hittest.ts';
+import { contextLineAt, contextNear, contextPointAt } from '../context.ts';
 import { buildNodeInset } from '../nodeinset.ts';
 import { confirmSnap, noPointGesture, PointHold, resolveTap, showNoPoint, SnapTracker } from '../snap.ts';
 import { materializeRef, refFromHit, refLocation, type PointRef } from '../pointref.ts';
@@ -362,15 +362,73 @@ function offerAfterLine(controller: AppController, newId: EntityId | null): void
 
 const GUIDE_LINE_REACH_PX = 16;
 
-/** The straight line under the finger: one of the construction's own, else (in Intersect) another
- * instance's — its two ends, in the construction's coordinates. */
-function straightLineAt(doc: Doc, view: ViewTransform, sp: Vec2): { a: Vec2; b: Vec2 } | null {
-  const own = curveCandidatesAt(doc, view, sp, GUIDE_LINE_REACH_PX).find((c) => c.entity.kind === 'line');
-  if (own) {
-    const g = resolveEntityGeom(doc, own.entity);
-    if (g.kind === 'line') return { a: { ...g.a }, b: { ...g.b } };
+/** Another line about as close as the nearest (within this much more, px, widening a little as
+ * the tap lands further off) makes the reference ambiguous — unless it runs the same way, since
+ * only the reference's direction is used. */
+const REFERENCE_AMBIGUITY_PX = 4;
+const SAME_DIRECTION_RAD = 1e-4;
+
+/** The reference a tap gives: the straight line under the finger (one of the construction's own,
+ * else in Intersect another instance's — its two ends, in the construction's coordinates);
+ * 'ambiguous' where lines running different ways are about as close (at a point where lines meet,
+ * say — a reference is chosen deliberately, never guessed); null where there is no line. */
+function referenceAt(doc: Doc, view: ViewTransform, sp: Vec2): { a: Vec2; b: Vec2 } | 'ambiguous' | null {
+  const own = curveCandidatesAt(doc, view, sp, GUIDE_LINE_REACH_PX)
+    .filter((c) => c.entity.kind === 'line')
+    .map((c) => {
+      const g = resolveEntityGeom(doc, c.entity);
+      return g.kind === 'line' ? { a: { ...g.a }, b: { ...g.b }, dir: g.dir, d: c.d } : null;
+    })
+    .filter((c) => c !== null);
+  if (own.length === 0) return contextLineAt(view, sp, GUIDE_LINE_REACH_PX);
+  const first = own[0]!;
+  const window = REFERENCE_AMBIGUITY_PX + 0.5 * first.d;
+  const rival = own.slice(1).some((c) => c.d <= first.d + window && Math.abs(first.dir.x * c.dir.y - first.dir.y * c.dir.x) > SAME_DIRECTION_RAD);
+  return rival ? 'ambiguous' : { a: first.a, b: first.b };
+}
+
+/**
+ * Where the guided line through `through` may go, given the lines already lying along it. It is
+ * already there when one of them reaches the point itself (an extended one reaches everywhere).
+ * Otherwise collinear lines elsewhere don't stop it — but it never runs on over one of them (that
+ * would double an edge): it stops where they end, so it meets them end to end.
+ */
+function guidedSpan(doc: Doc, ends: { a: Vec2; b: Vec2 }): { a: Vec2; b: Vec2 } | { existing: LineEntity } {
+  const dx = ends.b.x - ends.a.x;
+  const dy = ends.b.y - ends.a.y;
+  const len2 = dx * dx + dy * dy;
+  const along = (p: Vec2) => ((p.x - ends.a.x) * dx + (p.y - ends.a.y) * dy) / len2; // 0 at a, 1 at b
+  const at = (t: number): Vec2 => ({ x: ends.a.x + dx * t, y: ends.a.y + dy * t });
+  const mid = 0.5; // the point the line goes through sits at its middle (guidedLine)
+  const eps = 1e-9;
+  let lo = 0;
+  let hi = 1;
+  for (const { line } of supportingLines(doc, ends.a, ends.b)) {
+    if (line.extended) return { existing: line };
+    const g = resolveEntityGeom(doc, line);
+    if (g.kind !== 'line') continue;
+    const s0 = Math.min(along(g.a), along(g.b));
+    const s1 = Math.max(along(g.a), along(g.b));
+    if (s0 <= mid + eps && s1 >= mid - eps) return { existing: line };
+    if (s1 < mid) lo = Math.max(lo, s1);
+    else hi = Math.min(hi, s0);
   }
-  return contextLineAt(view, sp, GUIDE_LINE_REACH_PX);
+  return { a: at(lo), b: at(hi) };
+}
+
+/** Nothing the Line tool could use is near the finger: no point, no curve, and in Intersect nothing
+ * of another instance — so a tap here means "stop", not a near miss. */
+function nothingHere(doc: Doc, view: ViewTransform, sp: Vec2): boolean {
+  return !pickPointTarget(doc, view, sp) && !isNearAnyCurve(doc, view, sp) && !contextPointAt(view, sp) && !contextNear(view, sp, GUIDE_LINE_REACH_PX);
+}
+
+/** Parallel / Perpendicular is over — made, or abandoned: no reference, and Line is Connect again. */
+function endGuide(controller: AppController): void {
+  controller.lineReference = null;
+  controller.lineGuide = 'free';
+  controller.preview = null;
+  controller.nodeInset = null;
+  controller.notify();
 }
 
 /**
@@ -390,14 +448,19 @@ function beginGuidedGesture(controller: AppController, view: ViewTransform, scre
   const doc = controller.doc;
   const ref = controller.lineReference;
   if (!ref) {
-    // First the reference: a tap on a straight line.
+    // First the reference: a tap on a straight line. A tap on empty canvas cancels.
     return {
       onMove() {},
       onUp(sp, wasDrag) {
         if (wasDrag) return;
-        const line = straightLineAt(doc, view, sp);
+        const line = referenceAt(doc, view, sp);
+        if (line === 'ambiguous') {
+          showToast('Lines meet here — tap along the line you mean');
+          return;
+        }
         if (!line) {
-          showToast('Tap a straight line first');
+          if (nothingHere(doc, view, sp)) endGuide(controller);
+          else showToast('Tap a straight line');
           return;
         }
         controller.lineReference = line;
@@ -429,33 +492,48 @@ function beginGuidedGesture(controller: AppController, view: ViewTransform, scre
       hit = tracker.pick(view, sp);
       clear();
       if (!hit) {
+        // Empty canvas: the unfinished Parallel / Perpendicular is cancelled. On a bare curve: say
+        // what is wanted, and stay.
+        if (!wasDrag && nothingHere(doc, view, sp)) {
+          endGuide(controller);
+          return;
+        }
         if (!wasDrag && tracker.noPoint) showNoPoint(controller, tapAPoint(tracker.noPoint));
         controller.notify();
         return;
       }
       const through = refFromHit(hit);
       const ends = guidedLine(ref, guide, hit.at);
-      const aRef: PointRef = { kind: 'free', at: ends.a, reuse: true };
-      const bRef: PointRef = { kind: 'free', at: ends.b, reuse: true };
-      // Along a line that already exists: never a second, coincident line. In Extension mode that
-      // line gains its Extension role (as Line does); otherwise there is nothing to add — and then
-      // the point isn't announced either, only the line that is already there.
+      // Along a line that already exists: never a second, coincident line. In Extension mode a line
+      // already along it gains its Extension role (as Line does). Otherwise the line is already there
+      // only if one reaches this very point; collinear lines elsewhere just bound it (guidedSpan).
       const along = supportingLines(doc, ends.a, ends.b);
-      if (along.length > 0) {
-        if (controller.lineMode === 'extension' && !along.some((l) => l.line.extended)) {
-          const lineId = along[0]!.line.id;
-          controller.commit((d) => {
-            materializeRef(d, through);
-            const line = d.entities.find((e) => e.id === lineId);
-            if (line?.kind === 'line') line.extended = true;
-            invalidateGeometryCaches(d);
-          });
-          confirmSnap(controller, hit);
-        } else lineExists(controller, (along.find((l) => l.line.extended) ?? along[0]!).line.id);
-        controller.notify();
+      if (controller.lineMode === 'extension' && along.length > 0) {
+        const extended = along.find((l) => l.line.extended);
+        if (extended) {
+          lineExists(controller, extended.line.id);
+          controller.notify(); // keep the reference: nothing was made, choose another point
+          return;
+        }
+        const lineId = along[0]!.line.id;
+        controller.commit((d) => {
+          materializeRef(d, through);
+          const line = d.entities.find((e) => e.id === lineId);
+          if (line?.kind === 'line') line.extended = true;
+          invalidateGeometryCaches(d);
+        });
+        confirmSnap(controller, hit);
+        endGuide(controller);
         return;
       }
-      confirmSnap(controller, hit);
+      const span = guidedSpan(doc, ends);
+      if ('existing' in span) {
+        lineExists(controller, span.existing.id);
+        controller.notify(); // keep the reference: nothing was made, choose another point
+        return;
+      }
+      const aRef: PointRef = { kind: 'free', at: span.a, reuse: true };
+      const bRef: PointRef = { kind: 'free', at: span.b, reuse: true };
       let newId: EntityId | null = null;
       controller.commit((d) => {
         materializeRef(d, through); // the point itself, so the line can be built on there
@@ -463,8 +541,10 @@ function beginGuidedGesture(controller: AppController, view: ViewTransform, scre
         const bId = materializeRef(d, bRef);
         if (aId !== bId) newId = landLine(controller, d, aId, bId);
       });
+      confirmSnap(controller, hit);
       offerAfterLine(controller, newId);
-      controller.notify();
+      // One line per reference: the next Parallel / Perpendicular starts from a fresh choice.
+      endGuide(controller);
     },
     onCancel() {
       clear();

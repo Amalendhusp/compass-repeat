@@ -585,6 +585,10 @@ export class AppController {
     this.dividePreview = null;
     this.divideTurn = null;
     this.lineChoice = null;
+    // An unfinished Parallel / Perpendicular ends with an Undo or Redo: its reference may not exist
+    // in the other snapshot, and the Line tool goes back to Connect.
+    this.lineGuide = 'free';
+    this.lineReference = null;
     // Phase 5.12b: chosen lines may not exist in the other snapshot — choose again.
     this.incircle = null;
     // Phase 5.12d: keep copying the same radius after an Undo.

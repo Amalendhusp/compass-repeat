@@ -334,6 +334,11 @@ function boot(doc: Doc, opts: { fitToScreen: boolean; history?: { undo: Doc[]; r
       const doc = controller.doc;
       return contextLineNear(doc, intersectionCopies(doc), activeCopy().key, screenToWorld(view, sp), radiusPx / view.zoom);
     },
+    near(view, sp, radiusPx) {
+      if (!linkedTool()) return false;
+      const doc = controller.doc;
+      return instanceUnder(doc, intersectionCopies(doc), activeCopy().key, screenToWorld(view, sp), radiusPx / view.zoom) !== null;
+    },
   });
   const pointer = new PointerManager(
     canvas,
