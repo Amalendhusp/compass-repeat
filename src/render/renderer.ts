@@ -74,7 +74,7 @@ function wholeEntityPath(ctx: CanvasRenderingContext2D, doc: Doc, view: ViewTran
 
 /** The dashed tails of an extended line beyond its outermost derived point — extension isn't a
  * segment of its own (spec keeps it on the entity), so it's drawn once per line, not per-piece. */
-function drawExtensionTails(ctx: CanvasRenderingContext2D, doc: Doc, view: ViewTransform, entity: Entity, segs: DerivedSegment[]): void {
+function drawExtensionTails(ctx: CanvasRenderingContext2D, doc: Doc, view: ViewTransform, entity: Entity, segs: DerivedSegment[], alpha = 1): void {
   const g = resolveEntityGeom(doc, entity);
   if (g.kind !== 'line' || segs.length === 0) return;
   const minParam = Math.min(...segs.map((s) => s.fromParam));
@@ -86,6 +86,7 @@ function drawExtensionTails(ctx: CanvasRenderingContext2D, doc: Doc, view: ViewT
   ctx.strokeStyle = color.construction;
   ctx.lineWidth = view.zoom < 0.6 ? 0.6 : stroke.construction;
   ctx.setLineDash(stroke.extensionDash);
+  ctx.globalAlpha = alpha;
   ctx.beginPath();
   const s1 = worldToScreen(view, farStart);
   const s2 = worldToScreen(view, start);
@@ -97,6 +98,7 @@ function drawExtensionTails(ctx: CanvasRenderingContext2D, doc: Doc, view: ViewT
   ctx.lineTo(s4.x, s4.y);
   ctx.stroke();
   ctx.setLineDash([]);
+  ctx.globalAlpha = 1;
 }
 
 /**
@@ -211,7 +213,8 @@ function drawEntities(ctx: CanvasRenderingContext2D, controller: AppController, 
       ctx.lineCap = 'butt';
       ctx.lineJoin = 'miter';
     }
-    if (e.kind === 'line' && e.extended && showConstruction) drawExtensionTails(ctx, doc, view, e, segs);
+    // The tails beyond an extended line's own span are construction too: they fade with it.
+    if (e.kind === 'line' && e.extended && showConstruction) drawExtensionTails(ctx, doc, view, e, segs, quiet ? quietAlpha : 1);
   }
 }
 

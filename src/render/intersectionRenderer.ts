@@ -117,7 +117,10 @@ export function renderIntersection(ctx: CanvasRenderingContext2D, controller: Ap
   });
   // The constructions at their viewing strength over the reference; the picks' marks and the
   // rotation ring, drawn after, stay full.
-  drawArtworkLayer(ctx, layers, (ctx) => drawCopies(ctx, doc, view, sc, copies));
+  // While Fair is the tool, the scaffold steps back so the Fair strokes read clearly (as Construct).
+  const fairing = controller.tool === 'fair';
+  const quiet = fairing ? (controller.fairTrace || controller.lineChoice ? QUIET_TRACING : QUIET) : null;
+  drawArtworkLayer(ctx, layers, (ctx) => drawCopies(ctx, doc, view, sc, copies, quiet));
   ctx.globalAlpha = 1;
   ctx.setLineDash([]);
   picks.forEach((r, n) => {
@@ -138,9 +141,12 @@ export function renderIntersection(ctx: CanvasRenderingContext2D, controller: Ap
 const EXTENSION_ALPHA = 0.36;
 const CONSTRUCTION_ALPHA = 0.45;
 const FAIR_WIDTH = 2.8;
+/** Construction and Extension while Fair is the tool — and fainter still while a trace is live. */
+const QUIET = { construction: 0.2, extension: 0.14 };
+const QUIET_TRACING = { construction: 0.12, extension: 0.08 };
 
 /** Every construction, each in its own colour (the artwork part of the frame). */
-function drawCopies(ctx: CanvasRenderingContext2D, doc: Doc, view: ViewTransform, sc: Scaffold, copies: IntersectionCopy[]): void {
+function drawCopies(ctx: CanvasRenderingContext2D, doc: Doc, view: ViewTransform, sc: Scaffold, copies: IntersectionCopy[], quiet: { construction: number; extension: number } | null = null): void {
   ctx.lineCap = 'round';
   ctx.lineJoin = 'round';
   for (const copy of copies) {
@@ -155,12 +161,12 @@ function drawCopies(ctx: CanvasRenderingContext2D, doc: Doc, view: ViewTransform
     // Scaffold and design, at a glance — in the instance's own colour throughout: Extension thin,
     // dashed and light; Construction thin and light; Fair solid, heavy and at full strength.
     ctx.strokeStyle = copy.colour;
-    ctx.globalAlpha = EXTENSION_ALPHA;
+    ctx.globalAlpha = quiet?.extension ?? EXTENSION_ALPHA;
     ctx.lineWidth = 0.9;
     ctx.setLineDash([...stroke.extensionDash]);
     ctx.stroke(dashed);
     ctx.setLineDash([]);
-    ctx.globalAlpha = CONSTRUCTION_ALPHA;
+    ctx.globalAlpha = quiet?.construction ?? CONSTRUCTION_ALPHA;
     ctx.lineWidth = 1;
     ctx.stroke(solid);
     ctx.globalAlpha = 1;
