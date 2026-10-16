@@ -15,9 +15,9 @@ import { drawInteraction, render } from './render/renderer.ts';
 import { renderRepeat } from './render/repeatRenderer.ts';
 import { renderIntersection } from './render/intersectionRenderer.ts';
 import { intersectionCopies, layoutOf, type IntersectionCopy } from './geometry/intersection.ts';
-import { contextLineNear, contextPointNear, instanceCamera, instanceUnder } from './geometry/intersectionLink.ts';
+import { contextLinesNear, contextPointNear, instanceCamera, instanceUnder } from './geometry/intersectionLink.ts';
 import { setContextProvider } from './interaction/context.ts';
-import { isNearAnyCurve, pickPointTarget } from './interaction/hittest.ts';
+import { curveCandidatesAt, pickPointTarget } from './interaction/hittest.ts';
 import type { ToolModule } from './interaction/tools/types.ts';
 import { drawUnderlayOutline, onUnderlayImage, screenLayers, settleUnderlay, underlayIn } from './render/underlay.ts';
 import { referenceTakeover } from './interaction/referenceTransform.ts';
@@ -28,7 +28,7 @@ import { openStartScreen, type CardActions } from './ui/startscreen.ts';
 import { buildDrawFrameHud } from './ui/drawframehud.ts';
 import { attachDrawFrame } from './interaction/drawframe.ts';
 import { initToast } from './ui/toast.ts';
-import type { Camera, Doc, FrameKind } from './model/types.ts';
+import type { Camera, Doc, FrameKind, Vec2 } from './model/types.ts';
 import { resolvePoint } from './geometry/kernel.ts';
 import { worldToScreen } from './app/controller.ts';
 import { attachAutosave, type AutosaveHandle } from './persist/autosave.ts';
@@ -297,25 +297,31 @@ function boot(doc: Doc, opts: { fitToScreen: boolean; history?: { undo: Doc[]; r
   const midStep = () =>
     !!controller.pending || !!controller.incircle || !!controller.copyRadius || !!controller.divide || !!controller.precision || (controller.tool === 'line' && controller.lineGuide !== 'free');
   /**
-   * A construction tool in Intersect. A touch on the active instance (its points, its curves, or a
-   * contextual place) is the tool's, as it stands. Otherwise — and only between steps — a touch on
-   * another instance's geometry makes THAT instance the active one, and the tool works there.
+   * A construction tool in Intersect. Between steps, the touch belongs to whichever instance has
+   * drawn geometry nearest the finger: another instance's line or point clearly nearer than anything
+   * of the active one (by SWITCH_NEARER_PX) makes THAT instance the active one, and the tool works
+   * there — so what is touched is what is edited, wherever the active instance's own geometry lies.
+   * A near-tie stays with the active instance (the tool's own press feedback shows what it took).
+   * Mid-step the instance never changes; other instances are reached as contextual places.
    */
+  const SWITCH_NEARER_PX = 4;
+  const REACH_PX = 16;
+  /** How far (screen px) the active instance's own nearest point or curve is from the finger. */
+  const ownDistance = (doc: Doc, view: ViewTransform, sp: Vec2): number =>
+    Math.min(pickPointTarget(doc, view, sp, { explicitOnly: true })?.screenD ?? Infinity, curveCandidatesAt(doc, view, sp, REACH_PX)[0]?.d ?? Infinity);
   function onActiveInstance(tool: ToolModule): ToolModule {
     return {
       id: tool.id,
       hint: (c) => tool.hint(c),
       beginGesture(c, view, sp) {
         const doc = c.doc;
-        if (!midStep() && !pickPointTarget(doc, view, sp) && !isNearAnyCurve(doc, view, sp)) {
-          const other = instanceUnder(doc, intersectionCopies(doc), activeCopy().key, screenToWorld(view, sp), 16 / view.zoom);
-          if (other) {
-            const onCanvas = paperToScreen(view, sp);
-            c.intersectionSelected = other;
-            const next = getToolView();
-            c.notify();
-            return tool.beginGesture(c, next, screenToPaper(next, onCanvas));
-          }
+        const other = midStep() ? null : instanceUnder(doc, intersectionCopies(doc), activeCopy().key, screenToWorld(view, sp), REACH_PX / view.zoom);
+        if (other && other.d * view.zoom + SWITCH_NEARER_PX < ownDistance(doc, view, sp)) {
+          const onCanvas = paperToScreen(view, sp);
+          c.intersectionSelected = other.key;
+          const next = getToolView();
+          c.notify();
+          return tool.beginGesture(c, next, screenToPaper(next, onCanvas));
         }
         return tool.beginGesture(c, view, sp);
       },
@@ -329,10 +335,10 @@ function boot(doc: Doc, opts: { fitToScreen: boolean; history?: { undo: Doc[]; r
       const hit = contextPointNear(doc, intersectionCopies(doc), activeCopy().key, screenToWorld(view, sp), radiusPx / view.zoom);
       return hit && { at: hit.at, screenD: hit.d * view.zoom, label: hit.label };
     },
-    line(view, sp, radiusPx) {
-      if (!linkedTool()) return null;
+    lines(view, sp, radiusPx) {
+      if (!linkedTool()) return [];
       const doc = controller.doc;
-      return contextLineNear(doc, intersectionCopies(doc), activeCopy().key, screenToWorld(view, sp), radiusPx / view.zoom);
+      return contextLinesNear(doc, intersectionCopies(doc), activeCopy().key, screenToWorld(view, sp), radiusPx / view.zoom).map((l) => ({ a: l.a, b: l.b, screenD: l.d * view.zoom }));
     },
     near(view, sp, radiusPx) {
       if (!linkedTool()) return false;

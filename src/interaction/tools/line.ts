@@ -21,7 +21,7 @@ import { screenToWorld } from '../../app/controller.ts';
 import { epsilon, resolveEntityGeom, resolvePoint } from '../../geometry/kernel.ts';
 import { defaultSegmentKind, deriveSegments, effectiveSegmentKind } from '../../geometry/segments.ts';
 import { curveCandidatesAt, isNearAnyCurve, pickPointTarget } from '../hittest.ts';
-import { contextLineAt, contextNear, contextPointAt } from '../context.ts';
+import { contextLinesAt, contextNear, contextPointAt } from '../context.ts';
 import { buildNodeInset } from '../nodeinset.ts';
 import { confirmSnap, noPointGesture, PointHold, resolveTap, showNoPoint, SnapTracker } from '../snap.ts';
 import { materializeRef, refFromHit, refLocation, type PointRef } from '../pointref.ts';
@@ -368,22 +368,27 @@ const GUIDE_LINE_REACH_PX = 16;
 const REFERENCE_AMBIGUITY_PX = 4;
 const SAME_DIRECTION_RAD = 1e-4;
 
-/** The reference a tap gives: the straight line under the finger (one of the construction's own,
- * else in Intersect another instance's — its two ends, in the construction's coordinates);
+/** The reference a tap gives: the straight line nearest the finger — the construction's own, or in
+ * Intersect another instance's, on equal terms (its two ends, in the construction's coordinates);
  * 'ambiguous' where lines running different ways are about as close (at a point where lines meet,
  * say — a reference is chosen deliberately, never guessed); null where there is no line. */
 function referenceAt(doc: Doc, view: ViewTransform, sp: Vec2): { a: Vec2; b: Vec2 } | 'ambiguous' | null {
-  const own = curveCandidatesAt(doc, view, sp, GUIDE_LINE_REACH_PX)
-    .filter((c) => c.entity.kind === 'line')
-    .map((c) => {
-      const g = resolveEntityGeom(doc, c.entity);
-      return g.kind === 'line' ? { a: { ...g.a }, b: { ...g.b }, dir: g.dir, d: c.d } : null;
-    })
-    .filter((c) => c !== null);
-  if (own.length === 0) return contextLineAt(view, sp, GUIDE_LINE_REACH_PX);
-  const first = own[0]!;
+  const unit = (a: Vec2, b: Vec2): Vec2 => {
+    const l = Math.hypot(b.x - a.x, b.y - a.y) || 1;
+    return { x: (b.x - a.x) / l, y: (b.y - a.y) / l };
+  };
+  const lines: { a: Vec2; b: Vec2; dir: Vec2; d: number }[] = [];
+  for (const c of curveCandidatesAt(doc, view, sp, GUIDE_LINE_REACH_PX)) {
+    if (c.entity.kind !== 'line') continue;
+    const g = resolveEntityGeom(doc, c.entity);
+    if (g.kind === 'line') lines.push({ a: { ...g.a }, b: { ...g.b }, dir: g.dir, d: c.d });
+  }
+  for (const l of contextLinesAt(view, sp, GUIDE_LINE_REACH_PX)) lines.push({ a: l.a, b: l.b, dir: unit(l.a, l.b), d: l.screenD });
+  if (lines.length === 0) return null;
+  lines.sort((x, y) => x.d - y.d);
+  const first = lines[0]!;
   const window = REFERENCE_AMBIGUITY_PX + 0.5 * first.d;
-  const rival = own.slice(1).some((c) => c.d <= first.d + window && Math.abs(first.dir.x * c.dir.y - first.dir.y * c.dir.x) > SAME_DIRECTION_RAD);
+  const rival = lines.slice(1).some((c) => c.d <= first.d + window && Math.abs(first.dir.x * c.dir.y - first.dir.y * c.dir.x) > SAME_DIRECTION_RAD);
   return rival ? 'ambiguous' : { a: first.a, b: first.b };
 }
 

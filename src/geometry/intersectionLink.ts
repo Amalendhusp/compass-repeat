@@ -231,26 +231,33 @@ export function contextPointNear(doc: Doc, copies: IntersectionCopy[], activeKey
   return best;
 }
 
-/** The straight line of ANOTHER instance nearest `m` (active frame, within `reach`) — as the two
- * ends of what it draws there — for a Parallel / Perpendicular reference. */
-export function contextLineNear(doc: Doc, copies: IntersectionCopy[], activeKey: string, m: Vec2, reach: number): { a: Vec2; b: Vec2 } | null {
+/** Every straight line of ANOTHER instance within `reach` of `m` (active frame) — as the two ends
+ * of what it draws there, and how far it is — nearest first: for a Parallel / Perpendicular reference. */
+export function contextLinesNear(doc: Doc, copies: IntersectionCopy[], activeKey: string, m: Vec2, reach: number): { a: Vec2; b: Vec2; d: number }[] {
   const active = copies.find((c) => c.key === activeKey);
-  if (!active) return null;
-  let best: { a: Vec2; b: Vec2; d: number } | null = null;
+  if (!active) return [];
+  const out: { a: Vec2; b: Vec2; d: number }[] = [];
   for (const p of placedNear(doc, copies, active, m, reach)) {
     if (p.kind !== 'line' || p.copy === activeKey) continue;
     const len2 = p.d.x * p.d.x + p.d.y * p.d.y;
     let t = ((m.x - p.a.x) * p.d.x + (m.y - p.a.y) * p.d.y) / len2;
     if (!p.whole) t = Math.min(p.t1, Math.max(p.t0, t));
     const d = Math.hypot(m.x - (p.a.x + p.d.x * t), m.y - (p.a.y + p.d.y * t));
-    if (!best || d < best.d) best = { a: p.a, b: { x: p.a.x + p.d.x, y: p.a.y + p.d.y }, d };
+    out.push({ a: p.a, b: { x: p.a.x + p.d.x, y: p.a.y + p.d.y }, d });
   }
-  return best && { a: best.a, b: best.b };
+  return out.sort((x, y) => x.d - y.d);
 }
 
-/** The other instance (if any) with drawn geometry under `m` — a position in the frame of the
- * instance `fromKey` — nearest first; for a tap that is on another instance, not the active one. */
-export function instanceUnder(doc: Doc, copies: IntersectionCopy[], fromKey: string, m: Vec2, reach: number): string | null {
+/** The nearest of those lines (contextLinesNear), or null. */
+export function contextLineNear(doc: Doc, copies: IntersectionCopy[], activeKey: string, m: Vec2, reach: number): { a: Vec2; b: Vec2 } | null {
+  const best = contextLinesNear(doc, copies, activeKey, m, reach)[0];
+  return best ? { a: best.a, b: best.b } : null;
+}
+
+/** The other instance (if any) with drawn geometry — a line, an arc or one of its points — nearest
+ * `m` (a position in the frame of the instance `fromKey`), and how far off that is: for a tap that is
+ * on another instance, not the active one. */
+export function instanceUnder(doc: Doc, copies: IntersectionCopy[], fromKey: string, m: Vec2, reach: number): { key: string; d: number } | null {
   const from = copies.find((c) => c.key === fromKey);
   if (!from) return null;
   const pivot = doc.frame.origin;
@@ -266,6 +273,10 @@ export function instanceUnder(doc: Doc, copies: IntersectionCopy[], fromKey: str
       const d = distToPiece(p, local);
       if (d <= reach && (!best || d < best.d)) best = { key: copy.key, d };
     }
+    for (const p of localPoints(doc)) {
+      const d = Math.hypot(local.x - p.at.x, local.y - p.at.y);
+      if (d <= reach && (!best || d < best.d) && pointShown(doc, p.id, p.at, copy.extensions)) best = { key: copy.key, d };
+    }
   }
-  return best ? (best as { key: string; d: number }).key : null;
+  return best;
 }

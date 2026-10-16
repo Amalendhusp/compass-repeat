@@ -23,8 +23,9 @@ export interface ContextHit {
 
 export interface ContextProvider {
   point(view: ViewTransform, screenPos: Vec2, radiusPx: number): ContextHit | null;
-  /** A straight line under the finger that is not the construction's own: its two ends. */
-  line(view: ViewTransform, screenPos: Vec2, radiusPx: number): { a: Vec2; b: Vec2 } | null;
+  /** The straight lines under the finger that are not the construction's own: their two ends, and
+   * how far off each is (screen px), nearest first. */
+  lines(view: ViewTransform, screenPos: Vec2, radiusPx: number): { a: Vec2; b: Vec2; screenD: number }[];
   /** Whether anything drawn that is not the construction's own lies within reach of the finger. */
   near(view: ViewTransform, screenPos: Vec2, radiusPx: number): boolean;
 }
@@ -39,8 +40,8 @@ export function contextPointAt(view: ViewTransform, screenPos: Vec2): ContextHit
   return provider ? provider.point(view, screenPos, CONTEXT_HIT_RADIUS) : null;
 }
 
-export function contextLineAt(view: ViewTransform, screenPos: Vec2, radiusPx: number): { a: Vec2; b: Vec2 } | null {
-  return provider ? provider.line(view, screenPos, radiusPx) : null;
+export function contextLinesAt(view: ViewTransform, screenPos: Vec2, radiusPx: number): { a: Vec2; b: Vec2; screenD: number }[] {
+  return provider ? provider.lines(view, screenPos, radiusPx) : [];
 }
 
 export function contextNear(view: ViewTransform, screenPos: Vec2, radiusPx: number): boolean {
