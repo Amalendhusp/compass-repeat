@@ -8,6 +8,10 @@
 //   lines) until its line lies on the reference line. Never turns it.
 // - two points → Snap: slides the moving construction until its point lies on the reference point.
 //   Never turns it.
+// - Match Edge (the Edge switch) picks in the other order — the edge that moves first, then the edge
+//   it goes onto — and makes the two edges coincide in one exact rigid move: it turns the moving
+//   construction until the edges run the same way (the smaller of the two turns that do), then
+//   slides it until their middles meet, so equal edges end exactly end to end.
 //
 // What can be picked — of each construction as shown:
 // - a line: any straight line with something visible — its Construction / Fair pieces always; its
@@ -53,8 +57,9 @@ export type IntersectionPick = (
   tap?: Vec2;
 };
 
-/** Which kind of geometry a tap picks — set by the Snap row's Line | Point switch. */
-export type PickKind = 'line' | 'point';
+/** Which kind of geometry a tap picks — set by the Snap row's Line | Point | Edge switch. Edge picks
+ * lines too, but for Match Edge: the moving edge first, then the target edge. */
+export type PickKind = 'line' | 'point' | 'edge';
 
 // ---- the construction's own lines and points, once per document ----
 
@@ -379,7 +384,7 @@ export function pickAtTap(doc: Doc, copies: IntersectionCopy[], w: Vec2, reach: 
     }
   }
   const points = pointsNear(doc, copies, w, reach);
-  const order = kind === 'line' ? [lines, points] : [points];
+  const order = kind === 'line' ? [lines, points] : kind === 'edge' ? [lines] : [points];
   for (const only of [true, false]) {
     for (const set of order) {
       const c = nearest(only ? set.filter((x) => accept(x.pick)) : set, w);
@@ -477,4 +482,101 @@ export function planSnap(doc: Doc, copies: IntersectionCopy[], reference: Inters
     return { kind: 'points', moving: m.carrier, shift, snapped: Math.hypot(shift.x, shift.y) < COINCIDENT_EPS };
   }
   return { kind: 'none', note: 'Pick two lines, or two points' };
+}
+
+// ---- Match Edge: one exact rigid move that makes two edges coincide ----
+
+const wrapAngle = (a: number) => Math.atan2(Math.sin(a), Math.cos(a));
+
+/** The edge a line pick means, unplaced (in the construction's own coordinates): the piece of its
+ * line between the two points either side of where it was tapped — or, with no tap there, the
+ * line's own span. Worked out from the geometry itself, never from the screen. */
+export function pickedEdge(doc: Doc, pick: IntersectionPick): { a: Vec2; b: Vec2 } | null {
+  if (pick.kind !== 'line') return null;
+  const entity = doc.entities.find((e) => e.id === pick.entity);
+  if (!entity || entity.kind !== 'line') return null;
+  const g = resolveEntityGeom(doc, entity);
+  if (g.kind !== 'line') return null;
+  if (pick.tap) {
+    const at = projectOntoEntity(doc, entity, pick.tap).param;
+    const seg = deriveSegments(doc, entity).find((s) => at >= s.fromParam - 1e-9 && at <= s.toParam + 1e-9 && doc.segmentStates.get(s.key)?.state !== 'trimmed');
+    if (seg) return { a: resolvePoint(doc, seg.from), b: resolvePoint(doc, seg.to) };
+  }
+  return { a: g.a, b: g.b };
+}
+
+export type EdgePlan =
+  | { kind: 'none'; note: string }
+  | {
+      kind: 'edge';
+      moving: string;
+      target: string;
+      /** The moving construction's pose after Match Edge: its rotation and (shown) translation. */
+      rotation: number;
+      translate: Vec2;
+      /** How far that turns and slides it from where it is. */
+      turn: number;
+      shift: Vec2;
+      /** Already coincident. */
+      matched: boolean;
+      /** The two edges as shown now (world): moving, then target. */
+      edges: [[Vec2, Vec2], [Vec2, Vec2]];
+    };
+
+/** The picks after a tap, for Match Edge: the moving edge first, then a target edge on another
+ * construction. Tapping the moving edge again clears both; tapping the target again un-picks it;
+ * another edge of the moving construction becomes the moving edge instead. */
+export function withEdgePick(picks: IntersectionPick[], pick: IntersectionPick): IntersectionPick[] {
+  const [moving, target] = picks;
+  if (!moving) return [pick];
+  if (samePick(moving, pick)) return [];
+  if (target && samePick(target, pick)) return [moving];
+  return pick.kind === 'line' && moving.kind === 'line' && pick.copy !== moving.copy ? [moving, pick] : [pick];
+}
+
+/**
+ * Match Edge, worked out exactly from the master geometry and the instances' poses: the rotation and
+ * translation that put the moving edge onto the target edge. The turn is the smaller of the two that
+ * make the edges run the same way (either end to either end); then the edges' middles are made to
+ * meet — so equal edges coincide end point for end point.
+ */
+export function planMatchEdge(doc: Doc, copies: IntersectionCopy[], moving: IntersectionPick, target: IntersectionPick): EdgePlan {
+  if (moving.kind !== 'line' || target.kind !== 'line') return { kind: 'none', note: 'Pick two edges' };
+  if (moving.copy === target.copy) return { kind: 'none', note: 'Pick the target edge on another construction' };
+  const mc = copies.find((c) => c.key === moving.copy);
+  const tc = copies.find((c) => c.key === target.copy);
+  const me = pickedEdge(doc, moving);
+  const te = pickedEdge(doc, target);
+  if (!mc || !tc || !me || !te || !resolvePick(doc, copies, moving) || !resolvePick(doc, copies, target)) return { kind: 'none', note: 'That selection no longer exists' };
+  const pivot = doc.frame.origin;
+  const w1 = transformPoint(pivot, mc.pose, me.a);
+  const w2 = transformPoint(pivot, mc.pose, me.b);
+  const v1 = transformPoint(pivot, tc.pose, te.a);
+  const v2 = transformPoint(pivot, tc.pose, te.b);
+  const dw = sub(w2, w1);
+  const dv = sub(v2, v1);
+  if (Math.hypot(dw.x, dw.y) < COINCIDENT_EPS || Math.hypot(dv.x, dv.y) < COINCIDENT_EPS) return { kind: 'none', note: 'That edge has no length' };
+  const same = wrapAngle(Math.atan2(dv.y, dv.x) - Math.atan2(dw.y, dw.x)); // its a end onto the target's a end
+  const flipped = wrapAngle(same + Math.PI); // …or onto the target's b end
+  const turnBy = Math.abs(flipped) < Math.abs(same) ? flipped : same;
+  const rotation = wrapAngle(mc.pose.rotation + turnBy);
+  const mid = { x: (me.a.x + me.b.x) / 2, y: (me.a.y + me.b.y) / 2 };
+  const goal = { x: (v1.x + v2.x) / 2, y: (v1.y + v2.y) / 2 };
+  const r = turn(sub(mid, pivot), rotation);
+  const translate = { x: goal.x - pivot.x - r.x, y: goal.y - pivot.y - r.y };
+  const shift = sub(translate, mc.pose.translate);
+  return {
+    kind: 'edge',
+    moving: mc.key,
+    target: tc.key,
+    rotation,
+    translate,
+    turn: turnBy,
+    shift,
+    matched: Math.abs(turnBy) < PARALLEL_EPS && Math.hypot(shift.x, shift.y) < COINCIDENT_EPS,
+    edges: [
+      [w1, w2],
+      [v1, v2],
+    ],
+  };
 }

@@ -4,13 +4,17 @@
 // rebuilt from the history and drawn by the same export-mode renderers PNG and SVG use, onto a
 // private off-screen canvas. The live canvas, document, history and Undo are never touched.
 //
-// Construct or Repeat follows the workspace the timelapse is made from, and so does the framing —
-// the same views a PNG export would use, held steady for the whole video:
-// - From Repeat: states from before Repeat was first set up are drawn as Construct (in the
-//   Construct view, construction included — it's the building phase), every later one as the
-//   pattern (in the Repeat view — the repeated design only — with Share's Grid setting).
-// - From Construct: every state as Construct; changes that only affect Repeat look identical
-//   there, so they're skipped instead of shown as frozen frames.
+// Each moment is shown in the workspace it happened in, framed as that workspace's view (held
+// steady for the whole video, as a PNG export would frame it):
+// - Moments made in Intersect are drawn as the arrangement: every instance placed and turned, in
+//   its own colour, Construction light and Fair strong — never handles, rings, picks or the dock.
+// - From Repeat: moments made in Construct are Construct (construction included — the building
+//   phase); the rest are the pattern once Repeat is set up (the repeated design only, with Share's
+//   Grid setting). Moments recorded before the workspace was kept follow the old rule: Construct
+//   until Repeat was set up, the pattern after.
+// - From Construct: Construct and Intersect moments as such; changes that only affect Repeat look
+//   identical in Construct, so they're skipped instead of shown as frozen frames.
+// So a process that went Construct → Intersect → Repeat plays back that way.
 // Changes are cuts, never animated: each recorded state is simply shown, for a time that adapts to
 // how many there are.
 //
@@ -19,9 +23,10 @@
 // included), then WebM.
 
 import { AppController, type ViewTransform } from '../app/controller.ts';
-import type { Doc } from '../model/types.ts';
+import type { Doc, Workspace } from '../model/types.ts';
 import { render, type ArtworkExport } from './renderer.ts';
 import { renderRepeat } from './repeatRenderer.ts';
+import { renderIntersection } from './intersectionRenderer.ts';
 import { shareFilename } from './export.ts';
 import { loadEvents, loadMeta, type ProcessEvent } from '../persist/processStore.ts';
 import { walkProcess } from '../persist/processReplay.ts';
@@ -121,17 +126,30 @@ export function frameRenderer(liveDoc: Doc, view: ViewTransform, settings: { con
   const building: ArtworkExport = asRepeat ? { ...exp, construction: true } : exp;
   const constructView: ViewTransform = { zoom: liveDoc.view.zoom, pan: { ...liveDoc.view.pan }, w: view.w, h: view.h };
   const repeatView: ViewTransform = { zoom: liveDoc.repeatView.zoom, pan: { ...liveDoc.repeatView.pan }, w: view.w, h: view.h };
+  const ix = liveDoc.intersectionView ?? liveDoc.view;
+  const intersectView: ViewTransform = { zoom: ix.zoom, pan: { ...ix.pan }, w: view.w, h: view.h };
   const drawer = new AppController(liveDoc); // private: only ever handed rebuilt states
+  // Intersect's renderer reads its transient state off a controller: here, none at all — no tool,
+  // no selection, no picks, no drag — so it draws the arrangement alone.
+  const still = { doc: liveDoc, tool: null, fairTrace: null, lineChoice: null, intersectionDrag: null, intersectionSpreadDraft: null, intersectionSelected: null, intersectionPicks: [], intersectionPickKind: 'line' };
   return {
     canvas,
     W,
     H,
-    /** Shown as the pattern once Repeat has been set up — when made from Repeat. */
-    isRepeat: (s: ArtworkState) => asRepeat && s.repeat.family !== undefined,
-    draw(state: ArtworkState): void {
+    /** How a moment is shown: in the workspace it happened in (see the top of this file). */
+    modeOf(state: ArtworkState, workspace?: Workspace): 'construct' | 'intersect' | 'repeat' {
+      if (workspace === 'intersection') return 'intersect';
+      if (!asRepeat || workspace === 'construct') return 'construct';
+      return state.repeat.family !== undefined ? 'repeat' : 'construct';
+    },
+    draw(state: ArtworkState, workspace?: Workspace): void {
       drawer.doc = stateToDoc(state, liveDoc);
       ctx.setTransform(W / view.w, 0, 0, H / view.h, 0, 0);
-      if (this.isRepeat(state)) renderRepeat(ctx, drawer, repeatView, exp);
+      const mode = this.modeOf(state, workspace);
+      if (mode === 'intersect') {
+        still.doc = drawer.doc;
+        renderIntersection(ctx, still as unknown as AppController, intersectView);
+      } else if (mode === 'repeat') renderRepeat(ctx, drawer, repeatView, exp);
       else render(ctx, drawer, constructView, building);
     },
   };
@@ -189,7 +207,8 @@ export async function createTimelapse(
   try {
     document.addEventListener('visibilitychange', onVisibility);
     const walk = walkProcess(plan.events);
-    frames.draw(walk.next().value!.state);
+    const first = walk.next().value!;
+    frames.draw(first.state, first.event.workspace);
     copy();
     recorder.start(1000);
     const t0 = performance.now();
@@ -203,14 +222,14 @@ export async function createTimelapse(
       if (!plan.keep(event)) continue;
       await sleepUntil(due);
       if (stop()) return null;
-      frames.draw(state);
+      frames.draw(state, event.workspace);
       copy();
       due += plan.stepMs;
     }
     if (plan.appendCurrent) {
       await sleepUntil(due);
       if (stop()) return null;
-      frames.draw(plan.appendCurrent);
+      frames.draw(plan.appendCurrent, liveDoc.view.workspace);
       copy();
       due += plan.stepMs;
     }

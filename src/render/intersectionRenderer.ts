@@ -24,7 +24,7 @@ import { resolveEntityGeom } from '../geometry/kernel.ts';
 import { defaultSegmentKind, deriveSegments } from '../geometry/segments.ts';
 import { motifRadius, poseArcAngle, transformPoint, type InstancePose } from '../geometry/lattice.ts';
 import { intersectionBounds, intersectionCopies, type IntersectionCopy } from '../geometry/intersection.ts';
-import { resolvePick, type ResolvedPick, type ShownLine } from '../geometry/intersectionSnap.ts';
+import { pickedEdge, planMatchEdge, resolvePick, type IntersectionPick, type ResolvedPick, type ShownLine } from '../geometry/intersectionSnap.ts';
 import { color, stroke } from './tokens.ts';
 
 type Piece = { entity: Entity; kind: 'construction' | 'extension' | 'fair'; from?: number; to?: number };
@@ -110,11 +110,17 @@ export function renderIntersection(ctx: CanvasRenderingContext2D, controller: Ap
   ctx.lineCap = 'round';
   ctx.lineJoin = 'round';
   // Picks, worked out from the copies as shown right now (so they follow a live move or Spread).
-  const picks = (controller.intersectionPicks ?? []).map((pick) => resolvePick(doc, copies, pick));
+  // Match Edge marks just the two edges (moving, then target), and previews the move.
+  const edgeMode = controller.intersectionPickKind === 'edge';
+  const rawPicks: IntersectionPick[] = controller.intersectionPicks ?? [];
+  const picks = edgeMode ? [] : rawPicks.map((pick) => resolvePick(doc, copies, pick));
+  const edges = edgeMode ? rawPicks.map((pick) => (resolvePick(doc, copies, pick) ? edgeShown(doc, copies, pick) : null)) : [];
+  const edgePlan = edgeMode && rawPicks.length === 2 ? planMatchEdge(doc, copies, rawPicks[0]!, rawPicks[1]!) : null;
   const colourOf = (key: string) => copies.find((c) => c.key === key)?.colour ?? color.ink;
   picks.forEach((r, n) => {
     if (r?.kind === 'line') drawLineHalo(ctx, view, r.line, n === 0 ? color.ink : colourOf(r.line.copyKey), n === 0 ? 0.16 : 0.24, 9);
   });
+  for (const e of edges) if (e) drawLineHalo(ctx, view, e, colourOf(e.copyKey), 0.24, 11);
   // The constructions at their viewing strength over the reference; the picks' marks and the
   // rotation ring, drawn after, stay full.
   // While Fair is the tool, the scaffold steps back so the Fair strokes read clearly (as Construct).
@@ -123,6 +129,12 @@ export function renderIntersection(ctx: CanvasRenderingContext2D, controller: Ap
   drawArtworkLayer(ctx, layers, (ctx) => drawCopies(ctx, doc, view, sc, copies, quiet));
   ctx.globalAlpha = 1;
   ctx.setLineDash([]);
+  // Match Edge's preview: the moving construction, faint, where Match Edge would put it.
+  if (edgePlan?.kind === 'edge' && !edgePlan.matched) {
+    const moving = copies.find((c) => c.key === edgePlan.moving);
+    if (moving) drawCopies(ctx, doc, view, sc, [{ ...moving, pose: { ...moving.pose, translate: edgePlan.translate, rotation: edgePlan.rotation } }], null, 0.5);
+  }
+  for (const e of edges) if (e) drawLineHalo(ctx, view, e, colourOf(e.copyKey), 1, 2.6);
   picks.forEach((r, n) => {
     // The picked line itself, crisp over everything else; a point's mark.
     if (r?.kind === 'line') drawLineHalo(ctx, view, r.line, colourOf(r.line.copyKey), 1, 2.2);
@@ -146,7 +158,19 @@ const QUIET = { construction: 0.2, extension: 0.14 };
 const QUIET_TRACING = { construction: 0.12, extension: 0.08 };
 
 /** Every construction, each in its own colour (the artwork part of the frame). */
-function drawCopies(ctx: CanvasRenderingContext2D, doc: Doc, view: ViewTransform, sc: Scaffold, copies: IntersectionCopy[], quiet: { construction: number; extension: number } | null = null): void {
+/** A Match Edge pick's edge as shown now (world) — the segment itself, not its whole line. */
+function edgeShown(doc: Doc, copies: IntersectionCopy[], pick: IntersectionPick): ShownLine | null {
+  const edge = pickedEdge(doc, pick);
+  const copy = pick.kind === 'line' ? copies.find((c) => c.key === pick.copy) : undefined;
+  if (!edge || !copy || pick.kind !== 'line') return null;
+  const a = transformPoint(doc.frame.origin, copy.pose, edge.a);
+  const b = transformPoint(doc.frame.origin, copy.pose, edge.b);
+  const len = Math.hypot(b.x - a.x, b.y - a.y);
+  if (len < 1e-12) return null;
+  return { copyKey: copy.key, entityId: pick.entity, p: a, u: { x: (b.x - a.x) / len, y: (b.y - a.y) / len }, extent: [0, len] };
+}
+
+function drawCopies(ctx: CanvasRenderingContext2D, doc: Doc, view: ViewTransform, sc: Scaffold, copies: IntersectionCopy[], quiet: { construction: number; extension: number } | null = null, fade = 1): void {
   ctx.lineCap = 'round';
   ctx.lineJoin = 'round';
   for (const copy of copies) {
@@ -161,15 +185,15 @@ function drawCopies(ctx: CanvasRenderingContext2D, doc: Doc, view: ViewTransform
     // Scaffold and design, at a glance — in the instance's own colour throughout: Extension thin,
     // dashed and light; Construction thin and light; Fair solid, heavy and at full strength.
     ctx.strokeStyle = copy.colour;
-    ctx.globalAlpha = quiet?.extension ?? EXTENSION_ALPHA;
+    ctx.globalAlpha = fade * (quiet?.extension ?? EXTENSION_ALPHA);
     ctx.lineWidth = 0.9;
     ctx.setLineDash([...stroke.extensionDash]);
     ctx.stroke(dashed);
     ctx.setLineDash([]);
-    ctx.globalAlpha = quiet?.construction ?? CONSTRUCTION_ALPHA;
+    ctx.globalAlpha = fade * (quiet?.construction ?? CONSTRUCTION_ALPHA);
     ctx.lineWidth = 1;
     ctx.stroke(solid);
-    ctx.globalAlpha = 1;
+    ctx.globalAlpha = fade;
     ctx.lineWidth = FAIR_WIDTH;
     ctx.stroke(fair);
   }
@@ -223,6 +247,15 @@ export function ringRadius(doc: Doc, view: ViewTransform): number {
   return motifRadius(doc) * view.zoom + 26;
 }
 
+/** Where a construction's rotation handle sits on its ring (screen) — "up" at zero rotation. */
+export function rotationHandle(doc: Doc, view: ViewTransform, copy: IntersectionCopy): Vec2 {
+  const pivot = doc.frame.origin;
+  const centre = worldToScreen(view, { x: pivot.x + copy.pose.translate.x, y: pivot.y + copy.pose.translate.y });
+  const r = ringRadius(doc, view);
+  const a = -Math.PI / 2 + copy.pose.rotation;
+  return { x: centre.x + r * Math.cos(a), y: centre.y + r * Math.sin(a) };
+}
+
 /** The selected construction's rotation ring about its own centre, its marker at its rotation. */
 function drawRotationRing(ctx: CanvasRenderingContext2D, doc: Doc, view: ViewTransform, copy: IntersectionCopy, active: boolean, handle = true): void {
   const pivot = doc.frame.origin;
@@ -238,9 +271,7 @@ function drawRotationRing(ctx: CanvasRenderingContext2D, doc: Doc, view: ViewTra
   ctx.stroke();
   ctx.restore();
   if (!handle) return; // the active instance while building: no handle, nothing to grab
-  const handleAngle = -Math.PI / 2 + copy.pose.rotation; // marker starts "up" at zero rotation
-  const hx = centre.x + r * Math.cos(handleAngle);
-  const hy = centre.y + r * Math.sin(handleAngle);
+  const { x: hx, y: hy } = rotationHandle(doc, view, copy);
   ctx.save();
   ctx.beginPath();
   ctx.arc(hx, hy, active ? 12 : 10, 0, Math.PI * 2);

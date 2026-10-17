@@ -11,6 +11,7 @@
 // recorded before it.
 
 import type { ArtworkState, PatchOp, ProcessSource } from './processState.ts';
+import type { Workspace } from '../model/types.ts';
 
 const DB_NAME = 'construct-and-repeat-process';
 const DB_VERSION = 1;
@@ -46,6 +47,9 @@ export interface ProcessEvent {
   tags: string[];
   /** Fingerprint of the artwork state after this moment. */
   hash: string;
+  /** Where the moment happened — so Timelapse can show it there (Intersect's moments as the
+   * arrangement). Absent on moments recorded before this was kept. */
+  workspace?: Workspace;
   patch?: PatchOp[];
   keyframe?: ArtworkState;
 }

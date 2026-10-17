@@ -31,7 +31,7 @@ import { color, fairPalette, stroke } from '../render/tokens.ts';
 import { defaultLatticeVectors, isSixtyDegreeFamily, type LatticeFamily } from '../geometry/lattice.ts';
 import { rotationFractionLabel } from '../render/repeatRenderer.ts';
 import { asReference, intersectionCopies, layoutOf, MAX_CONSTRUCTIONS, placedAt, PRIMARY, referenceCurrent, sliderToSpread, SPREAD_SLIDER_MAX, spreadToSlider, withAddedCopy, withCopySetting, withLayout, withoutCopy, withSpread } from '../geometry/intersection.ts';
-import { canMoveAgainst, convertPick, isPointPick, planSnap, resolvePick, type PickKind } from '../geometry/intersectionSnap.ts';
+import { canMoveAgainst, convertPick, isPointPick, planMatchEdge, planSnap, resolvePick, type PickKind } from '../geometry/intersectionSnap.ts';
 import { PICK_REACH_PX } from '../interaction/tools/intersectionTool.ts';
 import { repeatSource, type RepeatSource } from '../geometry/repeatUnit.ts';
 import { artworksUsing, deleteReference, listReferences, type ReferenceRecord } from '../persist/referenceStore.ts';
@@ -1907,10 +1907,11 @@ export function buildShell(
   for (const [kind, label] of [
     ['line', 'Line'],
     ['point', 'Point'],
+    ['edge', 'Edge'],
   ] as const) {
     const b = document.createElement('button');
     b.textContent = label;
-    b.setAttribute('aria-label', `Pick ${label.toLowerCase()}s`);
+    b.setAttribute('aria-label', kind === 'edge' ? 'Match edges' : `Pick ${label.toLowerCase()}s`);
     onTap(b, () => setPickKind(kind));
     kindBtns.set(kind, b);
     kindSeg.appendChild(b);
@@ -1918,6 +1919,14 @@ export function buildShell(
   /** Taps pick `kind` from now on; what is picked becomes that kind where it was tapped. */
   function setPickKind(kind: PickKind): void {
     if (controller.intersectionPickKind === kind) return;
+    // Match Edge picks in its own order (the moving edge first): its picks and the others' never
+    // turn into one another — switching in or out starts afresh.
+    if (kind === 'edge' || controller.intersectionPickKind === 'edge') {
+      controller.intersectionPickKind = kind;
+      controller.intersectionPicks = [];
+      controller.notify();
+      return;
+    }
     controller.intersectionPickKind = kind;
     const copies = intersectionCopies(controller.doc);
     const reach = (PICK_REACH_PX * 2) / opts.getView().zoom;
@@ -1939,6 +1948,7 @@ export function buildShell(
   const parallelBtn = snapChip('Parallel', 'Turn the second line’s construction until its line is parallel to the first');
   const joinBtn = snapChip('Join', 'Slide the second line’s construction across until its line lies on the first');
   const pointSnapBtn = snapChip('Snap', 'Slide the second point’s construction until its point lies on the first');
+  const matchEdgeBtn = snapChip('Match Edge', 'Turn and slide the first edge’s construction until that edge lies exactly on the second edge');
   const snapClearBtn = document.createElement('button');
   snapClearBtn.className = 'space-chip snap-clear';
   snapClearBtn.setAttribute('aria-label', 'Clear the selection');
@@ -1970,8 +1980,19 @@ export function buildShell(
     const plan = currentPlan();
     if (plan?.kind === 'points' && !plan.snapped) placeCopy(plan.moving, plan.shift, null);
   });
+  onTap(matchEdgeBtn, () => {
+    const [moving, target] = controller.intersectionPicks;
+    if (controller.intersectionPickKind !== 'edge' || !moving || !target) return;
+    const plan = planMatchEdge(controller.doc, intersectionCopies(controller.doc), moving, target);
+    if (plan.kind !== 'edge' || plan.matched) return;
+    // One exact rigid move — one Undo step.
+    controller.commit((d) => {
+      d.intersection = withLayout(d, placedAt(layoutOf(d), plan.moving, plan.translate, plan.rotation));
+    });
+  });
   onTap(snapClearBtn, () => {
     controller.intersectionPicks = [];
+    controller.intersectionPickKind = 'line'; // and the Snap row goes until something is picked again
     controller.notify();
   });
   ixSnapRow.appendChild(snapStatus);
@@ -1979,6 +2000,7 @@ export function buildShell(
   snapControls.appendChild(parallelBtn);
   snapControls.appendChild(joinBtn);
   snapControls.appendChild(pointSnapBtn);
+  snapControls.appendChild(matchEdgeBtn);
   snapControls.appendChild(snapClearBtn);
   ixSnapRow.appendChild(snapControls);
   repeatPanel.appendChild(ixSnapRow);
@@ -1999,15 +2021,35 @@ export function buildShell(
       }
     }
     const [reference, moving] = controller.intersectionPicks;
-    ixSnapRow.style.display = reference ? '' : 'none';
-    if (!reference) return;
-    const plan = moving ? planSnap(controller.doc, copies, reference, moving) : null;
+    const edgeMode = controller.intersectionPickKind === 'edge';
+    // Shown once something is picked — and throughout Match Edge, which starts with nothing picked.
+    ixSnapRow.style.display = reference || edgeMode ? '' : 'none';
+    for (const [kind, b] of kindBtns) b.classList.toggle('active', controller.intersectionPickKind === kind);
     const labelOf = (key: string) => copies.find((c) => c.key === key)?.label ?? '';
     const colourOf = (key: string) => copies.find((c) => c.key === key)?.colour ?? '';
+    matchEdgeBtn.style.display = edgeMode ? '' : 'none';
+    if (edgeMode) {
+      parallelBtn.style.display = 'none';
+      joinBtn.style.display = 'none';
+      pointSnapBtn.style.display = 'none';
+      const edgePlan = reference && moving ? planMatchEdge(controller.doc, copies, reference, moving) : null;
+      let edgeText: string;
+      if (!reference) edgeText = 'Match Edge · tap the edge that moves';
+      else if (!edgePlan) edgeText = `${labelOf(reference.kind === 'line' ? reference.copy : '')} edge moves · now tap the edge it goes onto`;
+      else if (edgePlan.kind === 'none') edgeText = edgePlan.note;
+      else edgeText = edgePlan.matched ? 'Edges matched' : `Match Edge moves ${labelOf(edgePlan.moving)} onto ${labelOf(edgePlan.target)}`;
+      const dotKey = edgePlan?.kind === 'edge' ? edgePlan.moving : reference?.kind === 'line' ? reference.copy : '';
+      snapText.textContent = edgeText;
+      snapDot.style.display = dotKey ? '' : 'none';
+      snapDot.style.background = colourOf(dotKey);
+      matchEdgeBtn.disabled = edgePlan?.kind !== 'edge' || edgePlan.matched;
+      return;
+    }
+    if (!reference) return;
+    const plan = moving ? planSnap(controller.doc, copies, reference, moving) : null;
     const lines = plan ? plan.kind === 'lines' : !isPointPick(reference);
     let text: string;
     let dot = '';
-    for (const [kind, b] of kindBtns) b.classList.toggle('active', controller.intersectionPickKind === kind);
     if (!plan) text = isPointPick(reference) ? 'Reference point · now tap a point to move' : 'Reference line · now tap a line to move';
     else if (plan.kind === 'none') text = plan.note;
     else {
