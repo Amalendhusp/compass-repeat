@@ -57,9 +57,11 @@ export type IntersectionPick = (
   tap?: Vec2;
 };
 
-/** Which kind of geometry a tap picks — set by the Snap row's Line | Point | Edge switch. Edge picks
- * lines too, but for Match Edge: the moving edge first, then the target edge. */
-export type PickKind = 'line' | 'point' | 'edge';
+/** What a tap in Intersect's Select takes. 'instance' — the default — takes a whole instance (to
+ * move, turn, or start an alignment from); the others only while an alignment is being set up:
+ * lines for Parallel / Join, points for Point Snap, edges for Match Edge (which picks in the other
+ * order: the moving edge first, then the target edge). */
+export type PickKind = 'instance' | 'line' | 'point' | 'edge';
 
 // ---- the construction's own lines and points, once per document ----
 

@@ -7,6 +7,13 @@
 // Two fingers are pan/zoom, as everywhere (claimed upstream in PointerManager). Each completed move
 // or turn is one Undo step. Moving is always free: nothing ever pulls a construction.
 //
+// What a tap takes is the whole instance (controller.intersectionPickKind 'instance', the default):
+// tap one to select it, another to change, empty canvas to deselect. Lines, points and edges are
+// taken only once an alignment has been started (Parallel · Join, Point Snap, Match Edge).
+// Where instances overlap, the one whose drawn geometry is nearest the finger wins; the selected one
+// wins a near-tie (so it stays put under repeated taps); a second tap at the same place moves on to
+// the next instance there — so even one entirely covered by others can be reached.
+//
 // A tap (a press that never leaves the drag slop) picks geometry for an explicit Snap
 // (geometry/intersectionSnap.ts): the line — or, with the Snap row's switch on Point, the point —
 // under the finger. Choosing by kind rather than by distance matters: in a dense construction there
@@ -19,6 +26,8 @@ import { screenToWorld, worldToScreen } from '../../app/controller.ts';
 import { motifRadius, snapRotation } from '../../geometry/lattice.ts';
 import { dist } from '../../geometry/vec.ts';
 import { intersectionCopies, layoutOf, placedAt, withLayout, type IntersectionCopy } from '../../geometry/intersection.ts';
+import { instanceDistances } from '../../geometry/intersectionLink.ts';
+import { showToast } from '../../ui/toast.ts';
 import { canMoveAgainst, pickAtTap, pickCarrier, samePick, withEdgePick, withPick, type IntersectionPick } from '../../geometry/intersectionSnap.ts';
 import { rotationHandle } from '../../render/intersectionRenderer.ts';
 import type { Gesture, ToolModule } from './types.ts';
@@ -28,6 +37,56 @@ export const HANDLE_TOUCH_PX = 22;
 const DRAG_SLOP_PX = 6; // as Repeat: a press that stays within this moves nothing — it's a tap
 /** How close (px) a tap must be to pick a line or point. */
 export const PICK_REACH_PX = 14;
+/** A press this close (px) to an instance's drawn geometry is on that instance. */
+const INSTANCE_REACH_PX = 16;
+/** Another instance within this much (px) of the nearest is just as near. */
+const OVERLAP_TIE_PX = 4;
+/** A second tap this close (px) to the last one moves on to the next overlapping instance. */
+const CYCLE_SLOP_PX = 10;
+
+/** The instances a press at `sp` could mean, best first: those whose drawn geometry is within reach
+ * (nearest first), then those whose frame the finger is merely inside (nearest centre first). */
+function instancesAt(controller: AppController, view: ViewTransform, sp: Vec2): { key: string; score: number }[] {
+  const doc = controller.doc;
+  const copies = intersectionCopies(doc);
+  const near = instanceDistances(doc, copies, screenToWorld(view, sp), INSTANCE_REACH_PX / view.zoom);
+  const inside = motifRadius(doc) * view.zoom;
+  const out: { key: string; score: number }[] = [];
+  for (const c of copies) {
+    const g = near.get(c.key);
+    const fromCentre = dist(sp, centreOf(controller, view, c));
+    if (g !== undefined) out.push({ key: c.key, score: g * view.zoom });
+    else if (fromCentre <= inside) out.push({ key: c.key, score: 1000 + fromCentre });
+  }
+  return out.sort((a, b) => a.score - b.score);
+}
+
+let lastTap: { at: Vec2; key: string } | null = null;
+
+/** A tap that selects an instance (see the top of this file). */
+function selectAt(controller: AppController, view: ViewTransform, sp: Vec2): void {
+  const cands = instancesAt(controller, view, sp);
+  const selected = controller.intersectionSelected;
+  if (cands.length === 0) {
+    lastTap = null;
+    controller.intersectionSelected = null;
+    controller.intersectionPicks = [];
+    controller.notify();
+    return;
+  }
+  const top = cands[0]!;
+  const tied = cands.filter((c) => c.score <= top.score + OVERLAP_TIE_PX);
+  const at = cands.findIndex((c) => c.key === selected);
+  let chosen: string;
+  if (lastTap && dist(lastTap.at, sp) <= CYCLE_SLOP_PX && cands.length > 1 && at >= 0) chosen = cands[(at + 1) % cands.length]!.key;
+  else if (at >= 0 && tied.some((c) => c.key === selected)) chosen = selected!;
+  else chosen = top.key;
+  // Only a genuine tie says so — instances overlapping elsewhere are not worth a word.
+  if (tied.length > 1 && (!lastTap || dist(lastTap.at, sp) > CYCLE_SLOP_PX)) showToast('Overlapping · tap again to select the next');
+  lastTap = { at: sp, key: chosen };
+  controller.intersectionSelected = chosen;
+  controller.notify();
+}
 
 function centreOf(controller: AppController, view: ViewTransform, copy: IntersectionCopy): Vec2 {
   const pivot = controller.doc.frame.origin;
@@ -88,7 +147,12 @@ function turnGesture(controller: AppController, view: ViewTransform, copy: Inter
       controller.intersectionDrag = null;
       if (moving && drag && drag.rotation !== copy.pose.rotation) commitPlacement(controller, copy.key, copy.pose.translate, drag.rotation);
       else {
-        if (!moving) pickAt(controller, view, down); // a tap on the ring may still be on a line
+        // A tap on the handle without turning: what is under it — an instance, or (while an
+        // alignment is being set up) a line, point or edge.
+        if (!moving) {
+          if (controller.intersectionPickKind === 'instance') selectAt(controller, view, down);
+          else pickAt(controller, view, down);
+        }
         controller.notify();
       }
     },
@@ -111,7 +175,23 @@ export const intersectionTool: ToolModule = {
     if (selected && dist(sp, rotationHandle(controller.doc, view, selected)) <= HANDLE_TOUCH_PX) {
       return turnGesture(controller, view, selected, sp);
     }
-    // Otherwise the construction whose centre is nearest, among those whose frame the finger is on.
+    // Instance-first (the default): the selected instance when the press is on it — it is the one
+    // being arranged — else the instance the press is nearest; a tap selects (selectAt).
+    if (controller.intersectionPickKind === 'instance') {
+      const cands = instancesAt(controller, view, sp);
+      const key = cands.some((c) => c.key === controller.intersectionSelected) ? controller.intersectionSelected : cands[0]?.key;
+      const body = copies.find((c) => c.key === key);
+      if (body) return moveGesture(controller, view, body, sp, () => selectAt(controller, view, sp));
+      return {
+        onMove() {},
+        onUp(_sp, wasDrag) {
+          if (!wasDrag) selectAt(controller, view, sp);
+        },
+        onCancel() {},
+      };
+    }
+    // While an alignment is being set up: the construction whose centre is nearest, among those
+    // whose frame the finger is on (a tap there picks its line, point or edge).
     const reach = motifRadius(controller.doc) * view.zoom;
     let hit: IntersectionCopy | null = null;
     let best = Infinity;

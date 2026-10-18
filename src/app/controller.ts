@@ -397,7 +397,7 @@ export class AppController {
    * state, never saved. */
   intersectionPicks: IntersectionPick[] = [];
   /** Intersection: whether a tap picks lines or points (the Snap row's switch). */
-  intersectionPickKind: PickKind = 'line';
+  intersectionPickKind: PickKind = 'instance';
   /** While a two-finger camera gesture is under way (for the brief turn readout). */
   cameraTurning = false;
   /** Reference Transform mode: while on, the canvas's fingers move, scale and turn the reference

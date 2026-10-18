@@ -237,7 +237,8 @@ function boot(doc: Doc, opts: { fitToScreen: boolean; history?: { undo: Doc[]; r
       controller.lineReference = null;
       controller.doc.view.workspace = ws;
       // Intersect offers the construction tools but not Fill.
-      if (ws === 'intersection' && controller.tool === 'fill') controller.setTool('select');
+      // Intersect opens on Select: arranging the instances is what it is for.
+      if (ws === 'intersection' && controller.tool !== 'select') controller.setTool('select');
       if (ws === 'repeat') {
         ensureRepeatDefaults(controller.doc);
         if (firstEntry) fitRepeatFirstEntry(controller, canvas, overlay);

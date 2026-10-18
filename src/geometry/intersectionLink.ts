@@ -280,3 +280,28 @@ export function instanceUnder(doc: Doc, copies: IntersectionCopy[], fromKey: str
   }
   return best;
 }
+
+/** How far each instance's drawn geometry (its shown lines and arcs, and its shown points) is from
+ * the world position `w` — for every instance whose geometry comes within `reach` (world units).
+ * Unlike instanceUnder, this is measured in world space for all instances, the active one included:
+ * for Intersect's own instance selection. */
+export function instanceDistances(doc: Doc, copies: IntersectionCopy[], w: Vec2, reach: number): Map<string, number> {
+  const pivot = doc.frame.origin;
+  const out = new Map<string, number>();
+  for (const copy of copies) {
+    const back = turn({ x: w.x - pivot.x - copy.pose.translate.x, y: w.y - pivot.y - copy.pose.translate.y }, -copy.pose.rotation);
+    const local = { x: back.x + pivot.x, y: back.y + pivot.y };
+    let best = Infinity;
+    for (const p of localPieces(doc)) {
+      if (p.ext && !copy.extensions) continue;
+      if (p.kind === 'arc' && !p.full && !paramInRange(Math.atan2(local.y - p.c.y, local.x - p.c.x), p.from, p.to, true)) continue;
+      best = Math.min(best, distToPiece(p, local));
+    }
+    for (const p of localPoints(doc)) {
+      const d = Math.hypot(local.x - p.at.x, local.y - p.at.y);
+      if (d < best && pointShown(doc, p.id, p.at, copy.extensions)) best = d;
+    }
+    if (best <= reach) out.set(copy.key, best);
+  }
+  return out;
+}

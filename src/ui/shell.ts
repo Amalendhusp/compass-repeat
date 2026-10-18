@@ -1924,8 +1924,9 @@ export function buildShell(
   function setPickKind(kind: PickKind): void {
     if (controller.intersectionPickKind === kind) return;
     // Match Edge picks in its own order (the moving edge first): its picks and the others' never
-    // turn into one another — switching in or out starts afresh.
-    if (kind === 'edge' || controller.intersectionPickKind === 'edge') {
+    // turn into one another — switching in or out starts afresh; so does starting or ending an
+    // alignment from instance selection.
+    if (kind === 'edge' || controller.intersectionPickKind === 'edge' || kind === 'instance' || controller.intersectionPickKind === 'instance') {
       controller.intersectionPickKind = kind;
       controller.intersectionPicks = [];
       controller.notify();
@@ -1953,6 +1954,19 @@ export function buildShell(
   const joinBtn = snapChip('Join', 'Slide the second line’s construction across until its line lies on the first');
   const pointSnapBtn = snapChip('Snap', 'Slide the second point’s construction until its point lies on the first');
   const matchEdgeBtn = snapChip('Match Edge', 'Turn and slide the first edge’s construction until that edge lies exactly on the second edge');
+  // Instance selection's own row: the selected instance, and the three alignments that start from it
+  // — each switches taps to what it needs (lines, points or edges).
+  const alignRow = document.createElement('div');
+  alignRow.className = 'space-row align-row';
+  for (const [label, kind] of [
+    ['Parallel · Join', 'line'],
+    ['Point Snap', 'point'],
+    ['Match Edge', 'edge'],
+  ] as const) {
+    const b = snapChip(label, `Align: ${label}`);
+    onTap(b, () => setPickKind(kind));
+    alignRow.appendChild(b);
+  }
   const snapClearBtn = document.createElement('button');
   snapClearBtn.className = 'space-chip snap-clear';
   snapClearBtn.setAttribute('aria-label', 'Clear the selection');
@@ -1996,7 +2010,7 @@ export function buildShell(
   });
   onTap(snapClearBtn, () => {
     controller.intersectionPicks = [];
-    controller.intersectionPickKind = 'line'; // and the Snap row goes until something is picked again
+    controller.intersectionPickKind = 'instance'; // back to arranging whole instances
     controller.notify();
   });
   ixSnapRow.appendChild(snapStatus);
@@ -2007,6 +2021,7 @@ export function buildShell(
   snapControls.appendChild(matchEdgeBtn);
   snapControls.appendChild(snapClearBtn);
   ixSnapRow.appendChild(snapControls);
+  ixSnapRow.appendChild(alignRow);
   repeatPanel.appendChild(ixSnapRow);
 
   repeatPanel.appendChild(ixSpreadRow);
@@ -2025,12 +2040,27 @@ export function buildShell(
       }
     }
     const [reference, moving] = controller.intersectionPicks;
-    const edgeMode = controller.intersectionPickKind === 'edge';
-    // Shown once something is picked — and throughout Match Edge, which starts with nothing picked.
-    ixSnapRow.style.display = reference || edgeMode ? '' : 'none';
-    for (const [kind, b] of kindBtns) b.classList.toggle('active', controller.intersectionPickKind === kind);
+    const kind = controller.intersectionPickKind;
+    const edgeMode = kind === 'edge';
     const labelOf = (key: string) => copies.find((c) => c.key === key)?.label ?? '';
     const colourOf = (key: string) => copies.find((c) => c.key === key)?.colour ?? '';
+    // Instance selection (the default): the selected instance, and the alignments to start from it.
+    if (kind === 'instance') {
+      const sel = copies.find((c) => c.key === controller.intersectionSelected);
+      ixSnapRow.style.display = sel ? '' : 'none';
+      snapControls.style.display = 'none';
+      alignRow.style.display = '';
+      if (!sel) return;
+      snapText.textContent = `${sel.label} selected · drag to move, handle to turn`;
+      snapDot.style.display = '';
+      snapDot.style.background = sel.colour;
+      return;
+    }
+    // An alignment being set up: its picks, the operations, the switch between what taps take, ×.
+    ixSnapRow.style.display = '';
+    snapControls.style.display = '';
+    alignRow.style.display = 'none';
+    for (const [k, b] of kindBtns) b.classList.toggle('active', kind === k);
     matchEdgeBtn.style.display = edgeMode ? '' : 'none';
     if (edgeMode) {
       parallelBtn.style.display = 'none';
@@ -2049,7 +2079,14 @@ export function buildShell(
       matchEdgeBtn.disabled = edgePlan?.kind !== 'edge' || edgePlan.matched;
       return;
     }
-    if (!reference) return;
+    if (!reference) {
+      snapText.textContent = kind === 'point' ? 'Point Snap · tap the point that stays' : 'Parallel · Join · tap the line that stays';
+      snapDot.style.display = 'none';
+      parallelBtn.style.display = 'none';
+      joinBtn.style.display = 'none';
+      pointSnapBtn.style.display = 'none';
+      return;
+    }
     const plan = moving ? planSnap(controller.doc, copies, reference, moving) : null;
     const lines = plan ? plan.kind === 'lines' : !isPointPick(reference);
     let text: string;
@@ -2687,7 +2724,7 @@ export function buildShell(
       closeAnyPopover();
       controller.spaceMode = false; // Space belongs to one visit to Repeat, not the next
       controller.intersectionPicks = []; // nor do Intersection's picks outlive a visit
-      controller.intersectionPickKind = 'line';
+      controller.intersectionPickKind = 'instance';
       setReferenceTransform(false); // Transform is locked again on leaving a workspace
     }
     constructBtn.classList.toggle('active', !placing);
