@@ -23,6 +23,7 @@ import { colourAlpha, colourRgb, withAlpha } from '../model/colour.ts';
 import { isEditablePointKind } from '../geometry/usage.ts';
 import { entityKeys, isUniformlyFair } from '../interaction/hittest.ts';
 import { dividePreviewPoints, setDivideTarget } from '../interaction/tools/divide.ts';
+import { axisThrough } from '../interaction/tools/line.ts';
 import { settleReferenceWheel } from '../interaction/referenceTransform.ts';
 import { iconSvg, type IconName } from './icons.ts';
 import { showToast } from './toast.ts';
@@ -2584,18 +2585,23 @@ export function buildShell(
         },
       );
     } else if (tool === 'line') {
-      modeToggle(
-        [
-          { id: 'construction', label: 'Construction' },
-          { id: 'extension', label: 'Extension' },
-        ],
-        controller.lineMode,
-        (mode) => {
-          controller.cancelPending();
-          controller.lineMode = mode;
-          controller.notify();
-        },
-      );
+      // Construction | Extension is chosen before the first point (changing it cancels a step): while
+      // point A waits for B, the ribbon offers A's own continuations instead.
+      const waitingForB = controller.lineGuide === 'free' && pending?.kind === 'line';
+      if (!waitingForB) {
+        modeToggle(
+          [
+            { id: 'construction', label: 'Construction' },
+            { id: 'extension', label: 'Extension' },
+          ],
+          controller.lineMode,
+          (mode) => {
+            controller.cancelPending();
+            controller.lineMode = mode;
+            controller.notify();
+          },
+        );
+      }
       if (controller.lineGuide !== 'free') {
         if (!controller.lineReference) cue('Tap the reference line');
         else {
@@ -2605,7 +2611,12 @@ export function buildShell(
             controller.notify();
           });
         }
-      } else if (pending?.kind === 'line') cue('A selected → choose B');
+      } else if (pending?.kind === 'line') {
+        cue('Choose B, or');
+        // …from A alone, the horizontal / vertical extension through it.
+        chip('Horizontal', () => axisThrough(controller, 'h'));
+        chip('Vertical', () => axisThrough(controller, 'v'));
+      }
       const extendFor = controller.extendChip;
       if (extendFor && !pending) {
         chip('Extend', () => {

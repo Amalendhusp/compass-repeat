@@ -16,6 +16,7 @@
 
 import type { Doc, Entity, EntityId, PointId, Vec2 } from '../../model/types.ts';
 import { addLineEntity, invalidateGeometryCaches } from '../../model/doc.ts';
+import { genId } from '../../model/id.ts';
 import type { AppController, ViewTransform } from '../../app/controller.ts';
 import { screenToWorld } from '../../app/controller.ts';
 import { epsilon, resolveEntityGeom, resolvePoint } from '../../geometry/kernel.ts';
@@ -556,6 +557,53 @@ function beginGuidedGesture(controller: AppController, view: ViewTransform, scre
       controller.notify();
     },
   };
+}
+
+// ---- Horizontal / Vertical extension through a point (on demand, from Connect's first point) ----
+
+/**
+ * With Connect's first point chosen: the horizontal (0°) or vertical (90°) extension through it —
+ * an extended line in the construction's own coordinates (never the camera's), all of it Extension,
+ * so it is drawn faint and dashed and every crossing with other geometry becomes a point to build
+ * from. One Undo step. Along a line already there through that point, that line simply gains its
+ * Extension role (as Line's Extension mode does); one already extended means it already exists.
+ */
+export function axisThrough(controller: AppController, axis: 'h' | 'v'): void {
+  const pending = controller.pending;
+  if (pending?.kind !== 'line') return;
+  const doc = controller.doc;
+  const aRef = pending.a;
+  const at = refLocation(doc, aRef);
+  const len = Math.max(doc.frame.radius, 1e-6);
+  const toward = axis === 'h' ? { x: at.x + len, y: at.y } : { x: at.x, y: at.y + len };
+  const along = supportingLines(doc, at, toward);
+  const extended = along.find((l) => l.line.extended);
+  if (extended) {
+    lineExists(controller, extended.line.id);
+    controller.cancelPending();
+    return;
+  }
+  controller.commit((d) => {
+    const aId = materializeRef(d, aRef);
+    if (along.length > 0) {
+      const line = d.entities.find((e) => e.id === along[0]!.line.id);
+      if (line?.kind === 'line') line.extended = true;
+      invalidateGeometryCaches(d);
+      return;
+    }
+    const bId = genId('pt');
+    d.points.push({ id: bId, kind: 'free', x: toward.x, y: toward.y, hidden: true });
+    const entity = addLineEntity(d, aId, bId);
+    if (entity.kind !== 'line') return;
+    entity.extended = true;
+    entity.axis = axis;
+    for (const seg of deriveSegments(d, entity)) d.segmentStates.set(seg.key, { state: 'extension' });
+    invalidateGeometryCaches(d);
+  });
+  controller.pending = null;
+  controller.preview = null;
+  controller.nodeInset = null;
+  controller.notify();
 }
 
 export const lineTool: ToolModule = {

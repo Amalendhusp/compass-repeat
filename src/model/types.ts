@@ -45,7 +45,10 @@ export type Entity =
   // identity so a completed polygon can later be selected as one shape": every edge line an
   // in-progress or completed Polygon commits shares one groupId, so Select can treat them as a
   // single unit (see SelectCandidate's 'group' kind) without inventing a new Entity kind.
-  | { id: EntityId; kind: 'line'; a: PointId; b: PointId; extended: boolean; locked?: boolean; groupId?: string };
+  // axis: a horizontal ('h', 0°) or vertical ('v', 90°) extension through point `a`, made on demand
+  // to find where it crosses other geometry. `b` is a hidden internal point fixing its direction.
+  // Deleting an axis leaves what was built from its crossings in place (doc.ts — detach).
+  | { id: EntityId; kind: 'line'; a: PointId; b: PointId; extended: boolean; locked?: boolean; groupId?: string; axis?: 'h' | 'v' };
 
 export type SegmentKey = string; // `${entityId}:${fromPointId}:${toPointId}`
 

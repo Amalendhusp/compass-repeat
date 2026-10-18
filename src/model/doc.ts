@@ -332,6 +332,9 @@ export interface DeletionPlan {
   rootEntityId: EntityId;
   entityIds: Set<EntityId>;
   pointIds: Set<PointId>;
+  /** Points kept although something they were defined by goes: deleting an axis extension leaves
+   * its crossings in place (as points on the other curve, or free), so nothing built on them goes. */
+  detach?: Map<PointId, Point>;
 }
 
 /** Phase 2G / Phase 5.2: everything that stops being constructible once `entityIds` and
@@ -339,12 +342,23 @@ export interface DeletionPlan {
  * every entity that in turn depends on one of those points — grown in place. Frame entities and
  * points are never included. Also takes each removed circle's hidden radius handle, which has no
  * other role. */
-function growDependencyClosure(doc: Doc, entityIds: Set<EntityId>, pointIds: Set<PointId>): void {
+function growDependencyClosure(doc: Doc, entityIds: Set<EntityId>, pointIds: Set<PointId>, detach?: Map<PointId, Point>): void {
+  // Axis extensions being deleted: a point defined only by one of them (and something that stays)
+  // is kept where it is instead of going — see DeletionPlan.detach.
+  const axes = new Set(doc.entities.filter((e) => entityIds.has(e.id) && e.kind === 'line' && e.axis).map((e) => e.id));
   let changed = true;
   while (changed) {
     changed = false;
     for (const p of doc.points) {
-      if (pointIds.has(p.id)) continue;
+      if (pointIds.has(p.id) || detach?.has(p.id)) continue;
+      if (detach && axes.size) {
+        const kept = detachFromAxes(doc, p, entityIds, pointIds, axes);
+        if (kept) {
+          detach.set(p.id, kept);
+          changed = true;
+          continue;
+        }
+      }
       const isFrame = (doc.frame.centreId === p.id && p.kind === 'centre') || p.kind === 'frame-vertex';
       if (isFrame) continue;
       let depends = false;
@@ -373,13 +387,44 @@ function growDependencyClosure(doc: Doc, entityIds: Set<EntityId>, pointIds: Set
     const sharedElsewhere = doc.entities.some((o) => !entityIds.has(o.id) && o.kind === 'circle' && o.through === e.through);
     if (handle?.kind === 'free' && handle.hidden && !sharedElsewhere) pointIds.add(handle.id);
   }
+  // …and each removed axis extension's hidden direction point.
+  for (const e of doc.entities) {
+    if (!entityIds.has(e.id) || e.kind !== 'line' || !e.axis) continue;
+    const handle = doc.points.find((p) => p.id === e.b);
+    const sharedElsewhere = doc.entities.some((o) => !entityIds.has(o.id) && (o.kind === 'line' ? o.a === e.b || o.b === e.b : o.centre === e.b || o.through === e.b));
+    if (handle?.kind === 'free' && handle.hidden && !sharedElsewhere) pointIds.add(handle.id);
+  }
+}
+
+/** A point that would go only because axis extensions in `axes` go — kept instead: a crossing of an
+ * axis with a curve that stays becomes a point on that curve (same id, same place, so the curve's
+ * pieces and their Fair states are untouched); a point on an axis becomes a free point there. */
+function detachFromAxes(doc: Doc, p: Point, entityIds: Set<EntityId>, pointIds: Set<PointId>, axes: Set<EntityId>): Point | null {
+  if (p.kind === 'intersection') {
+    const [e0, e1] = p.entities;
+    const gone0 = entityIds.has(e0);
+    const gone1 = entityIds.has(e1);
+    if (gone0 === gone1) return null; // neither (it stays anyway) or both (it goes)
+    const [axis, other] = gone0 ? [e0, e1] : [e1, e0];
+    if (!axes.has(axis)) return null;
+    const host = doc.entities.find((e) => e.id === other);
+    if (!host) return null;
+    const at = resolvePoint(doc, p.id);
+    return { id: p.id, kind: 'on-curve', host: other, param: projectOntoEntity(doc, host, at).param };
+  }
+  if ((p.kind === 'on-curve' || p.kind === 'division') && axes.has(p.host) && !(p.kind === 'division' && p.span && (pointIds.has(p.span[0]) || pointIds.has(p.span[1])))) {
+    const at = resolvePoint(doc, p.id);
+    return { id: p.id, kind: 'free', x: at.x, y: at.y };
+  }
+  return null;
 }
 
 export function computeDeletionPlan(doc: Doc, rootEntityId: EntityId): DeletionPlan {
   const entityIds = new Set<EntityId>([rootEntityId]);
   const pointIds = new Set<PointId>();
-  growDependencyClosure(doc, entityIds, pointIds);
-  return { rootEntityId, entityIds, pointIds };
+  const detach = new Map<PointId, Point>();
+  growDependencyClosure(doc, entityIds, pointIds, detach);
+  return { rootEntityId, entityIds, pointIds, ...(detach.size ? { detach } : {}) };
 }
 
 /** Phase 5.2: Delete for any selection — the union over every selected shape. The frame is never
@@ -389,8 +434,9 @@ export function computeEntitiesDeletionPlan(doc: Doc, ids: EntityId[]): Deletion
   if (roots.length === 0) return null;
   const entityIds = new Set<EntityId>(roots);
   const pointIds = new Set<PointId>();
-  growDependencyClosure(doc, entityIds, pointIds);
-  return { rootEntityId: roots[0]!, entityIds, pointIds };
+  const detach = new Map<PointId, Point>();
+  growDependencyClosure(doc, entityIds, pointIds, detach);
+  return { rootEntityId: roots[0]!, entityIds, pointIds, ...(detach.size ? { detach } : {}) };
 }
 
 /** Every OTHER entity sharing a group with `entityId` (Polygon's edges), if any. */
@@ -417,7 +463,7 @@ export function computeGroupDeletionPlan(doc: Doc, entityId: EntityId): Deletion
 
 export function applyDeletionPlan(doc: Doc, plan: DeletionPlan): void {
   doc.entities = doc.entities.filter((e) => !plan.entityIds.has(e.id));
-  doc.points = doc.points.filter((p) => !plan.pointIds.has(p.id));
+  doc.points = doc.points.filter((p) => !plan.pointIds.has(p.id)).map((p) => plan.detach?.get(p.id) ?? p);
   for (const key of [...doc.segmentStates.keys()]) {
     const entityId = key.split(':')[0];
     if (entityId && plan.entityIds.has(entityId)) doc.segmentStates.delete(key);
