@@ -29,6 +29,8 @@ const MAX_ZOOM = 24;
 const WHEEL_ZOOM_RATE = 0.01;
 const WHEEL_ZOOM_CLAMP = 40;
 const WHEEL_IDLE_MS = 140;
+/** ⌥-scroll turns the reference this much per pixel of scroll (radians). */
+const WHEEL_TURN_RATE = 0.004;
 
 /** Something that takes a whole touch over — every finger, from first down to last up — instead of
  * the tools and the camera (the reference's Transform mode, interaction/referenceTransform.ts). */
@@ -85,6 +87,9 @@ export class PointerManager {
   getToolView: () => ViewTransform = () => this.getView();
   /** Asked at each touch's first finger: whether something takes the whole touch over. */
   getTakeover: () => PointerTakeover | null = () => null;
+  /** Desktop pinch / ⌘-scroll (factor) and ⌥-scroll / Safari's turn (radians) about a canvas point,
+   * offered first to something that wants them (the reference in Transform) — true if it took them. */
+  onWheelTransform: (at: Vec2, factor: number, turn: number) => boolean = () => false;
   /** The current touch's takeover, if it has one. */
   private takeover: PointerTakeover | null = null;
 
@@ -183,8 +188,14 @@ export class PointerManager {
     const dy = e.deltaY * unit;
     if (e.ctrlKey || e.metaKey) {
       const step = Math.max(-WHEEL_ZOOM_CLAMP, Math.min(WHEEL_ZOOM_CLAMP, dy));
-      this.zoomAt(this.toLocal(e), Math.exp(-step * WHEEL_ZOOM_RATE));
+      const factor = Math.exp(-step * WHEEL_ZOOM_RATE);
+      if (this.onWheelTransform(this.toLocal(e), factor, 0)) return;
+      this.zoomAt(this.toLocal(e), factor);
       return;
+    }
+    if (e.altKey) {
+      const step = Math.max(-WHEEL_ZOOM_CLAMP, Math.min(WHEEL_ZOOM_CLAMP, dy || dx));
+      if (this.onWheelTransform(this.toLocal(e), 1, step * WHEEL_TURN_RATE)) return;
     }
     const viewState = this.getViewState();
     const [px, py] = e.shiftKey && dx === 0 ? [dy, 0] : [dx, dy];
@@ -196,24 +207,32 @@ export class PointerManager {
     this.markViewGesture();
   };
 
+  private gestureRotation = 0;
+
   private onGestureStart = (e: Event & { scale?: number }): void => {
     e.preventDefault();
     this.gestureScale = 1;
+    this.gestureRotation = 0;
   };
 
-  private onGestureChange = (e: Event & { scale?: number; clientX?: number; clientY?: number }): void => {
+  private onGestureChange = (e: Event & { scale?: number; rotation?: number; clientX?: number; clientY?: number }): void => {
     e.preventDefault();
     if (this.active.size > 0 || !e.scale) return; // an iOS touch pinch — the pointer path owns it
     const factor = e.scale / this.gestureScale;
     this.gestureScale = e.scale;
+    const rotation = ((e.rotation ?? 0) * Math.PI) / 180; // Safari reports the turn in degrees, cumulative
+    const turn = rotation - this.gestureRotation;
+    this.gestureRotation = rotation;
     const rect = this.canvas.getBoundingClientRect();
     const anchor = e.clientX !== undefined && e.clientY !== undefined ? { x: e.clientX - rect.left, y: e.clientY - rect.top } : { x: rect.width / 2, y: rect.height / 2 };
+    if (this.onWheelTransform(anchor, factor, turn)) return;
     this.zoomAt(anchor, factor);
   };
 
   private onGestureEnd = (e: Event): void => {
     e.preventDefault();
     this.gestureScale = 1;
+    this.gestureRotation = 0;
   };
 
   private toLocal(e: MouseEvent): Vec2 {

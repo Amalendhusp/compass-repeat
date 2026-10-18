@@ -23,6 +23,7 @@ import { colourAlpha, colourRgb, withAlpha } from '../model/colour.ts';
 import { isEditablePointKind } from '../geometry/usage.ts';
 import { entityKeys, isUniformlyFair } from '../interaction/hittest.ts';
 import { dividePreviewPoints, setDivideTarget } from '../interaction/tools/divide.ts';
+import { settleReferenceWheel } from '../interaction/referenceTransform.ts';
 import { iconSvg, type IconName } from './icons.ts';
 import { showToast } from './toast.ts';
 import { openConfirmSheet } from './confirmsheet.ts';
@@ -1612,7 +1613,9 @@ export function buildShell(
   transformTitle.textContent = 'Reference · Transform';
   const transformHint = document.createElement('span');
   transformHint.className = 'transform-hint';
-  transformHint.textContent = 'Drag to move · two fingers to scale and turn';
+  // A desktop has no second finger on the canvas: say what the trackpad and keys do instead.
+  const finePointer = typeof matchMedia === 'function' && matchMedia('(hover: hover) and (pointer: fine)').matches;
+  transformHint.textContent = finePointer ? 'Drag to move · pinch or ⌘-scroll to scale · ⌥-scroll to turn' : 'Drag to move · two fingers to scale and turn';
   transformText.appendChild(transformTitle);
   transformText.appendChild(transformHint);
   const transformDone = document.createElement('button');
@@ -1624,6 +1627,7 @@ export function buildShell(
   transformBar.appendChild(transformDone);
   function setReferenceTransform(on: boolean): void {
     if (controller.referenceTransform === on) return;
+    settleReferenceWheel(); // a pinch or scroll still being shown is kept, not lost
     controller.referenceTransform = on;
     controller.underlayDraft = null;
     transformBar.style.display = on ? '' : 'none';

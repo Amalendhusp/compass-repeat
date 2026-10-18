@@ -20,7 +20,7 @@ import { setContextProvider } from './interaction/context.ts';
 import { curveCandidatesAt, pickPointTarget } from './interaction/hittest.ts';
 import type { ToolModule } from './interaction/tools/types.ts';
 import { drawUnderlayOutline, onUnderlayImage, screenLayers, settleUnderlay, underlayIn } from './render/underlay.ts';
-import { referenceTakeover } from './interaction/referenceTransform.ts';
+import { referenceTakeover, referenceWheel } from './interaction/referenceTransform.ts';
 import { buildShell, closeAnyPopover } from './ui/shell.ts';
 import { openGuide, type CoachHost } from './tutorial/engine.ts';
 import { beginnerGuide } from './tutorial/guides/beginner.ts';
@@ -364,6 +364,7 @@ function boot(doc: Doc, opts: { fitToScreen: boolean; history?: { undo: Doc[]; r
   pointer.getToolView = getToolView;
   // While the reference's Transform mode is on, a touch moves the reference, not a tool or the camera.
   pointer.getTakeover = () => referenceTakeover(controller, getView);
+  pointer.onWheelTransform = (at, factor, turn) => referenceWheel(controller, getView, at, factor, turn);
   const autosave = guideReturn ? inertAutosave : attachAutosave(controller);
   // vNext Phase 4A: the artwork's process history — never for the Beginner Guide's practice artwork.
   // A brand-new artwork's history starts at its frame; an existing one at its first real change.

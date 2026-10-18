@@ -10,7 +10,7 @@
 
 import type { Underlay, Vec2 } from '../model/types.ts';
 import type { AppController, ViewTransform } from '../app/controller.ts';
-import { screenToWorld } from '../app/controller.ts';
+import { screenToPaper, screenToWorld } from '../app/controller.ts';
 import type { PointerTakeover } from './pointer.ts';
 import { underlayIn, withPlacement } from '../render/underlay.ts';
 
@@ -86,4 +86,64 @@ export function referenceTakeover(controller: AppController, getView: () => View
       controller.notifyView();
     },
   };
+}
+
+// ---- Desktop: trackpad pinch, ⌘/Ctrl-scroll and ⌥-scroll while Transform is on ----
+//
+// A Mac has no second finger on the canvas: a trackpad pinch arrives as wheel events with ctrlKey
+// (Chrome, Firefox, Edge) or as WebKit gesture events (Safari, which also reports a two-finger
+// turn). While Transform is on these scale — and ⌥-scroll or Safari's turn rotates — the reference
+// about the cursor, exactly as two fingers would on a phone; plain scrolling still pans the view.
+// The steps are shown live and committed once the input has been still for a moment: one Undo step
+// per pinch or scroll, as one touch gesture is.
+
+const WHEEL_SETTLE_MS = 350;
+let pending: { controller: AppController; timer: ReturnType<typeof setTimeout> } | null = null;
+
+/** Commits a pinch/scroll still being shown (on Done, or when it settles). */
+export function settleReferenceWheel(): void {
+  if (!pending) return;
+  const { controller, timer } = pending;
+  clearTimeout(timer);
+  pending = null;
+  const next = controller.underlayDraft;
+  controller.underlayDraft = null;
+  const u = controller.doc.underlay;
+  if (!next || !u) {
+    controller.notifyView();
+    return;
+  }
+  const ws = controller.doc.view.workspace;
+  const start = underlayIn(u, ws);
+  if (next.centre.x === start.centre.x && next.centre.y === start.centre.y && next.width === start.width && next.rotation === start.rotation) {
+    controller.notifyView();
+    return;
+  }
+  controller.commit((d) => {
+    if (d.underlay) d.underlay = withPlacement(d.underlay, ws, next);
+  });
+}
+
+/**
+ * Scales the reference by `factor` and turns it by `turn` (radians) about canvas point `at`, while
+ * Transform is on. False — nothing done — when it isn't (the input then moves the camera as usual).
+ */
+export function referenceWheel(controller: AppController, getView: () => ViewTransform, at: Vec2, factor: number, turn: number): boolean {
+  if (!controller.referenceTransform || !controller.doc.underlay) return false;
+  const view = getView();
+  const ws = controller.doc.view.workspace;
+  const base = controller.underlayDraft ?? underlayIn(controller.doc.underlay, ws);
+  const p = screenToWorld(view, screenToPaper(view, at));
+  const radius = controller.doc.frame.radius;
+  const width = Math.min(MAX_WIDTH * radius, Math.max(MIN_WIDTH * radius, base.width * factor));
+  const s = width / base.width;
+  const c = Math.cos(turn);
+  const n = Math.sin(turn);
+  const r = sub(base.centre, p);
+  const rotation = Math.atan2(Math.sin(base.rotation + turn), Math.cos(base.rotation + turn));
+  controller.underlayDraft = { ...base, width, rotation, centre: { x: p.x + s * (r.x * c - r.y * n), y: p.y + s * (r.x * n + r.y * c) } };
+  controller.notifyView();
+  if (pending) clearTimeout(pending.timer);
+  pending = { controller, timer: setTimeout(settleReferenceWheel, WHEEL_SETTLE_MS) };
+  return true;
 }
