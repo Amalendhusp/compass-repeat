@@ -13,6 +13,7 @@ import type { AppController, ViewTransform } from '../app/controller.ts';
 import { screenToPaper, screenToWorld } from '../app/controller.ts';
 import type { PointerTakeover } from './pointer.ts';
 import { underlayIn, withPlacement } from '../render/underlay.ts';
+import { aboutPivot, alignedAnchor, anchorTargets, SoftSnap } from '../reference/anchors.ts';
 
 /** The reference stays between these widths, as multiples of the frame radius. */
 const MIN_WIDTH = 0.05;
@@ -60,6 +61,11 @@ export function referenceTakeover(controller: AppController, getView: () => View
   let base: Underlay = start;
   let basePts: Vec2[] = [];
   const world = (pts: Vec2[]) => pts.slice(0, 2).map((p) => screenToWorld(view, p));
+  // Soft snapping to the construction's points (reference/anchors.ts): a moving finger is gently
+  // drawn onto them; scaling and turning pull nothing — but turn about an anchor already aligned.
+  const targets = anchorTargets(controller.doc, ws);
+  const snap = new SoftSnap(targets);
+  const pivot = alignedAnchor(start, view, targets);
   return {
     update(points, phase) {
       const pts = world(points);
@@ -69,7 +75,8 @@ export function referenceTakeover(controller: AppController, getView: () => View
         basePts = pts;
         return;
       }
-      controller.underlayDraft = transformedUnderlay(base, basePts, pts, controller.doc.frame.radius, view.zoom);
+      const raw = transformedUnderlay(base, basePts, pts, controller.doc.frame.radius, view.zoom);
+      controller.underlayDraft = pts.length >= 2 ? (pivot ? aboutPivot(base, raw, pivot.at) : raw) : snap.apply(raw, view);
       controller.notifyView();
     },
     end() {
@@ -135,7 +142,9 @@ export function referenceWheel(controller: AppController, getView: () => ViewTra
   const view = getView();
   const ws = controller.doc.view.workspace;
   const base = controller.underlayDraft ?? underlayIn(controller.doc.underlay, ws);
-  const p = screenToWorld(view, screenToPaper(view, at));
+  // Scaling and turning go about an anchor aligned with a construction point, else about the cursor.
+  const aligned = alignedAnchor(base, view, anchorTargets(controller.doc, ws));
+  const p = aligned ? aligned.at : screenToWorld(view, screenToPaper(view, at));
   const radius = controller.doc.frame.radius;
   const width = Math.min(MAX_WIDTH * radius, Math.max(MIN_WIDTH * radius, base.width * factor));
   const s = width / base.width;
