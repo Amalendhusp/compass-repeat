@@ -21,6 +21,8 @@ import { curveCandidatesAt, pickPointTarget } from './interaction/hittest.ts';
 import type { ToolModule } from './interaction/tools/types.ts';
 import { drawUnderlayOutline, onUnderlayImage, screenLayers, settleUnderlay, underlayIn } from './render/underlay.ts';
 import { referenceTakeover, referenceWheel } from './interaction/referenceTransform.ts';
+import { anchorTool } from './interaction/tools/anchorTool.ts';
+import { anchorTargets, drawAnchors } from './reference/anchors.ts';
 import { buildShell, closeAnyPopover } from './ui/shell.ts';
 import { openGuide, type CoachHost } from './tutorial/engine.ts';
 import { beginnerGuide } from './tutorial/guides/beginner.ts';
@@ -289,7 +291,7 @@ function boot(doc: Doc, opts: { fitToScreen: boolean; history?: { undo: Doc[]; r
   /** The view the single-finger tool works in: the camera's own — or, for a construction tool in
    * Intersect, the active instance's (its placement, then the camera). */
   function getToolView(): ViewTransform {
-    if (!linkedTool()) return getView();
+    if (!linkedTool() || (controller.referenceTransform && controller.referenceAnchorMode)) return getView();
     return cameraView(instanceCamera(viewState(), controller.doc.frame.origin, activeCopy().pose), canvas.clientWidth, canvas.clientHeight);
   }
   /** Whether a construction step is under way that belongs to the active instance as it is — or
@@ -353,6 +355,8 @@ function boot(doc: Doc, opts: { fitToScreen: boolean; history?: { undo: Doc[]; r
     getView,
     () => {
       const ws = controller.doc.view.workspace;
+      // Placing reference anchors (Transform → Anchors): one finger is an anchor, in any workspace.
+      if (controller.referenceTransform && controller.referenceAnchorMode) return anchorTool;
       if (ws === 'repeat') return repeatTool;
       if (ws === 'intersection') {
         const linked = linkedTool();
@@ -411,7 +415,10 @@ function boot(doc: Doc, opts: { fitToScreen: boolean; history?: { undo: Doc[]; r
     else render(ctx!, controller, view, undefined, layers);
     // Reference Transform: the reference's bounds, over everything, while it can be moved.
     const moving = controller.underlayDraft ?? (controller.doc.underlay && underlayIn(controller.doc.underlay, ws));
-    if (controller.referenceTransform && moving) drawUnderlayOutline(ctx!, moving, view);
+    if (controller.referenceTransform && moving) {
+      drawUnderlayOutline(ctx!, moving, view);
+      drawAnchors(ctx!, moving, view, anchorTargets(controller.doc, ws), controller.anchorSelected, controller.anchorDraft);
+    }
     ctx!.restore();
     // Intersect, a construction tool at work: its own feedback (previews, points, snap marks) on
     // the active instance, through that instance's view.

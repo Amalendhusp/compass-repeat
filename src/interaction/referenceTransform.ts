@@ -52,7 +52,8 @@ export function transformedUnderlay(base: Underlay, basePts: Vec2[], pts: Vec2[]
 
 /** The takeover for one touch while Transform is on — or null when there's nothing to transform. */
 export function referenceTakeover(controller: AppController, getView: () => ViewTransform): PointerTakeover | null {
-  if (!controller.referenceTransform || !controller.doc.underlay) return null;
+  // Placing anchors is a tool of its own (fingers there are one anchor or the camera).
+  if (!controller.referenceTransform || controller.referenceAnchorMode || !controller.doc.underlay) return null;
   const view = getView(); // the camera can't move during the touch: every finger is the reference's
   const ws = controller.doc.view.workspace;
   const start = underlayIn(controller.doc.underlay, ws); // as this workspace shows it
@@ -129,7 +130,8 @@ export function settleReferenceWheel(): void {
  * Transform is on. False — nothing done — when it isn't (the input then moves the camera as usual).
  */
 export function referenceWheel(controller: AppController, getView: () => ViewTransform, at: Vec2, factor: number, turn: number): boolean {
-  if (!controller.referenceTransform || !controller.doc.underlay) return false;
+  // While placing anchors the trackpad zooms the view, as it does for building — to place them precisely.
+  if (!controller.referenceTransform || controller.referenceAnchorMode || !controller.doc.underlay) return false;
   const view = getView();
   const ws = controller.doc.view.workspace;
   const base = controller.underlayDraft ?? underlayIn(controller.doc.underlay, ws);

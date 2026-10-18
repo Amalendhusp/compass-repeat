@@ -403,6 +403,13 @@ export class AppController {
   /** Reference Transform mode: while on, the canvas's fingers move, scale and turn the reference
    * (interaction/referenceTransform.ts) instead of reaching the tools or the camera. Session state. */
   referenceTransform = false;
+  /** Within Transform: placing and refining reference anchors (reference/anchors.ts) instead of
+   * moving the image. Session state. */
+  referenceAnchorMode = false;
+  /** The anchor last placed or tapped — the one "Remove anchor" removes. */
+  anchorSelected: string | null = null;
+  /** An anchor being dragged, shown before it is committed. */
+  anchorDraft: { id: string; u: number; v: number } | null = null;
   /** The reference as a Transform touch is moving it, shown live; committed when the touch ends. */
   underlayDraft: Underlay | null = null;
 

@@ -140,6 +140,17 @@ export interface Underlay extends UnderlayPlacement {
   aspect: number;
   /** Each workspace's own placement, once it has one. */
   placements?: Partial<Record<Workspace, UnderlayPlacement>>;
+  /** Reference anchors: places in the image the participant has marked (a crossing, a vertex, a
+   * star's point…), kept as a fraction of the image's width (u) and height (v) from its top-left —
+   * so each stays on its spot in the image however the image is moved, scaled or turned. Alignment
+   * aids only: never construction points, never part of the artwork's geometry. */
+  anchors?: ReferenceAnchor[];
+}
+
+export interface ReferenceAnchor {
+  id: string;
+  u: number;
+  v: number;
 }
 
 /** One workspace's viewing balance between the reference and the artwork. */

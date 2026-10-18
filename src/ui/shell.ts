@@ -25,6 +25,7 @@ import { entityKeys, isUniformlyFair } from '../interaction/hittest.ts';
 import { dividePreviewPoints, setDivideTarget } from '../interaction/tools/divide.ts';
 import { axisThrough } from '../interaction/tools/line.ts';
 import { settleReferenceWheel } from '../interaction/referenceTransform.ts';
+import { removeSelectedAnchor } from '../interaction/tools/anchorTool.ts';
 import { iconSvg, type IconName } from './icons.ts';
 import { showToast } from './toast.ts';
 import { openConfirmSheet } from './confirmsheet.ts';
@@ -1616,7 +1617,9 @@ export function buildShell(
   transformHint.className = 'transform-hint';
   // A desktop has no second finger on the canvas: say what the trackpad and keys do instead.
   const finePointer = typeof matchMedia === 'function' && matchMedia('(hover: hover) and (pointer: fine)').matches;
-  transformHint.textContent = finePointer ? 'Drag to move · pinch or ⌘-scroll to scale · ⌥-scroll to turn' : 'Drag to move · two fingers to scale and turn';
+  const moveHint = finePointer ? 'Drag to move · pinch or ⌘-scroll to scale · ⌥-scroll to turn' : 'Drag to move · two fingers to scale and turn';
+  const anchorHint = 'Tap the image to add an anchor · drag one to refine it';
+  transformHint.textContent = moveHint;
   transformText.appendChild(transformTitle);
   transformText.appendChild(transformHint);
   const transformDone = document.createElement('button');
@@ -1624,12 +1627,42 @@ export function buildShell(
   transformDone.textContent = 'Done';
   transformDone.setAttribute('aria-label', 'Done — lock the reference');
   onTap(transformDone, () => setReferenceTransform(false));
+  // Anchors: places marked in the image to align it by (reference/anchors.ts) — placed and refined
+  // here, then used by the gentle snapping while the image is moved.
+  const anchorsBtn = document.createElement('button');
+  anchorsBtn.className = 'space-chip transform-anchors';
+  anchorsBtn.textContent = 'Anchors';
+  anchorsBtn.setAttribute('aria-pressed', 'false');
+  onTap(anchorsBtn, () => {
+    controller.referenceAnchorMode = !controller.referenceAnchorMode;
+    controller.anchorSelected = null;
+    controller.anchorDraft = null;
+    refreshTransformBar();
+    controller.notify();
+  });
+  const removeAnchorBtn = document.createElement('button');
+  removeAnchorBtn.className = 'space-chip transform-remove-anchor';
+  removeAnchorBtn.textContent = 'Remove anchor';
+  onTap(removeAnchorBtn, () => removeSelectedAnchor(controller));
+  function refreshTransformBar(): void {
+    const anchoring = controller.referenceAnchorMode;
+    anchorsBtn.classList.toggle('active', anchoring);
+    anchorsBtn.setAttribute('aria-pressed', String(anchoring));
+    transformHint.textContent = anchoring ? anchorHint : moveHint;
+    removeAnchorBtn.style.display = anchoring && controller.anchorSelected ? '' : 'none';
+  }
   transformBar.appendChild(transformText);
+  transformBar.appendChild(anchorsBtn);
+  transformBar.appendChild(removeAnchorBtn);
   transformBar.appendChild(transformDone);
   function setReferenceTransform(on: boolean): void {
     if (controller.referenceTransform === on) return;
     settleReferenceWheel(); // a pinch or scroll still being shown is kept, not lost
     controller.referenceTransform = on;
+    controller.referenceAnchorMode = false;
+    controller.anchorSelected = null;
+    controller.anchorDraft = null;
+    refreshTransformBar();
     controller.underlayDraft = null;
     transformBar.style.display = on ? '' : 'none';
     referencePanelBtn.classList.toggle('transforming', on);
@@ -2748,6 +2781,7 @@ export function buildShell(
     }
     undoBtn.disabled = !controller.canUndo();
     redoBtn.disabled = !controller.canRedo();
+    if (controller.referenceTransform) refreshTransformBar();
     refreshReferenceButtons();
     refreshPointLockBtn();
 

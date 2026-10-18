@@ -2006,7 +2006,10 @@ canvas.stage {
 .transform-bar {
   align-self: center;
   display: flex;
+  flex-wrap: wrap; /* on a narrow phone the controls go under the text rather than off the screen */
   align-items: center;
+  justify-content: flex-end;
+  row-gap: 6px;
   gap: 12px;
   padding: 6px 6px 6px 14px;
   background: var(--paper);
@@ -2017,6 +2020,7 @@ canvas.stage {
 }
 .transform-text {
   display: flex;
+  flex: 1 1 180px;
   flex-direction: column;
   min-width: 0;
 }
