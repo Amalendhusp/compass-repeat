@@ -135,7 +135,7 @@ const repeat: CoachStep = {
       ctx.memo.family = doc.repeat.family;
       ctx.memo.base = spacing(doc);
     }
-    if (!doc.repeatDisplay.handles) return { text: 'Show the handles: Grid and guides → Handles.', targets: [ctx.find('[aria-label="Grid and guides"]')] };
+    if (!doc.repeatDisplay.handles) return { text: 'Show the handles. Tap the handles button.', targets: [ctx.find('[aria-label="Handles"]')] };
     const o = doc.frame.origin;
     const handles = [doc.repeat.a, doc.repeat.b].map((v) => ({ x: o.x + v.x, y: o.y + v.y }));
     return { text: 'Drag a handle to space the copies — they lock where edges meet.', spots: c.repeatDrag ? [] : handles };

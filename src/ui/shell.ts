@@ -221,11 +221,16 @@ export function closeAnyPopover(): void {
 /** A small anchored flat-list menu, dismissed on an outside tap or a selection. Used by the
  * menu button (My Artworks, Save, Save as new, New artwork, Clear drawing). `title`, when given,
  * heads the list (the open artwork's name). */
-function showPopover(anchor: HTMLElement, items: { label: string; active?: boolean; onSelect: () => void }[], title?: string, className?: string): void {
+function showPopover(anchor: HTMLElement, items: { label: string; active?: boolean; divided?: boolean; onSelect: () => void }[], title?: string, className?: string): void {
   mountPopover(anchor, (menu, close) => {
     if (className) menu.classList.add(className);
     if (title) popoverSectionLabel(menu, title);
     for (const item of items) {
+      if (item.divided) {
+        const divider = document.createElement('div');
+        divider.className = 'popover-divider';
+        menu.appendChild(divider);
+      }
       const btn = document.createElement('button');
       btn.textContent = item.label;
       if (item.active) btn.classList.add('active');
@@ -301,6 +306,87 @@ function panelSegmented<T extends string>(parent: HTMLElement, options: { id: T;
 }
 
 /** "Label ───●── 70%" on one line (Phase 5.3 item 5). `onCommit` runs once the thumb is let go. */
+/**
+ * A quiet vertical slider for the canvas's edge (0–1, bottom to top): a finger anywhere on its
+ * track sets the value there and follows the drag; arrow keys step it. `icon` names it at the top.
+ */
+function verticalSlider(label: string, icon: string, min: number, get: () => number, set: (v: number) => void): { el: HTMLElement; refresh: () => void } {
+  const el = document.createElement('div');
+  el.className = 'vslider';
+  const head = document.createElement('span');
+  head.className = 'vslider-icon';
+  head.innerHTML = icon;
+  const track = document.createElement('div');
+  track.className = 'vslider-track';
+  track.tabIndex = 0;
+  track.setAttribute('role', 'slider');
+  track.setAttribute('aria-label', label);
+  track.setAttribute('aria-orientation', 'vertical');
+  track.setAttribute('aria-valuemin', String(Math.round(min * 100)));
+  track.setAttribute('aria-valuemax', '100');
+  const fill = document.createElement('div');
+  fill.className = 'vslider-fill';
+  const thumb = document.createElement('div');
+  thumb.className = 'vslider-thumb';
+  track.appendChild(fill);
+  track.appendChild(thumb);
+  const value = document.createElement('span');
+  value.className = 'vslider-value';
+  el.appendChild(head);
+  el.appendChild(track);
+  el.appendChild(value);
+  const show = (v: number) => {
+    const pct = Math.round(v * 100);
+    // The thumb travels within the track (its centre 9 px in from either end), never past it.
+    fill.style.height = `calc(9px + ${v} * (100% - 18px))`;
+    thumb.style.bottom = `calc(${v} * (100% - 18px))`;
+    value.textContent = `${pct}%`;
+    track.setAttribute('aria-valuenow', String(pct));
+    track.setAttribute('aria-valuetext', `${pct}%`);
+  };
+  const clamp = (v: number) => Math.min(1, Math.max(min, Math.round(v * 100) / 100));
+  const fromY = (clientY: number) => {
+    const r = track.getBoundingClientRect();
+    return clamp((r.bottom - 9 - clientY) / (r.height - 18));
+  };
+  let dragging: number | null = null;
+  track.addEventListener('pointerdown', (e) => {
+    e.preventDefault();
+    e.stopPropagation();
+    dragging = e.pointerId;
+    try {
+      track.setPointerCapture(e.pointerId);
+    } catch {
+      /* a synthetic pointer has nothing to capture */
+    }
+    const v = fromY(e.clientY);
+    show(v);
+    set(v);
+  });
+  track.addEventListener('pointermove', (e) => {
+    if (dragging !== e.pointerId) return;
+    const v = fromY(e.clientY);
+    show(v);
+    set(v);
+  });
+  const end = (e: PointerEvent) => {
+    if (dragging === e.pointerId) dragging = null;
+  };
+  track.addEventListener('pointerup', end);
+  track.addEventListener('pointercancel', end);
+  track.addEventListener('keydown', (e) => {
+    const step = { ArrowUp: 0.05, ArrowRight: 0.05, ArrowDown: -0.05, ArrowLeft: -0.05 }[e.key];
+    const v = step !== undefined ? clamp(get() + step) : e.key === 'Home' ? min : e.key === 'End' ? 1 : null;
+    if (v === null) return;
+    e.preventDefault();
+    show(v);
+    set(v);
+  });
+  const refresh = () => show(get());
+  refresh();
+  return { el, refresh };
+}
+
 function panelSliderRow(menu: HTMLElement, label: string, opts: { min: number; max: number; step: number; value: number; format: (v: number) => string; onInput: (v: number) => void; onCommit?: (v: number) => void }): { slider: HTMLInputElement; value: HTMLSpanElement } {
   const row = document.createElement('div');
   row.className = 'popover-toggle-row panel-slider-row';
@@ -1454,6 +1540,8 @@ export function buildShell(
 
   const leftSide = document.createElement('div');
   leftSide.className = 'topbar-side';
+  // Show points' panel: `remembered` is the shown mode that "on" restores.
+  const remembered: { mode: Exclude<PointVisibility, 'none'> } = { mode: controller.pointVisibility === 'none' ? 'near-finger' : controller.pointVisibility };
   const menuBtn = document.createElement('button');
   menuBtn.className = 'icon-btn';
   menuBtn.setAttribute('aria-label', 'Menu');
@@ -1467,32 +1555,21 @@ export function buildShell(
         { label: 'Open…', onSelect: () => opts.onOpen() },
         { label: 'Save', onSelect: () => opts.onSave() },
         { label: 'Save As…', onSelect: () => opts.onSaveAs() },
+        // The point settings: kept, with their defaults, but out of the top bar — the usual
+        // targeting (Primary and Derived, nearest wins) needs no setting at all.
+        ...(controller.doc.view.workspace === 'repeat'
+          ? []
+          : [
+              { label: 'Point targets…', divided: true, onSelect: () => showPointTargetsPanel(menuBtn, controller) },
+              { label: 'Show points…', onSelect: () => showPointsPanel(menuBtn, controller, remembered) },
+            ]),
       ], controller.doc.named ? controller.doc.name : 'Untitled artwork', 'file-menu'),
     ),
   );
   leftSide.appendChild(menuBtn);
 
-  // Phase 3.2 item 1 / Phase 3.4 item 10 / Phase 3.5 item 5: a persistent control in the space
-  // between the menu and Construct/Repeat, opening the Point Targets panel. Redesigned in Phase
-  // 3.5 to match the plain icon-btn weight of menu/eye/export — no permanently large dark pill,
-  // since that competed visually with Construct/Repeat for a control this secondary. The icon
-  // itself (a node + a lock badge) still carries the primary idea ("which points may I target?")
-  // with the lock as a secondary cue whose shackle opens/closes with whether Free-on-curve is
-  // allowed — the same shape language as before, just no longer wrapped in a heavy fill.
-  const pointLockBtn = document.createElement('button');
-  pointLockBtn.className = 'icon-btn point-targets-btn';
-  onTap(pointLockBtn, () => togglePanel(pointLockBtn, () => showPointTargetsPanel(pointLockBtn, controller)));
-  function refreshPointLockBtn(): void {
-    const freeAllowed = controller.doc.pointTargets.free;
-    pointLockBtn.innerHTML = iconSvg(freeAllowed ? 'pointLockOpen' : 'pointLock', 22);
-    pointLockBtn.classList.toggle('free-on', freeAllowed);
-    pointLockBtn.setAttribute('aria-label', `Point targets · Free on curve ${freeAllowed ? 'on' : 'off'}`);
-  }
-  refreshPointLockBtn();
-  leftSide.appendChild(pointLockBtn);
-
-  // Phase 5.1 item 2: in Repeat, Appearance takes Point Targets' slot (and Grid/Guides takes the
-  // Points eye's, below) — same header architecture, workspace-appropriate controls.
+  // Phase 5.1 item 2: in Repeat, Appearance sits beside the menu (and Grid/Guides on the right,
+  // below) — same header architecture, workspace-appropriate controls.
   const appearanceBtn = document.createElement('button');
   appearanceBtn.className = 'icon-btn';
   appearanceBtn.setAttribute('aria-label', 'Appearance');
@@ -1535,26 +1612,6 @@ export function buildShell(
 
   const rightSide = document.createElement('div');
   rightSide.className = 'topbar-side right';
-  const visBtn = document.createElement('button');
-  visBtn.className = 'icon-btn';
-
-  // Phase 5.3 item 1: Point Visibility is a panel toggle like every other top-bar control (Show
-  // points on/off + which points). `remembered` is the shown mode that "on" restores.
-  const remembered: { mode: Exclude<PointVisibility, 'none'> } = { mode: controller.pointVisibility === 'none' ? 'near-finger' : controller.pointVisibility };
-
-  function refreshEyeIcon(): void {
-    // Phase 3.3 item 2 / Phase 3.5 item 6: the eye stays the dominant shape either way — hidden
-    // state mutes it (lower-opacity icon paths, plus the button's own colour switching to muted
-    // ink here) rather than slashing it, so it never reads as Delete/Error.
-    const hidden = controller.pointVisibility === 'none';
-    visBtn.innerHTML = iconSvg(hidden ? 'pointsEyeOff' : 'pointsEye');
-    visBtn.style.color = hidden ? 'var(--muted)' : '';
-    visBtn.setAttribute('aria-label', `Point visibility · ${hidden ? 'hidden' : 'shown'}`);
-  }
-  onTap(visBtn, () => togglePanel(visBtn, () => showPointsPanel(visBtn, controller, remembered)));
-  refreshEyeIcon();
-  controller.subscribeView(refreshEyeIcon);
-
   const exportBtn = document.createElement('button');
   exportBtn.className = 'icon-btn';
   exportBtn.setAttribute('aria-label', 'Share');
@@ -1568,6 +1625,7 @@ export function buildShell(
   function refreshGuidesBtn(): void {
     const d = controller.doc.repeatDisplay;
     guidesBtn.style.color = d.grid || d.handles || d.motifBoundary ? '' : 'var(--muted)';
+    refreshHandlesBtn();
   }
   onTap(guidesBtn, () => togglePanel(guidesBtn, () => showRepeatGuidesPanel(guidesBtn, controller, refreshGuidesBtn)));
 
@@ -1587,7 +1645,6 @@ export function buildShell(
     ixSnapshotsBtn.setAttribute('aria-label', `Snapshots · ${n} saved`);
   }
 
-  rightSide.appendChild(visBtn);
   rightSide.appendChild(guidesBtn);
   rightSide.appendChild(ixSnapshotsBtn);
   rightSide.appendChild(exportBtn);
@@ -1633,38 +1690,81 @@ export function buildShell(
   fitBtn.innerHTML = iconSvg('fit');
   fitBtn.addEventListener('click', () => opts.onFit());
 
-  // The reference: a quick Show/Hide (only while this artwork has one) and the Reference panel,
-  // beside Fit — on the canvas's own control row, in every workspace.
+  // The reference: the opacity eye (only while this artwork has one) and the Reference panel,
+  // beside Fit — on the canvas's own control row, in every workspace. The eye shows or hides two
+  // quiet vertical sliders on the canvas's right edge — the reference's strength above, the
+  // artwork's over it below: this workspace's, the same values as the Reference panel's (a view,
+  // like the camera — never an Undo step). Show/Hide itself stays in the Reference panel.
   const referenceEyeBtn = document.createElement('button');
   referenceEyeBtn.className = 'fit-btn reference-eye';
+  referenceEyeBtn.setAttribute('aria-label', 'Opacity');
+  referenceEyeBtn.setAttribute('aria-pressed', 'false');
   const referencePanelBtn = document.createElement('button');
   referencePanelBtn.className = 'fit-btn reference-btn';
   referencePanelBtn.setAttribute('aria-label', 'Reference');
   referencePanelBtn.innerHTML = iconSvg('reference');
+  let opacityOpen = false;
+  const opacityColumn = document.createElement('div');
+  opacityColumn.className = 'opacity-column';
+  opacityColumn.style.display = 'none';
+  const setOpacity = (patch: { referenceOpacity?: number; artworkOpacity?: number }) => {
+    const ws = controller.doc.view.workspace;
+    // Strengthening either while the reference is hidden would change nothing to see: show it.
+    controller.doc.underlayView = withUnderlayView(controller.doc, ws, { ...patch, visible: true });
+    controller.notifyView();
+    refreshReferenceButtons();
+    if (openPopoverAnchor === referencePanelBtn) openReferencePanel(); // an open panel follows
+  };
+  const opacitySliders = [
+    verticalSlider('Reference opacity', iconSvg('reference', 16), 0, () => underlayViewOf(controller.doc, controller.doc.view.workspace).referenceOpacity, (x) => setOpacity({ referenceOpacity: x })),
+    verticalSlider('Artwork opacity', iconSvg('circle', 16), 0.05, () => underlayViewOf(controller.doc, controller.doc.view.workspace).artworkOpacity, (x) => setOpacity({ artworkOpacity: x })),
+  ];
+  for (const sl of opacitySliders) opacityColumn.appendChild(sl.el);
+  canvasWrap.appendChild(opacityColumn);
   function refreshReferenceButtons(): void {
     const u = controller.doc.underlay;
     referenceEyeBtn.style.display = u ? '' : 'none';
     referencePanelBtn.classList.toggle('has-reference', !!u);
+    if (!u) opacityOpen = false;
+    opacityColumn.style.display = opacityOpen ? '' : 'none';
+    referenceEyeBtn.classList.toggle('active', opacityOpen);
+    referenceEyeBtn.setAttribute('aria-pressed', String(opacityOpen));
     if (!u) return;
+    // The eye also says whether the reference is shown at all here.
     const shown = underlayViewOf(controller.doc, controller.doc.view.workspace).visible;
-    referenceEyeBtn.innerHTML = iconSvg(shown ? 'eye' : 'eyeOff');
-    referenceEyeBtn.setAttribute('aria-label', shown ? 'Hide reference' : 'Show reference');
-    referenceEyeBtn.setAttribute('aria-pressed', String(shown));
+    if (eyeShows !== shown) {
+      eyeShows = shown;
+      referenceEyeBtn.innerHTML = iconSvg(shown ? 'eye' : 'eyeOff');
+      referenceEyeBtn.title = shown ? 'Opacity' : 'Opacity · the reference is hidden';
+    }
+    if (opacityOpen) for (const sl of opacitySliders) sl.refresh();
   }
+  let eyeShows: boolean | null = null;
   const openReferencePanel = () => showReferencePanel(referencePanelBtn, controller, root, { onChange: refreshReferenceButtons, startTransform });
-  referenceEyeBtn.addEventListener('click', () => {
-    const shown = underlayViewOf(controller.doc, controller.doc.view.workspace).visible;
-    controller.doc.underlayView = withUnderlayView(controller.doc, controller.doc.view.workspace, { visible: !shown });
-    // A hidden reference can't be moved: hiding it ends Transform.
-    if (shown) setReferenceTransform(false);
-    controller.notifyView();
-    // No reference (removed, undone, or its image gone): nothing to transform.
-    if (controller.referenceTransform && (!controller.doc.underlay || underlayImage(controller.doc.underlay.refId).state === 'missing')) setReferenceTransform(false);
+  onTap(referenceEyeBtn, () => {
+    opacityOpen = !opacityOpen;
     refreshReferenceButtons();
-    // An open Reference panel follows.
-    if (openPopoverAnchor === referencePanelBtn) openReferencePanel();
   });
+  controller.subscribeView(refreshReferenceButtons); // a Show/Hide or a strength set elsewhere
   onTap(referencePanelBtn, () => togglePanel(referencePanelBtn, openReferencePanel));
+
+  // Repeat: the handles on or off in one tap (Grid and guides keeps every guide, handles included).
+  const handlesBtn = document.createElement('button');
+  handlesBtn.className = 'fit-btn handles-btn';
+  handlesBtn.setAttribute('aria-label', 'Handles');
+  handlesBtn.innerHTML = iconSvg('handles');
+  function refreshHandlesBtn(): void {
+    const on = controller.doc.repeatDisplay.handles;
+    handlesBtn.setAttribute('aria-pressed', String(on));
+    handlesBtn.title = on ? 'Hide the handles' : 'Show the handles';
+    handlesBtn.classList.toggle('off', !on);
+  }
+  onTap(handlesBtn, () => {
+    if (openPopoverAnchor === guidesBtn) closeAnyPopover(); // its rows would be out of date
+    controller.doc.repeatDisplay.handles = !controller.doc.repeatDisplay.handles;
+    refreshGuidesBtn();
+    controller.notifyView();
+  });
 
   // Reference Transform: an explicit mode, plainly announced, with an obvious way out. While on,
   // every finger on the canvas moves the reference (main.ts → referenceTakeover); Done locks it, and
@@ -1742,6 +1842,7 @@ export function buildShell(
   }
   const utilRight = document.createElement('div');
   utilRight.className = 'util-right';
+  utilRight.appendChild(handlesBtn);
   utilRight.appendChild(referenceEyeBtn);
   utilRight.appendChild(referencePanelBtn);
   utilRight.appendChild(fitBtn);
@@ -2847,12 +2948,10 @@ export function buildShell(
     redoBtn.disabled = !controller.canRedo();
     if (controller.referenceTransform) refreshTransformBar();
     refreshReferenceButtons();
-    refreshPointLockBtn();
 
-    pointLockBtn.style.display = placing ? 'none' : '';
-    visBtn.style.display = placing ? 'none' : '';
     appearanceBtn.style.display = inRepeat ? '' : 'none';
     guidesBtn.style.display = inRepeat ? '' : 'none';
+    handlesBtn.style.display = inRepeat ? '' : 'none';
     exportBtn.style.display = inIntersection ? 'none' : ''; // Intersection has nothing to share yet
     if (inRepeat) refreshGuidesBtn();
 
@@ -2866,8 +2965,10 @@ export function buildShell(
     familyRow.style.display = inRepeat ? '' : 'none';
     ruleRow.style.display = inRepeat ? '' : 'none';
     spaceRow.style.display = inRepeat ? '' : 'none';
-    // Spread arranges the instances: it belongs to Select, never under a construction tool's ribbon.
-    ixSpreadRow.style.display = inIntersection && !building ? '' : 'none';
+    // Spread arranges the instances: it belongs to Select's instance arranging — never under a
+    // construction tool's ribbon, nor while an alignment (Parallel · Join, Point Snap, Match Edge)
+    // is being picked.
+    ixSpreadRow.style.display = inIntersection && !building && controller.intersectionPickKind === 'instance' ? '' : 'none';
     if (!inIntersection) ixSnapRow.style.display = 'none';
     ixCopiesBtn.style.display = inIntersection ? '' : 'none';
     ixSnapshotsBtn.style.display = inIntersection ? '' : 'none';

@@ -39,6 +39,8 @@ const paths: Record<string, string> = {
   eye: '<path d="M3 12S7 6.5 12 6.5 21 12 21 12 17 17.5 12 17.5 3 12 3 12z"/><circle cx="12" cy="12" r="2.6"/>',
   eyeOff: '<path d="M3 12S7 6.5 12 6.5 21 12 21 12 17 17.5 12 17.5 3 12 3 12z" opacity=".5"/><circle cx="12" cy="12" r="2.6" opacity=".5"/><path d="M4.5 4.5l15 15"/>',
   gridGuides: '<rect x="4" y="4" width="16" height="16" rx="2"/><path d="M12 4v16M4 12h16" opacity=".55"/><circle cx="12" cy="12" r="1.8" fill="currentColor"/>',
+  // Repeat's handles on/off: a lattice vector with its grip at the end.
+  handles: '<path d="M6 18L15.5 8.5" opacity=".6"/><circle cx="6" cy="18" r="2" fill="currentColor"/><circle cx="17" cy="7" r="3.2"/>',
 };
 
 export type IconName = keyof typeof paths;

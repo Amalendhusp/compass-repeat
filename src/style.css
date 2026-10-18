@@ -103,27 +103,6 @@ body {
   justify-content: flex-end;
 }
 
-/* Phase 3.5 item 5: Point Targets, redesigned down to plain icon-btn weight — visually aligned
- * with menu/eye/export, not a large dark pill competing with Construct/Repeat. The icon itself
- * (a node + a lock badge, open/closed with Free-on-curve) carries the state; `.free-on` adds one
- * small, quiet dot only for the less-common case (Free allowed) — the top bar stays calm
- * otherwise, with no badge at all in the default Free-off state. */
-.point-targets-btn {
-  position: relative;
-  margin-left: 2px;
-}
-.point-targets-btn.free-on::after {
-  content: '';
-  position: absolute;
-  top: 7px;
-  right: 7px;
-  width: 6px;
-  height: 6px;
-  border-radius: 50%;
-  background: var(--ink);
-  box-shadow: 0 0 0 1.5px var(--paper);
-}
-
 .segmented {
   display: flex;
   gap: 2px;
@@ -161,9 +140,6 @@ body {
   .topbar {
     padding-left: 2px;
     padding-right: 2px;
-  }
-  .point-targets-btn {
-    margin-left: 0;
   }
   .segmented button {
     width: 66px;
@@ -2043,6 +2019,90 @@ canvas.stage {
   padding: 0 16px;
   font-weight: 600;
 }
+/* The opacity eye, while its sliders are out; Repeat's handles button, while they are off. */
+.fit-btn.reference-eye.active {
+  box-shadow: 0 0 0 1.5px var(--ink) inset, 0 4px 12px rgba(30, 42, 54, 0.06);
+}
+.fit-btn.handles-btn.off {
+  color: var(--muted);
+}
+/* Quick opacity: two quiet vertical sliders on the canvas's right edge, high enough to keep clear
+ * of the bottom controls; only the sliders themselves take touches. */
+.opacity-column {
+  position: absolute;
+  top: 12px;
+  right: 8px;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 10px;
+  padding: 8px 2px;
+  border-radius: 18px;
+  background: color-mix(in srgb, var(--paper) 78%, transparent);
+  border: 1px solid var(--hairline);
+  box-shadow: 0 4px 12px rgba(30, 42, 54, 0.06);
+  z-index: 2;
+}
+.vslider {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 4px;
+  color: var(--muted);
+}
+.vslider-icon {
+  display: flex;
+  height: 16px;
+}
+.vslider-track {
+  position: relative;
+  width: 36px;
+  height: 124px;
+  touch-action: none;
+  cursor: ns-resize;
+  outline: none;
+}
+.vslider-track::before {
+  content: '';
+  position: absolute;
+  left: 50%;
+  top: 9px;
+  bottom: 9px;
+  width: 4px;
+  margin-left: -2px;
+  border-radius: 2px;
+  background: var(--well);
+}
+.vslider-fill {
+  position: absolute;
+  left: 50%;
+  bottom: 0;
+  clip-path: inset(0 0 9px 0);
+  width: 4px;
+  margin-left: -2px;
+  border-radius: 2px;
+  background: var(--ink);
+  opacity: 0.55;
+}
+.vslider-thumb {
+  position: absolute;
+  left: 50%;
+  width: 18px;
+  height: 18px;
+  margin-left: -9px;
+  border-radius: 50%;
+  background: var(--paper);
+  border: 1.5px solid var(--ink);
+  box-shadow: 0 1px 3px rgba(30, 42, 54, 0.2);
+}
+.vslider-track:focus-visible .vslider-thumb {
+  box-shadow: 0 0 0 3px var(--well);
+}
+.vslider-value {
+  font: 500 11px/1 var(--font-ui);
+  font-variant-numeric: tabular-nums;
+}
+
 .fit-btn.transforming {
   background: var(--ink);
   color: var(--paper);
