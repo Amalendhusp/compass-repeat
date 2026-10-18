@@ -37,7 +37,7 @@ import { asReference, intersectionCopies, layoutOf, MAX_CONSTRUCTIONS, placedAt,
 import { canMoveAgainst, convertPick, isPointPick, planMatchEdge, planSnap, resolvePick, type PickKind } from '../geometry/intersectionSnap.ts';
 import { PICK_REACH_PX } from '../interaction/tools/intersectionTool.ts';
 import { repeatSource, type RepeatSource } from '../geometry/repeatUnit.ts';
-import { artworksUsing, deleteReference, listReferences, type ReferenceRecord } from '../persist/referenceStore.ts';
+import { artworksUsing, deleteReference, inLibrary, listReferences, setReferenceScope, type ReferenceRecord } from '../persist/referenceStore.ts';
 import { importReference, ReferenceImportError } from '../reference/importReference.ts';
 import { forgetUnderlayImage, initialUnderlay, onUnderlayImage, underlayImage, underlayViewOf, withUnderlayView } from '../render/underlay.ts';
 import { intersectionThumbnail } from '../render/intersectionRenderer.ts';
@@ -831,8 +831,8 @@ function showReferencePanel(anchor: HTMLElement, controller: AppController, root
         controller.notifyView();
         onChange();
       };
-      /** Deleting from the library: never the artworks — those that use it keep their placement
-       * for it and show "Reference missing" (removable or replaceable there). */
+      /** Removing from the library never takes an image away from an artwork: one still in use only
+       * leaves the library (those artworks keep it as their own); one no artwork uses is deleted. */
       const confirmDelete = async (r: ReferenceRecord) => {
         const doc = controller.doc;
         let users: string[];
@@ -842,10 +842,25 @@ function showReferencePanel(anchor: HTMLElement, controller: AppController, root
           showToast('Couldn’t check which artworks use it');
           return;
         }
-        const body =
-          users.length === 0
-            ? 'No artwork uses it. It will be removed from this device.'
-            : `It is used by ${users.length === 1 ? '1 artwork' : `${users.length} artworks`}${users.length <= 3 ? ` (${users.join(', ')})` : ''}. Those artworks keep their place for it and will show “Reference missing”.`;
+        if (users.length > 0) {
+          openConfirmSheet(root, {
+            title: 'Remove from the library?',
+            body: `It is used by ${users.length === 1 ? '1 artwork' : `${users.length} artworks`}${users.length <= 3 ? ` (${users.join(', ')})` : ''}. It stays with ${users.length === 1 ? 'it' : 'them'} as ${users.length === 1 ? 'its' : 'their'} own reference, and leaves the library.`,
+            confirmLabel: 'Remove',
+            onConfirm: () => {
+              setReferenceScope(r.id, 'artwork')
+                .then(async () => {
+                  library = await listReferences().catch(() => library);
+                  if (!library?.some(inLibrary)) editing = false;
+                  showToast('Removed from the library');
+                  if (menu.isConnected) build();
+                })
+                .catch(() => showToast('Couldn’t change the library'));
+            },
+          });
+          return;
+        }
+        const body = 'No artwork uses it. It will be removed from this device.';
         openConfirmSheet(root, {
           title: 'Delete this reference?',
           body,
@@ -855,7 +870,7 @@ function showReferencePanel(anchor: HTMLElement, controller: AppController, root
               .then(async () => {
                 forgetUnderlayImage(r.id);
                 library = await listReferences().catch(() => (library ?? []).filter((x) => x.id !== r.id));
-                if (library.length === 0) editing = false;
+                if (!library.some(inLibrary)) editing = false;
                 showToast('Reference deleted');
                 onChange();
                 if (menu.isConnected) build();
@@ -904,7 +919,24 @@ function showReferencePanel(anchor: HTMLElement, controller: AppController, root
             note.className = 'popover-hint';
             note.textContent = 'This image is no longer in the Reference Library.';
             menu.appendChild(note);
-          } else {
+          } else if (record && !inLibrary(record)) {
+            // This artwork's own image: offer to keep it for other artworks too.
+            const own = document.createElement('button');
+            own.className = 'popover-row reference-to-library';
+            own.textContent = 'This artwork only · Add to library';
+            own.addEventListener('click', (e) => {
+              e.stopPropagation();
+              setReferenceScope(record.id, undefined)
+                .then(async () => {
+                  library = await listReferences().catch(() => library);
+                  showToast('Added to the Reference Library');
+                  if (menu.isConnected) build();
+                })
+                .catch(() => showToast('Couldn’t change the library'));
+            });
+            menu.appendChild(own);
+          }
+          if (!missing) {
             panelSliderRow(menu, 'Reference', { min: 0, max: 100, step: 1, value: Math.round(v.referenceOpacity * 100), format: (x) => `${x}%`, onInput: (x) => setView({ referenceOpacity: x / 100 }) });
             panelSliderRow(menu, 'Artwork', { min: 5, max: 100, step: 1, value: Math.round(v.artworkOpacity * 100), format: (x) => `${x}%`, onInput: (x) => setView({ artworkOpacity: x / 100 }) });
           }
@@ -938,7 +970,8 @@ function showReferencePanel(anchor: HTMLElement, controller: AppController, root
         const libHead = document.createElement('div');
         libHead.className = 'reference-library-head';
         popoverSectionLabel(libHead, 'Reference Library');
-        if (library?.length) {
+        const listed = (library ?? []).filter(inLibrary);
+        if (listed.length) {
           const edit = document.createElement('button');
           edit.className = 'reference-edit';
           edit.textContent = editing ? 'Done' : 'Edit';
@@ -958,13 +991,13 @@ function showReferencePanel(anchor: HTMLElement, controller: AppController, root
           wait.className = 'popover-hint';
           wait.textContent = 'Loading…';
           menu.appendChild(wait);
-        } else if (library.length === 0) {
+        } else if (listed.length === 0) {
           const empty = document.createElement('p');
           empty.className = 'popover-hint';
           empty.textContent = 'Images added here can be used under any artwork.';
           menu.appendChild(empty);
         }
-        for (const r of library ?? []) {
+        for (const r of listed) {
           const b = document.createElement('button');
           b.className = 'reference-thumb' + (u?.refId === r.id ? ' active' : '');
           b.setAttribute('aria-label', `${u?.refId === r.id ? 'Current reference' : 'Use reference'} ${r.name}`);
@@ -988,25 +1021,15 @@ function showReferencePanel(anchor: HTMLElement, controller: AppController, root
               return;
             }
             if (controller.doc.underlay?.refId === r.id) return;
-            // Choosing (or replacing) the reference is one Undo step; it starts at the same place
-            // whichever workspace it is chosen in (underlay.ts — initialUnderlay) — except that a
-            // reference replacing a missing one takes over every workspace's placement of it,
-            // proportions apart.
-            const old = controller.doc.underlay;
-            const replacingMissing = !!old && (!library?.some((x) => x.id === old.refId) || underlayImage(old.refId).state === 'missing');
-            controller.commit((d) => {
-              const fresh = initialUnderlay(d, r, d.view.workspace);
-              d.underlay = replacingMissing && old ? { ...structuredClone(old), refId: fresh.refId, aspect: fresh.aspect } : fresh;
-            });
-            onChange();
+            useReference(r); // one Undo step
             build();
           });
           grid.appendChild(b);
         }
-        if (library?.length) menu.appendChild(grid);
+        if (listed.length) menu.appendChild(grid);
         const add = document.createElement('button');
         add.className = 'popover-row reference-add';
-        add.textContent = adding ? 'Adding…' : '+ Add reference';
+        add.textContent = adding ? 'Adding…' : '+ Add to library';
         add.disabled = adding;
         add.addEventListener('click', (e) => {
           e.stopPropagation();
@@ -1037,6 +1060,47 @@ function showReferencePanel(anchor: HTMLElement, controller: AppController, root
           input.click();
         });
         menu.appendChild(add);
+        // An image for this artwork alone: used here at once, without joining the library.
+        const own = document.createElement('button');
+        own.className = 'popover-row reference-add-own';
+        own.textContent = '+ Image for this artwork only';
+        own.disabled = adding;
+        own.addEventListener('click', (e) => {
+          e.stopPropagation();
+          const input = document.createElement('input');
+          input.type = 'file';
+          input.accept = 'image/*';
+          input.addEventListener('change', async () => {
+            const file = input.files?.[0];
+            if (!file) return;
+            adding = true;
+            build();
+            try {
+              const r = await importReference(file, 'artwork');
+              useReference(r);
+              showToast('Reference added to this artwork');
+            } catch (err) {
+              showToast(err instanceof ReferenceImportError ? err.message : 'Couldn’t add the image');
+            }
+            adding = false;
+            library = await listReferences().catch(() => library);
+            if (menu.isConnected) build();
+          });
+          input.click();
+        });
+        menu.appendChild(own);
+      };
+      /** Makes `r` this artwork's reference — one Undo step. It starts at the same place whichever
+       * workspace it is chosen in (underlay.ts — initialUnderlay) — except that one replacing a
+       * missing reference takes over every workspace's placement of it, proportions apart. */
+      const useReference = (r: ReferenceRecord) => {
+        const old = controller.doc.underlay;
+        const replacingMissing = !!old && (!library?.some((x) => x.id === old.refId) || underlayImage(old.refId).state === 'missing');
+        controller.commit((d) => {
+          const fresh = initialUnderlay(d, r, d.view.workspace);
+          d.underlay = replacingMissing && old ? { ...structuredClone(old), refId: fresh.refId, aspect: fresh.aspect, anchors: [] } : fresh;
+        });
+        onChange();
       };
       build();
       listReferences()

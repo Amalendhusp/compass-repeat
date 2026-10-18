@@ -92,7 +92,8 @@ async function decode(file: Blob): Promise<HTMLImageElement> {
 const newId = () => `ref_${Date.now().toString(36)}${Math.random().toString(36).slice(2, 8)}`;
 
 /** Imports one image file into the library; returns its record. */
-export async function importReference(file: File): Promise<ReferenceRecord> {
+/** Imports an image — into the library, or (`scope` 'artwork') for one artwork only. */
+export async function importReference(file: File, scope?: 'artwork'): Promise<ReferenceRecord> {
   const img = await decode(file);
   const sw = img.naturalWidth;
   const sh = img.naturalHeight;
@@ -116,6 +117,7 @@ export async function importReference(file: File): Promise<ReferenceRecord> {
     type,
     bytes: image.size,
     thumb,
+    ...(scope ? { scope } : {}),
   };
   try {
     await addReference(record, image);

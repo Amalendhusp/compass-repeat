@@ -3,6 +3,11 @@
 // ever holds a reference's id (Doc.underlay), and its undo history and process history never carry
 // image data. Two stores: `references` (what the library shows — size, name, a small thumbnail)
 // and `images` (the 4096 px working copy, read only when a reference is actually shown).
+//
+// Not every image here is in the library: one imported for a single artwork (scope 'artwork') is
+// kept the same way — so that artwork can show it — but the library doesn't list it. Any image can
+// later join the library; a library image still used by artworks is never deleted, only taken out
+// of the library (it stays theirs). Records from before scopes existed are library images.
 
 import { openDb as openArtworksDb, type DocumentRecord } from './db.ts';
 
@@ -22,6 +27,32 @@ export interface ReferenceRecord {
   type: string;
   bytes: number;
   thumb: Blob;
+  /** 'artwork': imported for one artwork only — kept, but not listed in the library. */
+  scope?: 'artwork';
+}
+
+/** Whether a reference is listed in the Reference Library. */
+export const inLibrary = (r: ReferenceRecord) => r.scope !== 'artwork';
+
+/** Puts a reference in the library (scope undefined) or keeps it for artworks only ('artwork'). */
+export async function setReferenceScope(id: string, scope: 'artwork' | undefined): Promise<void> {
+  const db = await openDb();
+  await new Promise<void>((resolve, reject) => {
+    const t = db.transaction('references', 'readwrite');
+    const store = t.objectStore('references');
+    const req = store.get(id);
+    req.onsuccess = () => {
+      const r = req.result as ReferenceRecord | undefined;
+      if (!r) return;
+      const next: ReferenceRecord = { ...r };
+      if (scope) next.scope = scope;
+      else delete next.scope;
+      store.put(next);
+    };
+    t.oncomplete = () => resolve();
+    t.onerror = () => reject(t.error);
+    t.onabort = () => reject(t.error);
+  });
 }
 
 let dbPromise: Promise<IDBDatabase> | null = null;
