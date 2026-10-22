@@ -410,6 +410,9 @@ export class AppController {
   anchorSelected: string | null = null;
   /** An anchor being dragged, shown before it is committed. */
   anchorDraft: { id: string; u: number; v: number } | null = null;
+  /** While a finger places or drags an anchor: where that finger is (paper px) — the anchor loupe
+   * (reference/anchors.ts drawAnchorLoupe) shows the exact spot magnified, clear of it. */
+  anchorLoupe: Vec2 | null = null;
   /** The reference as a Transform touch is moving it, shown live; committed when the touch ends. */
   underlayDraft: Underlay | null = null;
 

@@ -1803,6 +1803,7 @@ export function buildShell(
     controller.referenceAnchorMode = !controller.referenceAnchorMode;
     controller.anchorSelected = null;
     controller.anchorDraft = null;
+    controller.anchorLoupe = null;
     refreshTransformBar();
     controller.notify();
   });
@@ -1828,6 +1829,7 @@ export function buildShell(
     controller.referenceAnchorMode = false;
     controller.anchorSelected = null;
     controller.anchorDraft = null;
+    controller.anchorLoupe = null;
     refreshTransformBar();
     controller.underlayDraft = null;
     transformBar.style.display = on ? '' : 'none';

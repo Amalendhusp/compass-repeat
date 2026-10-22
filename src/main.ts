@@ -22,7 +22,7 @@ import type { ToolModule } from './interaction/tools/types.ts';
 import { drawUnderlayOutline, onUnderlayImage, screenLayers, settleUnderlay, underlayIn } from './render/underlay.ts';
 import { referenceTakeover, referenceWheel } from './interaction/referenceTransform.ts';
 import { anchorTool } from './interaction/tools/anchorTool.ts';
-import { anchorTargets, drawAnchors } from './reference/anchors.ts';
+import { anchorTargets, anchorWorld, drawAnchorLoupe, drawAnchors } from './reference/anchors.ts';
 import { buildShell, closeAnyPopover } from './ui/shell.ts';
 import { openGuide, type CoachHost } from './tutorial/engine.ts';
 import { beginnerGuide } from './tutorial/guides/beginner.ts';
@@ -418,6 +418,8 @@ function boot(doc: Doc, opts: { fitToScreen: boolean; history?: { undo: Doc[]; r
     if (controller.referenceTransform && moving) {
       drawUnderlayOutline(ctx!, moving, view);
       drawAnchors(ctx!, moving, view, anchorTargets(controller.doc, ws), controller.anchorSelected, controller.anchorDraft);
+      const placing = controller.anchorLoupe && controller.anchorDraft;
+      if (placing) drawAnchorLoupe(ctx!, moving, view, anchorWorld(moving, controller.anchorDraft!), controller.anchorLoupe!);
     }
     ctx!.restore();
     // Intersect, a construction tool at work: its own feedback (previews, points, snap marks) on

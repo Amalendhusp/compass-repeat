@@ -22,7 +22,8 @@
 
 import type { Doc, ReferenceAnchor, Underlay, Vec2, Workspace } from '../model/types.ts';
 import type { ViewTransform } from '../app/controller.ts';
-import { worldToScreen } from '../app/controller.ts';
+import { paperToScreen, screenToPaper, worldToScreen } from '../app/controller.ts';
+import { underlayImage } from '../render/underlay.ts';
 import { resolvePoint } from '../geometry/kernel.ts';
 import { isPointOrphanedByTrim } from '../geometry/usage.ts';
 import { isPointTargetEligibleIn } from '../interaction/hittest.ts';
@@ -204,12 +205,14 @@ export function aboutPivot(base: Underlay, raw: Underlay, pivot: Vec2): Underlay
 
 const SIGNAL = '#2F5BEA';
 const INK = '#1E2A36';
+const PAPER = '#FBF9F5';
 
 /** While Transform is on: each anchor as a small crosshair ring (the selected one larger), and the
  * construction point it is approaching — a faint ring on it, filled in once they coincide. Drawn in
  * the paper frame, like the reference outline. */
 export function drawAnchors(ctx: CanvasRenderingContext2D, u: Underlay, view: ViewTransform, targets: Vec2[], selected: string | null, draft: { id: string; u: number; v: number } | null): void {
   const anchors = (u.anchors ?? []).map((a) => (draft && draft.id === a.id ? draft : a));
+  if (draft && !anchors.some((a) => a.id === draft.id)) anchors.push(draft); // a new one, not yet placed
   if (!anchors.length) return;
   ctx.save();
   for (const a of anchors) {
@@ -256,5 +259,92 @@ export function drawAnchors(ctx: CanvasRenderingContext2D, u: Underlay, view: Vi
       ctx.fill();
     }
   }
+  ctx.restore();
+}
+
+// ---- the anchor loupe ----
+//
+// While a finger places or drags an anchor it covers the very spot being marked. The loupe shows
+// that spot — the reference image itself, at full strength and magnified — in a small circle clear
+// of the finger (above it, or below it near the top edge), with a fine crosshair exactly where the
+// anchor will go. It exists only while the finger is down.
+
+const LOUPE_R = 58;
+const LOUPE_OFFSET = 92; // loupe centre from the finger
+const LOUPE_MARGIN = 8;
+export const LOUPE_MAG = 3;
+
+/** Where the loupe sits for a finger at `finger` (paper px): its centre, in paper px. */
+export function anchorLoupeCentre(view: ViewTransform, finger: Vec2): Vec2 {
+  const f = paperToScreen(view, finger);
+  const sw = view.screen?.w ?? view.w;
+  let y = f.y - LOUPE_OFFSET;
+  if (y - LOUPE_R < LOUPE_MARGIN) y = f.y + LOUPE_OFFSET;
+  const x = Math.min(Math.max(f.x, LOUPE_R + LOUPE_MARGIN), sw - LOUPE_R - LOUPE_MARGIN);
+  return screenToPaper(view, { x, y });
+}
+
+/** The loupe for an anchor at `at` (artwork coordinates) on the image placed as `u`. */
+export function drawAnchorLoupe(ctx: CanvasRenderingContext2D, u: Underlay, view: ViewTransform, at: Vec2, finger: Vec2): void {
+  const c = anchorLoupeCentre(view, finger);
+  const a = worldToScreen(view, at);
+  ctx.save();
+  ctx.shadowColor = 'rgba(30,42,54,0.28)';
+  ctx.shadowBlur = 16;
+  ctx.shadowOffsetY = 4;
+  ctx.beginPath();
+  ctx.arc(c.x, c.y, LOUPE_R, 0, Math.PI * 2);
+  ctx.fillStyle = PAPER;
+  ctx.fill();
+  ctx.shadowColor = 'transparent';
+  ctx.shadowBlur = 0;
+  ctx.shadowOffsetY = 0;
+
+  // The image around the anchor, magnified about it.
+  const img = underlayImage(u.refId);
+  if (img.state === 'ready') {
+    ctx.save();
+    ctx.beginPath();
+    ctx.arc(c.x, c.y, LOUPE_R - 1.5, 0, Math.PI * 2);
+    ctx.clip();
+    ctx.translate(c.x, c.y);
+    ctx.scale(LOUPE_MAG, LOUPE_MAG);
+    ctx.translate(-a.x, -a.y);
+    const w = u.width * view.zoom;
+    const h = (u.width / u.aspect) * view.zoom;
+    const m = ctx.getTransform();
+    const device = w * Math.hypot(m.a, m.b);
+    const level = [...img.levels].reverse().find((l) => l.width >= device) ?? img.levels[0]!;
+    const ic = worldToScreen(view, u.centre);
+    ctx.imageSmoothingEnabled = true;
+    ctx.imageSmoothingQuality = 'high';
+    ctx.translate(ic.x, ic.y);
+    if (u.rotation) ctx.rotate(u.rotation);
+    ctx.drawImage(level.source, -w / 2, -h / 2, w, h);
+    ctx.restore();
+  }
+
+  // The exact spot: a fine crosshair with a gap at its centre, haloed so it reads on any image.
+  const arm = (r0: number, r1: number) => {
+    ctx.beginPath();
+    for (const [dx, dy] of [[1, 0], [-1, 0], [0, 1], [0, -1]] as const) {
+      ctx.moveTo(c.x + dx * r0, c.y + dy * r0);
+      ctx.lineTo(c.x + dx * r1, c.y + dy * r1);
+    }
+  };
+  arm(4, 18);
+  ctx.strokeStyle = 'rgba(251, 249, 245, 0.95)';
+  ctx.lineWidth = 3;
+  ctx.stroke();
+  arm(4, 18);
+  ctx.strokeStyle = SIGNAL;
+  ctx.lineWidth = 1.2;
+  ctx.stroke();
+
+  ctx.beginPath();
+  ctx.arc(c.x, c.y, LOUPE_R, 0, Math.PI * 2);
+  ctx.lineWidth = 1.5;
+  ctx.strokeStyle = INK;
+  ctx.stroke();
   ctx.restore();
 }
