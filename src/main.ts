@@ -417,7 +417,7 @@ function boot(doc: Doc, opts: { fitToScreen: boolean; history?: { undo: Doc[]; r
     const moving = controller.underlayDraft ?? (controller.doc.underlay && underlayIn(controller.doc.underlay, ws));
     if (controller.referenceTransform && moving) {
       drawUnderlayOutline(ctx!, moving, view);
-      drawAnchors(ctx!, moving, view, anchorTargets(controller.doc, ws), controller.anchorSelected, controller.anchorDraft);
+      drawAnchors(ctx!, moving, view, anchorTargets(controller.doc, ws), controller.anchorSelected, controller.anchorDraft, controller.snapPulling);
       const placing = controller.anchorLoupe && controller.anchorDraft;
       if (placing) drawAnchorLoupe(ctx!, moving, view, anchorWorld(moving, controller.anchorDraft!), controller.anchorLoupe!);
     }

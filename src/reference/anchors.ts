@@ -8,14 +8,17 @@
 //
 // Soft snapping (applied while the image is moved in Transform — interaction/referenceTransform.ts):
 // - Moving: when an anchor comes near a construction point it is drawn onto it — progressively,
-//   never with a jump: from SOFT_REACH_PX in, the pull grows until, within HOLD_PX, the two
-//   coincide exactly and stay so while the finger moves a little further (the slight resistance).
-//   Moving on releases it just as smoothly. One correspondence pulls at a time, and keeps pulling
-//   until it lets go; where points are close together each one's reach shrinks to half the gap, so
-//   their pulls never overlap — nothing flickers or jumps between neighbours, and the image is
-//   never trapped among them. Where many points crowd together at the current zoom (a dense
-//   construction seen whole) that leaves almost no pull: zooming in spreads them and restores it.
-//   Released within a pull, the anchor settles onto its point exactly (so it can be the pivot).
+//   never with a jump: from SOFT_REACH_PX in, the pull grows (soon, then more gently) until, within
+//   the hold, the two coincide exactly and stay so while the finger moves a little further (the
+//   slight resistance). Moving on releases it just as smoothly.
+// - One correspondence pulls at a time, and keeps pulling until the anchor leaves its reach
+//   (persistence): neighbours never take it over mid-pull, so nothing flickers between them. Where
+//   points are close together a point's reach shrinks towards half the gap, but never below
+//   MIN_REACH_PX — in a dense construction seen whole there is still a pull to feel; which of the
+//   crowded points it settles on is the one approached first (zoom in to choose among them). A
+//   newly taken point's pull fades in over the next RAMP_PX of finger travel, so a hand-over from
+//   one point to an overlapping neighbour, or a touch that begins already near a point, never jumps.
+// - Released within a pull, the anchor settles onto its point exactly (so it can be the pivot).
 // - Scaling / turning: no pull at all (it would mean unexpected sliding) — except that an anchor
 //   already sitting exactly on a point when the gesture starts becomes the pivot: the image scales
 //   and turns about it, so it stays aligned while a second anchor is brought round to its point.
@@ -33,14 +36,21 @@ import { intersectionCopies } from '../geometry/intersection.ts';
 import { localPoints, pointShown } from '../geometry/intersectionSnap.ts';
 import { transformPoint } from '../geometry/lattice.ts';
 
-/** Within this (px) an anchor sits exactly on its point. */
-export const HOLD_PX = 6;
+/** Within this (px) an anchor sits exactly on its point (at the full reach; the same share of a
+ * smaller one). */
+export const HOLD_PX = 8;
 /** From this (px) in, a nearby point begins to draw the anchor towards it. */
-export const SOFT_REACH_PX = 14;
+export const SOFT_REACH_PX = 20;
+/** However crowded the points, each one's pull still reaches this far (px). */
+export const MIN_REACH_PX = 8;
+/** A newly taken point's pull fades in over this much finger travel (px). */
+const RAMP_PX = 6;
+/** How soon the pull builds across the reach: 1 = evenly; higher = sooner. */
+const PULL_EASE = 1.5;
 /** An anchor this close (px) to a point counts as aligned (a pivot for scaling and turning). */
 export const ALIGNED_PX = 0.5;
 /** Within this (px) of a point an anchor shows that it is approaching. */
-export const NEAR_PX = 28;
+export const NEAR_PX = 36;
 
 const half = (u: Underlay) => ({ w: u.width / 2, h: u.width / u.aspect / 2 });
 
@@ -117,7 +127,7 @@ export function alignedAnchor(u: Underlay, view: ViewTransform, targets: Vec2[])
 }
 
 /** How far target `index`'s pull reaches (screen px): SOFT_REACH_PX, or half the distance to the
- * nearest other target where that is less — so that no two pulls ever overlap. */
+ * nearest other target where that is less — but never less than MIN_REACH_PX. */
 export function pullReach(view: ViewTransform, targets: Vec2[], index: number): number {
   const q = worldToScreen(view, targets[index]!);
   let nearestOther = Infinity;
@@ -127,26 +137,27 @@ export function pullReach(view: ViewTransform, targets: Vec2[], index: number): 
     const d = Math.hypot(o.x - q.x, o.y - q.y);
     if (d > 1e-6 && d < nearestOther) nearestOther = d; // a coincident duplicate is the same place
   });
-  return Math.min(SOFT_REACH_PX, nearestOther / 2);
+  return Math.min(SOFT_REACH_PX, Math.max(MIN_REACH_PX, nearestOther / 2));
 }
-
-/** Below this reach (px) a point's pull is too small to feel: the points are crowded at this zoom. */
-export const CROWDED_PX = 3;
 
 /** One moving gesture's soft snap: which correspondence is pulling, kept between samples. */
 type Pull = { anchorId: string; index: number; d: number; reach: number; from: Vec2; to: Vec2 };
 
 export class SoftSnap {
   private active: { anchorId: string; index: number } | null = null;
+  /** For a newly taken point whose pull would start part-way: where the finger was (the image's
+   * centre, screen px) and how far it has travelled since — the pull fades in over RAMP_PX. */
+  private ramp: { from: Vec2; travel: number } | null = null;
+  /** Whether a sample has been seen this gesture, and whether the last one was pulled. */
+  private started = false;
+  private lastPulled = false;
   private readonly targets: Vec2[];
   private readonly reachCache = new Map<number, number>();
   constructor(targets: Vec2[]) {
     this.targets = targets;
   }
 
-  /** How far a target's pull reaches (px): SOFT_REACH_PX — or less where other points are close, so
-   * that no two points' pulls ever overlap. Moving from one point to its neighbour then passes
-   * through a moment of no pull at all: never a jump, and never trapped among crowded points. */
+  /** How far a target's pull reaches (px) — pullReach, cached for the gesture. */
   private reachOf(index: number, view: ViewTransform): number {
     let r = this.reachCache.get(index);
     if (r !== undefined) return r;
@@ -180,8 +191,19 @@ export class SoftSnap {
       const reach = this.reachOf(index, view);
       return d <= reach ? { anchorId, index, d, reach, from: at, to } : null;
     };
+    // Full within the hold (the same share of the reach everywhere); fading smoothly to nothing at
+    // the edge of the reach.
+    const strength = (p: Pull) => {
+      const hold = (p.reach * HOLD_PX) / SOFT_REACH_PX;
+      return p.d <= hold ? 1 : 1 - ((p.d - hold) / (p.reach - hold)) ** PULL_EASE;
+    };
+    const centre = worldToScreen(view, raw.centre); // moves with the finger
+    // A point taken straight from another one's pull, or at the touch's very start, may begin
+    // part-way in: that is the case to fade in (an ordinary approach starts from no pull at all).
+    const handOver = !this.started || this.lastPulled;
+    this.started = true;
     // The pulling correspondence is kept for as long as it is within its reach — a new one takes
-    // over only once it has let go, so the hand-over never jumps.
+    // over only once it has let go.
     let pull: Pull | null = null;
     if (this.active) {
       const a = anchors.find((x) => x.id === this.active!.anchorId);
@@ -194,19 +216,31 @@ export class SoftSnap {
         const c = n ? pullOf(a.id, at, n.index) : null;
         if (c && (!pull || c.d < pull.d)) pull = c;
       }
+      // Taken part-way into its reach (a hand-over, or a touch begun near a point): fade it in.
+      this.ramp = pull && handOver && strength(pull) > 0.05 ? { from: centre, travel: 0 } : null;
     }
+    this.lastPulled = !!pull;
     if (!pull) {
       this.active = null;
+      this.ramp = null;
       return raw;
     }
     this.active = { anchorId: pull.anchorId, index: pull.index };
-    // Full within the hold (the same share of the reach everywhere); fading smoothly to nothing at
-    // the edge of the reach.
-    const hold = (pull.reach * HOLD_PX) / SOFT_REACH_PX;
-    const f = full || pull.d <= hold ? 1 : (pull.reach - pull.d) / (pull.reach - hold);
+    let f = full ? 1 : strength(pull);
+    if (this.ramp && !full) {
+      this.ramp.travel = Math.max(this.ramp.travel, Math.hypot(centre.x - this.ramp.from.x, centre.y - this.ramp.from.y));
+      const blend = Math.min(1, this.ramp.travel / RAMP_PX);
+      if (blend >= 1) this.ramp = null;
+      f *= blend;
+    }
     const dx = (pull.to.x - pull.from.x) * f;
     const dy = (pull.to.y - pull.from.y) * f;
     return { ...raw, centre: { x: raw.centre.x + dx, y: raw.centre.y + dy } };
+  }
+
+  /** The point now pulling, and whose anchor — for the feedback ring. */
+  pulling(): { anchorId: string; at: Vec2 } | null {
+    return this.active ? { anchorId: this.active.anchorId, at: this.targets[this.active.index]! } : null;
   }
 }
 
@@ -230,7 +264,7 @@ const PAPER = '#FBF9F5';
 /** While Transform is on: each anchor as a small crosshair ring (the selected one larger), and the
  * construction point it is approaching — a faint ring on it, filled in once they coincide. Drawn in
  * the paper frame, like the reference outline. */
-export function drawAnchors(ctx: CanvasRenderingContext2D, u: Underlay, view: ViewTransform, targets: Vec2[], selected: string | null, draft: { id: string; u: number; v: number } | null): void {
+export function drawAnchors(ctx: CanvasRenderingContext2D, u: Underlay, view: ViewTransform, targets: Vec2[], selected: string | null, draft: { id: string; u: number; v: number } | null, pulling: { anchorId: string; at: Vec2 } | null = null): void {
   const anchors = (u.anchors ?? []).map((a) => (draft && draft.id === a.id ? draft : a));
   if (draft && !anchors.some((a) => a.id === draft.id)) anchors.push(draft); // a new one, not yet placed
   if (!anchors.length) return;
@@ -238,21 +272,20 @@ export function drawAnchors(ctx: CanvasRenderingContext2D, u: Underlay, view: Vi
   for (const a of anchors) {
     const at = anchorWorld(u, a);
     const s = worldToScreen(view, at);
-    const n = nearest(view, at, targets, NEAR_PX);
-    const aligned = !!n && n.d <= ALIGNED_PX;
-    if (n && !aligned) {
-      // The nearest point, ringed: firmly once its pull has the anchor; faintly while approaching;
-      // dashed where points crowd too closely at this zoom to pull at all (zoom in to align).
-      const reach = pullReach(view, targets, n.index);
-      const q = worldToScreen(view, n.target);
+    // The point this anchor is being drawn onto, ringed firmly; otherwise the nearest one it is
+    // approaching, faintly.
+    const pull = pulling && pulling.anchorId === a.id ? pulling.at : null;
+    const n = pull ? null : nearest(view, at, targets, NEAR_PX);
+    const toward = pull ?? n?.target ?? null;
+    const q = toward && worldToScreen(view, toward);
+    const aligned = !!q && Math.hypot(q.x - s.x, q.y - s.y) <= ALIGNED_PX;
+    if (q && !aligned) {
       ctx.beginPath();
       ctx.arc(q.x, q.y, 8, 0, Math.PI * 2);
       ctx.strokeStyle = SIGNAL;
-      ctx.globalAlpha = n.d <= reach ? 0.85 : 0.35;
-      if (reach < CROWDED_PX) ctx.setLineDash([2.5, 2.5]);
-      ctx.lineWidth = 1.4;
+      ctx.globalAlpha = pull ? 0.9 : 0.35;
+      ctx.lineWidth = pull ? 1.8 : 1.4;
       ctx.stroke();
-      ctx.setLineDash([]);
       ctx.globalAlpha = 1;
     }
     const r = a.id === selected ? 10 : 7;

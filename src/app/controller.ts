@@ -413,6 +413,8 @@ export class AppController {
   /** While a finger places or drags an anchor: where that finger is (paper px) — the anchor loupe
    * (reference/anchors.ts drawAnchorLoupe) shows the exact spot magnified, clear of it. */
   anchorLoupe: Vec2 | null = null;
+  /** While the image is moved: the construction point now drawing an anchor onto it (soft snapping). */
+  snapPulling: { anchorId: string; at: Vec2 } | null = null;
   /** The reference as a Transform touch is moving it, shown live; committed when the touch ends. */
   underlayDraft: Underlay | null = null;
 

@@ -83,12 +83,14 @@ export function referenceTakeover(controller: AppController, getView: () => View
       const raw = transformedUnderlay(base, basePts, pts, controller.doc.frame.radius, view.zoom);
       lastRaw = pts.length >= 2 ? null : raw;
       controller.underlayDraft = pts.length >= 2 ? (pivot ? aboutPivot(base, raw, pivot.at) : raw) : snap.apply(raw, view);
+      controller.snapPulling = pts.length >= 2 ? null : snap.pulling();
       controller.notifyView();
     },
     end() {
       // Released within a pull: the anchor settles exactly onto its point.
       const next = lastRaw ? snap.settle(lastRaw, view) : controller.underlayDraft;
       controller.underlayDraft = null;
+      controller.snapPulling = null;
       const moved = next && (next.centre.x !== start.centre.x || next.centre.y !== start.centre.y || next.width !== start.width || next.rotation !== start.rotation);
       if (moved) {
         controller.commit((d) => {
@@ -98,6 +100,7 @@ export function referenceTakeover(controller: AppController, getView: () => View
     },
     cancel() {
       controller.underlayDraft = null;
+      controller.snapPulling = null;
       controller.notifyView();
     },
   };
