@@ -219,7 +219,7 @@ export function openArtworksSheet(
     onTap(del, () => {
       if (offset < REVEAL_PX) return;
       const shown = a.named ? a.name : 'Untitled';
-      openConfirmSheet(root, {
+      openConfirmSheet({
         title: `Delete “${shown}”?`,
         body: 'This removes the editable artwork from this device.',
         confirmLabel: 'Delete',

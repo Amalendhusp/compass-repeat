@@ -1138,6 +1138,58 @@ canvas.stage {
   cursor: not-allowed;
 }
 
+/* Confirmations: one compact card in its own layer on the page, above every panel and sheet, with a
+ * single backdrop. */
+.confirm-layer {
+  position: fixed;
+  inset: 0;
+  z-index: 60;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 16px;
+}
+.confirm-scrim {
+  position: absolute;
+  inset: 0;
+  background: rgba(30, 42, 54, 0.28);
+}
+.confirm-card {
+  position: relative;
+  width: min(320px, 100%);
+  max-height: calc(100% - 32px);
+  overflow-y: auto;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  padding: 18px 16px 14px;
+  border-radius: 18px;
+  background: var(--paper);
+  box-shadow: 0 12px 36px rgba(30, 42, 54, 0.22);
+}
+.confirm-card h2 {
+  margin: 0;
+  font-family: var(--font-title);
+  font-size: 18px;
+  font-weight: 500;
+  color: var(--ink);
+  overflow-wrap: anywhere;
+}
+.confirm-card p {
+  margin: 0;
+  font-size: 13px;
+  line-height: 1.4;
+  color: var(--muted);
+}
+.confirm-actions {
+  display: flex;
+  gap: 10px;
+  margin-top: 8px;
+}
+.confirm-actions button {
+  height: 44px;
+}
+
 /* ---- Phase 5.5: artwork name prompt + My Artworks ---- */
 
 .name-input {

@@ -28,7 +28,7 @@ import { settleReferenceWheel } from '../interaction/referenceTransform.ts';
 import { removeSelectedAnchor } from '../interaction/tools/anchorTool.ts';
 import { iconSvg, type IconName } from './icons.ts';
 import { showToast } from './toast.ts';
-import { openConfirmSheet } from './confirmsheet.ts';
+import { isInConfirmLayer, openConfirmSheet } from './confirmsheet.ts';
 import { onTap } from './tap.ts';
 import { color, fairPalette, stroke } from '../render/tokens.ts';
 import { defaultLatticeVectors, isSixtyDegreeFamily, type LatticeFamily } from '../geometry/lattice.ts';
@@ -171,6 +171,8 @@ function mountPopover(anchor: HTMLElement, fill: (menu: HTMLElement, close: () =
   function onOutside(e: PointerEvent): void {
     const target = e.target as Node;
     if (menu.contains(target) || anchor.contains(target)) return;
+    // A confirmation the panel asked for (Delete) sits above it; answering it keeps the panel.
+    if (isInConfirmLayer(target)) return;
     // Phase 5.1 item 12: a tap on the canvas that only dismisses a panel must not also act on the
     // artwork underneath it.
     if (opts.shieldCanvas && e.target instanceof HTMLCanvasElement) e.stopPropagation();
@@ -689,7 +691,7 @@ function showRepeatAppearancePanel(anchor: HTMLElement, controller: AppControlle
  */
 const MAX_SNAPSHOTS = 24;
 
-function showIntersectionSnapshotsPanel(anchor: HTMLElement, controller: AppController, root: HTMLElement): void {
+function showIntersectionSnapshotsPanel(anchor: HTMLElement, controller: AppController): void {
   mountPopover(
     anchor,
     (menu, close) => {
@@ -747,7 +749,7 @@ function showIntersectionSnapshotsPanel(anchor: HTMLElement, controller: AppCont
           del.addEventListener('click', (e) => {
             e.stopPropagation();
             close();
-            openConfirmSheet(root, {
+            openConfirmSheet({
               title: `Delete snapshot ${n + 1}?`,
               body: 'A deleted snapshot cannot be brought back.',
               confirmLabel: 'Delete',
@@ -901,7 +903,7 @@ const WORKSPACE_NAMES = { construct: 'Construct', intersection: 'Intersection', 
  * (every imported image, as thumbnails; tapping one makes it this artwork's reference — one Undo
  * step; Edit offers to delete one from the library).
  */
-function showReferencePanel(anchor: HTMLElement, controller: AppController, root: HTMLElement, hooks: { onChange: () => void; startTransform: () => void }): void {
+function showReferencePanel(anchor: HTMLElement, controller: AppController, hooks: { onChange: () => void; startTransform: () => void }): void {
   const onChange = hooks.onChange;
   mountPopover(
     anchor,
@@ -929,7 +931,7 @@ function showReferencePanel(anchor: HTMLElement, controller: AppController, root
           return;
         }
         if (users.length > 0) {
-          openConfirmSheet(root, {
+          openConfirmSheet({
             title: 'Remove from the library?',
             body: `It is used by ${users.length === 1 ? '1 artwork' : `${users.length} artworks`}${users.length <= 3 ? ` (${users.join(', ')})` : ''}. It stays with ${users.length === 1 ? 'it' : 'them'} as ${users.length === 1 ? 'its' : 'their'} own reference, and leaves the library.`,
             confirmLabel: 'Remove',
@@ -947,7 +949,7 @@ function showReferencePanel(anchor: HTMLElement, controller: AppController, root
           return;
         }
         const body = 'No artwork uses it. It will be removed from this device.';
-        openConfirmSheet(root, {
+        openConfirmSheet({
           title: 'Delete this reference?',
           body,
           confirmLabel: 'Delete',
@@ -1637,7 +1639,7 @@ export function buildShell(
   const ixSnapshotsBadge = document.createElement('span');
   ixSnapshotsBadge.className = 'icon-badge';
   ixSnapshotsBtn.appendChild(ixSnapshotsBadge);
-  onTap(ixSnapshotsBtn, () => togglePanel(ixSnapshotsBtn, () => showIntersectionSnapshotsPanel(ixSnapshotsBtn, controller, root)));
+  onTap(ixSnapshotsBtn, () => togglePanel(ixSnapshotsBtn, () => showIntersectionSnapshotsPanel(ixSnapshotsBtn, controller)));
   function refreshIxSnapshotsBtn(): void {
     const n = controller.doc.intersectionSnapshots?.length ?? 0;
     ixSnapshotsBadge.textContent = n ? String(n) : '';
@@ -1740,7 +1742,7 @@ export function buildShell(
     if (opacityOpen) for (const sl of opacitySliders) sl.refresh();
   }
   let eyeShows: boolean | null = null;
-  const openReferencePanel = () => showReferencePanel(referencePanelBtn, controller, root, { onChange: refreshReferenceButtons, startTransform });
+  const openReferencePanel = () => showReferencePanel(referencePanelBtn, controller, { onChange: refreshReferenceButtons, startTransform });
   onTap(referenceEyeBtn, () => {
     opacityOpen = !opacityOpen;
     refreshReferenceButtons();
@@ -2479,7 +2481,7 @@ export function buildShell(
       run();
       return;
     }
-    openConfirmSheet(root, {
+    openConfirmSheet({
       title: `Delete ${noun}?`,
       body: `Also removes ${extra} dependent construction${extra === 1 ? '' : 's'}. Undo will bring it back.`,
       confirmLabel: 'Delete',
@@ -2520,7 +2522,7 @@ export function buildShell(
           controller.select([]);
         };
         if (editable && plan.entityIds.size === 0) return run();
-        openConfirmSheet(root, {
+        openConfirmSheet({
           title: editable ? 'Delete this point?' : 'Delete what is built on this point?',
           body: `${editable ? 'Also removes' : 'Removes'} ${plan.entityIds.size} construction${plan.entityIds.size === 1 ? '' : 's'}. Undo will bring ${plan.entityIds.size === 1 ? 'it' : 'them'} back.`,
           confirmLabel: 'Delete',

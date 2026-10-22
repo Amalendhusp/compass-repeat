@@ -597,7 +597,7 @@ const cardActions: CardActions = {
     });
   },
   remove(a, done) {
-    openConfirmSheet(root!, {
+    openConfirmSheet({
       title: `Delete “${displayName(a)}”?`,
       body: 'This cannot be undone.',
       confirmLabel: 'Delete',
