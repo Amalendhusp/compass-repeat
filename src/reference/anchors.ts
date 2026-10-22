@@ -13,7 +13,9 @@
 //   Moving on releases it just as smoothly. One correspondence pulls at a time, and keeps pulling
 //   until it lets go; where points are close together each one's reach shrinks to half the gap, so
 //   their pulls never overlap — nothing flickers or jumps between neighbours, and the image is
-//   never trapped among them.
+//   never trapped among them. Where many points crowd together at the current zoom (a dense
+//   construction seen whole) that leaves almost no pull: zooming in spreads them and restores it.
+//   Released within a pull, the anchor settles onto its point exactly (so it can be the pivot).
 // - Scaling / turning: no pull at all (it would mean unexpected sliding) — except that an anchor
 //   already sitting exactly on a point when the gesture starts becomes the pivot: the image scales
 //   and turns about it, so it stays aligned while a second anchor is brought round to its point.
@@ -114,6 +116,23 @@ export function alignedAnchor(u: Underlay, view: ViewTransform, targets: Vec2[])
   return null;
 }
 
+/** How far target `index`'s pull reaches (screen px): SOFT_REACH_PX, or half the distance to the
+ * nearest other target where that is less — so that no two pulls ever overlap. */
+export function pullReach(view: ViewTransform, targets: Vec2[], index: number): number {
+  const q = worldToScreen(view, targets[index]!);
+  let nearestOther = Infinity;
+  targets.forEach((t, i) => {
+    if (i === index) return;
+    const o = worldToScreen(view, t);
+    const d = Math.hypot(o.x - q.x, o.y - q.y);
+    if (d > 1e-6 && d < nearestOther) nearestOther = d; // a coincident duplicate is the same place
+  });
+  return Math.min(SOFT_REACH_PX, nearestOther / 2);
+}
+
+/** Below this reach (px) a point's pull is too small to feel: the points are crowded at this zoom. */
+export const CROWDED_PX = 3;
+
 /** One moving gesture's soft snap: which correspondence is pulling, kept between samples. */
 type Pull = { anchorId: string; index: number; d: number; reach: number; from: Vec2; to: Vec2 };
 
@@ -131,15 +150,7 @@ export class SoftSnap {
   private reachOf(index: number, view: ViewTransform): number {
     let r = this.reachCache.get(index);
     if (r !== undefined) return r;
-    const q = worldToScreen(view, this.targets[index]!);
-    let nearestOther = Infinity;
-    this.targets.forEach((t, i) => {
-      if (i === index) return;
-      const o = worldToScreen(view, t);
-      const d = Math.hypot(o.x - q.x, o.y - q.y);
-      if (d > 1e-6 && d < nearestOther) nearestOther = d; // a coincident duplicate is the same place
-    });
-    r = Math.min(SOFT_REACH_PX, nearestOther / 2);
+    r = pullReach(view, this.targets, index);
     this.reachCache.set(index, r);
     return r;
   }
@@ -147,6 +158,15 @@ export class SoftSnap {
   /** The image as the finger has moved it (`raw`), drawn the last little way by the pull of one
    * nearby correspondence — or `raw` itself when there is none. Translation only. */
   apply(raw: Underlay, view: ViewTransform): Underlay {
+    return this.pulled(raw, view, false);
+  }
+
+  /** On release: within a pull, the image settles so that the anchor sits exactly on its point. */
+  settle(raw: Underlay, view: ViewTransform): Underlay {
+    return this.pulled(raw, view, true);
+  }
+
+  private pulled(raw: Underlay, view: ViewTransform, full: boolean): Underlay {
     const anchors = raw.anchors ?? [];
     if (!anchors.length || !this.targets.length) {
       this.active = null;
@@ -183,7 +203,7 @@ export class SoftSnap {
     // Full within the hold (the same share of the reach everywhere); fading smoothly to nothing at
     // the edge of the reach.
     const hold = (pull.reach * HOLD_PX) / SOFT_REACH_PX;
-    const f = pull.d <= hold ? 1 : (pull.reach - pull.d) / (pull.reach - hold);
+    const f = full || pull.d <= hold ? 1 : (pull.reach - pull.d) / (pull.reach - hold);
     const dx = (pull.to.x - pull.from.x) * f;
     const dy = (pull.to.y - pull.from.y) * f;
     return { ...raw, centre: { x: raw.centre.x + dx, y: raw.centre.y + dy } };
@@ -221,13 +241,18 @@ export function drawAnchors(ctx: CanvasRenderingContext2D, u: Underlay, view: Vi
     const n = nearest(view, at, targets, NEAR_PX);
     const aligned = !!n && n.d <= ALIGNED_PX;
     if (n && !aligned) {
+      // The nearest point, ringed: firmly once its pull has the anchor; faintly while approaching;
+      // dashed where points crowd too closely at this zoom to pull at all (zoom in to align).
+      const reach = pullReach(view, targets, n.index);
       const q = worldToScreen(view, n.target);
       ctx.beginPath();
       ctx.arc(q.x, q.y, 8, 0, Math.PI * 2);
       ctx.strokeStyle = SIGNAL;
-      ctx.globalAlpha = n.d <= SOFT_REACH_PX ? 0.75 : 0.35; // nearer: within the pull
+      ctx.globalAlpha = n.d <= reach ? 0.85 : 0.35;
+      if (reach < CROWDED_PX) ctx.setLineDash([2.5, 2.5]);
       ctx.lineWidth = 1.4;
       ctx.stroke();
+      ctx.setLineDash([]);
       ctx.globalAlpha = 1;
     }
     const r = a.id === selected ? 10 : 7;

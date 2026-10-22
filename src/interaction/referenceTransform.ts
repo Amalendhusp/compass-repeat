@@ -65,22 +65,29 @@ export function referenceTakeover(controller: AppController, getView: () => View
   // drawn onto them; scaling and turning pull nothing — but turn about an anchor already aligned.
   const targets = anchorTargets(controller.doc, ws);
   const snap = new SoftSnap(targets);
-  const pivot = alignedAnchor(start, view, targets);
+  let pivot = alignedAnchor(start, view, targets);
+  /** The last one-finger sample as the finger alone placed it (before any pull). */
+  let lastRaw: Underlay | null = null;
   return {
     update(points, phase) {
       const pts = world(points);
-      // A finger added or lifted: carry on from where the reference is now, with the new fingers.
+      // A finger added or lifted: carry on from where the reference is now, with the new fingers —
+      // and about whichever anchor is aligned now (one may have just been drawn onto its point).
       if (phase !== 'move' || pts.length !== basePts.length) {
         base = controller.underlayDraft ?? start;
         basePts = pts;
+        pivot = alignedAnchor(base, view, targets);
+        lastRaw = null;
         return;
       }
       const raw = transformedUnderlay(base, basePts, pts, controller.doc.frame.radius, view.zoom);
+      lastRaw = pts.length >= 2 ? null : raw;
       controller.underlayDraft = pts.length >= 2 ? (pivot ? aboutPivot(base, raw, pivot.at) : raw) : snap.apply(raw, view);
       controller.notifyView();
     },
     end() {
-      const next = controller.underlayDraft;
+      // Released within a pull: the anchor settles exactly onto its point.
+      const next = lastRaw ? snap.settle(lastRaw, view) : controller.underlayDraft;
       controller.underlayDraft = null;
       const moved = next && (next.centre.x !== start.centre.x || next.centre.y !== start.centre.y || next.width !== start.width || next.rotation !== start.rotation);
       if (moved) {
