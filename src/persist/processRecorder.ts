@@ -14,7 +14,7 @@
 
 import type { AppController } from '../app/controller.ts';
 import type { Doc, Workspace } from '../model/types.ts';
-import { PROCESS_FORMAT, capturedHash, captureState, describeChange, diffStates, inPlaceFingerprint, inPlaceParts, withoutIntersect, type ArtworkState, type InPlaceParts, type ProcessSource } from './processState.ts';
+import { PROCESS_FORMAT, capturedHash, captureState, describeChange, diffStates, inPlaceFingerprint, inPlaceParts, withoutIntersect, withoutRepeatSetup, type ArtworkState, type InPlaceParts, type ProcessSource } from './processState.ts';
 import { enqueue, loadMeta, writeEvents, type ProcessEvent, type ProcessMeta } from './processStore.ts';
 
 /** A settled in-place change (Appearance, Repeat's first lattice) waits this long before it counts. */
@@ -95,16 +95,18 @@ export function attachProcessRecorder(controller: AppController, opts: { fresh: 
       } else if (!prevHash) {
         // First change since opening: does the saved artwork still match where its history ended?
         let opened = capturedHash(prev);
-        // A history recorded before Intersect's arrangement was part of a state ends on the same
-        // artwork without it: carry on from there (the arrangement then arrives as this moment's
-        // change), rather than calling it a gap.
-        if (opened.hash !== meta.headHash && prev.intersect !== undefined) {
-          const earlier = withoutIntersect(prev);
-          const before = capturedHash(earlier);
-          if (before.hash === meta.headHash) {
+        // A history recorded before Intersect's arrangement (or Repeat's setup) was part of a state
+        // ends on the same artwork without it: carry on from there (it then arrives as this
+        // moment's change), rather than calling it a gap.
+        if (opened.hash !== meta.headHash) {
+          const older = [withoutRepeatSetup(prev), ...(prev.intersect !== undefined ? [withoutIntersect(prev), withoutRepeatSetup(withoutIntersect(prev))] : [])];
+          for (const earlier of older) {
+            const before = capturedHash(earlier);
+            if (before.hash !== meta.headHash) continue;
             prev = earlier;
             opened = before;
-            ops = diffStates(prev, state); // so this moment's patch brings the arrangement in
+            ops = diffStates(prev, state); // so this moment's patch brings it in
+            break;
           }
         }
         prevHash = opened.hash;
