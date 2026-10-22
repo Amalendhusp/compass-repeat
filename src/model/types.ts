@@ -186,10 +186,59 @@ export interface RepeatDisplay {
   grid: boolean;
   handles: boolean;
   motifBoundary: boolean;
-  /** What Repeat repeats: the construction itself ('motif' — absent means this), or the current
-   * Intersect arrangement as one unit ('intersect': every instance, placed as arranged). Only the
-   * choice is kept — never a copy of any geometry (geometry/repeatUnit.ts). */
+  /** Legacy: where the Source choice was kept before it became part of Undo and the recorded
+   * artwork (Doc.repeatSetup). Moved there when an artwork is opened. */
   source?: 'motif' | 'intersect';
+}
+
+export type RepeatSourceKind = 'motif' | 'intersect';
+
+/** Repeat's own appearance for one source (see RepeatDisplay): kept with that source's setup. */
+export interface RepeatAppearance {
+  background: string;
+  fillOpacity: number;
+  strokeColour?: string | null;
+  strokeWidth?: number | null;
+}
+
+/**
+ * Repeat's own colouring of the repeated design — never the construction's fills (Construct keeps
+ * those untouched). A region is keyed by its face signature (the motif), or by
+ * "instanceKey|signature" (an Intersect arrangement: the same region of different instances can be
+ * coloured differently). A colour replaces the design's own fill there; null shows it unfilled.
+ */
+export interface RepeatColouring {
+  /** Motif Colouring: applied to the region in every copy. */
+  regions?: Record<string, string | null>;
+  /** Pattern Colouring: copies fall into two groups by their place in the lattice — alternate
+   * copies (i + j odd), rows (j odd) or columns (i odd) — and the second group may have its own
+   * region colours (over Motif Colouring's). 'none' keeps them but does not apply them. */
+  pattern?: { by: 'none' | 'copies' | 'rows' | 'columns'; regions: Record<string, string | null> };
+}
+
+/** One source's whole Repeat configuration, kept while the other source is showing. */
+export interface RepeatConfig {
+  /** doc.repeat as it was (gapFills as entries). */
+  repeat: Omit<RepeatSystem, 'gapFills'> & { gapFills: [string, string][] };
+  appearance: RepeatAppearance;
+  colour?: RepeatColouring;
+  auto?: { a: Vec2; b: Vec2 } | null;
+}
+
+/**
+ * What Repeat repeats and each source's own configuration — part of Undo and of the recorded
+ * artwork. The active source's lattice is doc.repeat and its appearance doc.repeatDisplay (as
+ * always); `saved` holds the other source's, restored when it is chosen again.
+ */
+export interface RepeatSetup {
+  source: RepeatSourceKind;
+  saved?: Partial<Record<RepeatSourceKind, RepeatConfig>>;
+  /** The active source's colouring. */
+  colour?: RepeatColouring;
+  /** The lattice vectors as Repeat suggested them for this source — while doc.repeat still has
+   * exactly these, the spacing is the suggestion (and follows changes to an Intersect
+   * arrangement); once the participant adjusts it, it is theirs and is never replaced. */
+  auto?: { a: Vec2; b: Vec2 } | null;
 }
 
 /** A workspace camera: how the artwork's own coordinates are shown — never the artwork itself. */
@@ -275,6 +324,11 @@ export interface Doc {
    * artwork's own stored Fair/fill state. Not undo-tracked (carried across undo/redo like
    * `repeatView`). Replaces Phase 5's single `repeatGuide` boolean. */
   repeatDisplay: RepeatDisplay;
+  /** Repeat's source and each source's own configuration and colouring (types: RepeatSetup). Part
+   * of Undo and of the recorded artwork. Absent = the motif, never configured separately. */
+  repeatSetup?: RepeatSetup;
+  /** Repeat colouring's next colour (null = unfilled) — a tool preference like `spaceDefaults`. */
+  repeatPaint?: { colour: string | null };
   /** Intersection's own camera — like repeatView, never history. Absent until Intersection is first
    * entered. */
   intersectionView?: Camera;

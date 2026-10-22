@@ -14,16 +14,19 @@
 import type { Doc } from '../model/types.ts';
 import { motifExtent, type InstancePose } from './lattice.ts';
 import { intersectionCopies } from './intersection.ts';
+import { repeatSourceOf, type RepeatSourceKind } from './repeatSetup.ts';
 
-export type RepeatSource = 'motif' | 'intersect';
+export type RepeatSource = RepeatSourceKind;
 
 export function repeatSource(doc: Doc): RepeatSource {
-  return doc.repeatDisplay?.source === 'intersect' ? 'intersect' : 'motif';
+  return repeatSourceOf(doc);
 }
 
 export interface RepeatUnit {
   /** Each instance's placement, in the artwork's own coordinates (the Primary first). */
   members: InstancePose[];
+  /** Each instance's key (its region colours are kept by it). */
+  keys: string[];
   /** How far the unit's drawn artwork reaches from the lattice position (the frame centre). */
   extent: number;
   /** Changes whenever the placements do. */
@@ -37,10 +40,12 @@ export function repeatUnit(doc: Doc): RepeatUnit | null {
   if (repeatSource(doc) !== 'intersect') return null;
   let unit = cache.get(doc);
   if (!unit) {
-    const members = intersectionCopies(doc).map((c) => c.pose);
+    const copies = intersectionCopies(doc);
+    const members = copies.map((c) => c.pose);
     const reach = motifExtent(doc);
     unit = {
       members,
+      keys: copies.map((c) => c.key),
       extent: Math.max(...members.map((m) => Math.hypot(m.translate.x, m.translate.y))) + reach,
       key: members.map((m) => `${m.translate.x},${m.translate.y},${m.rotation}`).join(';'),
     };

@@ -2,6 +2,7 @@ import type { Doc, EntityId, FaceSig, PointId, SegmentKey, SegmentState, Underla
 import type { PointDependent } from '../model/doc.ts';
 import { cloneDoc } from '../model/doc.ts';
 import { invalidatePointFacts } from '../geometry/usage.ts';
+import { carryAppearanceAcross } from '../geometry/repeatSetup.ts';
 import type { PointRef } from '../interaction/pointref.ts';
 import type { EdgeCircle } from '../geometry/incircle.ts';
 import type { IntersectionPick, PickKind } from '../geometry/intersectionSnap.ts';
@@ -572,7 +573,8 @@ export class AppController {
 
   /** Camera and Repeat display preferences are not history — carry the live ones across. */
   private swapTo(snapshot: Doc): void {
-    const { view, repeatView, intersectionView, intersectionSnapshots, underlayView, repeatDisplay, toolPrefs, dividePrefs, fillDefaults, fairDefaults, pointTargets, name, named, spaceDefaults } = this.doc;
+    const { view, repeatView, intersectionView, intersectionSnapshots, underlayView, repeatDisplay, toolPrefs, dividePrefs, fillDefaults, fairDefaults, pointTargets, name, named, spaceDefaults, repeatPaint } = this.doc;
+    const leaving = this.doc;
     this.doc = snapshot;
     // The artwork's name is not history either (Phase 5.5).
     this.doc.name = name;
@@ -582,7 +584,9 @@ export class AppController {
     this.doc.intersectionView = intersectionView;
     this.doc.intersectionSnapshots = intersectionSnapshots;
     this.doc.underlayView = underlayView;
-    this.doc.repeatDisplay = repeatDisplay;
+    // Each Repeat source has its own appearance: across a change of source it goes with its source.
+    this.doc.repeatDisplay = carryAppearanceAcross(leaving, snapshot, repeatDisplay);
+    this.doc.repeatPaint = repeatPaint;
     // Tool preferences aren't history either (Phase 5.2: the remembered radius/N survive undo).
     this.doc.toolPrefs = toolPrefs;
     this.doc.dividePrefs = dividePrefs;

@@ -31,12 +31,13 @@ import { showToast } from './toast.ts';
 import { isInConfirmLayer, openConfirmSheet } from './confirmsheet.ts';
 import { onTap } from './tap.ts';
 import { color, fairPalette, stroke } from '../render/tokens.ts';
-import { defaultLatticeVectors, isSixtyDegreeFamily, type LatticeFamily } from '../geometry/lattice.ts';
+import { isSixtyDegreeFamily, type LatticeFamily } from '../geometry/lattice.ts';
 import { rotationFractionLabel } from '../render/repeatRenderer.ts';
 import { asReference, intersectionCopies, layoutOf, MAX_CONSTRUCTIONS, placedAt, PRIMARY, referenceCurrent, sliderToSpread, SPREAD_SLIDER_MAX, spreadToSlider, withAddedCopy, withCopySetting, withLayout, withoutCopy, withSpread } from '../geometry/intersection.ts';
 import { canMoveAgainst, convertPick, isPointPick, planMatchEdge, planSnap, resolvePick, type PickKind } from '../geometry/intersectionSnap.ts';
 import { PICK_REACH_PX } from '../interaction/tools/intersectionTool.ts';
 import { repeatSource, type RepeatSource } from '../geometry/repeatUnit.ts';
+import { suggestForFamily, switchRepeatSource } from '../geometry/repeatSetup.ts';
 import { artworksUsing, deleteReference, inLibrary, listReferences, setReferenceScope, type ReferenceRecord } from '../persist/referenceStore.ts';
 import { importReference, ReferenceImportError } from '../reference/importReference.ts';
 import { forgetUnderlayImage, initialUnderlay, onUnderlayImage, underlayImage, underlayViewOf, withUnderlayView } from '../render/underlay.ts';
@@ -1935,7 +1936,9 @@ export function buildShell(
       controller.commit((d) => {
         d.repeat.family = f.id;
         if (keepVectors) return;
-        const { a, b } = defaultLatticeVectors(d, f.id);
+        // The family's own suggested spacing — for what is being repeated (the motif, or the
+        // Intersect arrangement's extent).
+        const { a, b } = suggestForFamily(d, f.id);
         d.repeat.a = a;
         d.repeat.b = b;
       });
@@ -2043,9 +2046,9 @@ export function buildShell(
       if (repeatSource(controller.doc) === id) return;
       closeAnyPopover();
       controller.spaceMode = false;
-      // A way of repeating, kept with Repeat's own settings: no geometry is made or changed.
-      controller.doc.repeatDisplay = { ...controller.doc.repeatDisplay, source: id };
-      controller.notify();
+      // One Undo step; each source keeps its own spacing, appearance and colouring. No geometry is
+      // made or changed.
+      switchRepeatSource(controller, id);
     });
     sourceBtns.set(id, b);
     sourceSeg.appendChild(b);

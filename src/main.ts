@@ -48,6 +48,7 @@ import { setupCanvasDPR } from './render/canvasSetup.ts';
 import { attachDiagnostics } from './ui/diagnostics.ts';
 import { computeVisibleBounds, discBounds, turned } from './geometry/bounds.ts';
 import { composePose, ensureRepeatDefaults, firstEntryBounds, fitInstances, motifRadius } from './geometry/lattice.ts';
+import { refreshSuggestedSpacing } from './geometry/repeatSetup.ts';
 import { repeatUnit } from './geometry/repeatUnit.ts';
 import { preventSafariPageZoom } from './interaction/preventPageZoom.ts';
 import { migrateLegacyFillKeys } from './geometry/regions.ts';
@@ -243,6 +244,8 @@ function boot(doc: Doc, opts: { fitToScreen: boolean; history?: { undo: Doc[]; r
       if (ws === 'intersection' && controller.tool !== 'select') controller.setTool('select');
       if (ws === 'repeat') {
         ensureRepeatDefaults(controller.doc);
+        // A suggested spacing follows the Intersect arrangement as it is now (an adjusted one stays).
+        refreshSuggestedSpacing(controller.doc);
         if (firstEntry) fitRepeatFirstEntry(controller, canvas, overlay);
       }
       // Intersection has its own arrangement (never Repeat's lattice) and its own camera.
@@ -797,6 +800,11 @@ function upgradeSnapshot(doc: Doc, recordNamed: boolean | undefined): void {
   }
   // Phase 5.5: artworks saved before naming existed were never named by the participant.
   if (doc.named === undefined) doc.named = recordNamed ?? false;
+  // Repeat's Source moved from the display (not history) into the artwork's own setup.
+  if (doc.repeatDisplay.source !== undefined) {
+    if (doc.repeatDisplay.source === 'intersect' && !doc.repeatSetup) doc.repeatSetup = { source: 'intersect' };
+    delete doc.repeatDisplay.source;
+  }
 }
 
 // vNext Phase 4A: development/test access to process histories (no user-facing playback yet).
