@@ -39,6 +39,7 @@ import { PICK_REACH_PX } from '../interaction/tools/intersectionTool.ts';
 import { repeatSource, type RepeatSource } from '../geometry/repeatUnit.ts';
 import { suggestForFamily, switchRepeatSource } from '../geometry/repeatSetup.ts';
 import { repeatPaint } from '../interaction/tools/repeatTool.ts';
+import type { PatternBy } from '../geometry/repeatColour.ts';
 import { artworksUsing, deleteReference, inLibrary, listReferences, setReferenceScope, type ReferenceRecord } from '../persist/referenceStore.ts';
 import { importReference, ReferenceImportError } from '../reference/importReference.ts';
 import { forgetUnderlayImage, initialUnderlay, onUnderlayImage, underlayImage, underlayViewOf, withUnderlayView } from '../render/underlay.ts';
@@ -1991,7 +1992,7 @@ export function buildShell(
   colourKind.setAttribute('role', 'group');
   colourKind.setAttribute('aria-label', 'Colouring');
   const colourKindBtns = new Map<'motif' | 'pattern', HTMLButtonElement>();
-  for (const [id, label] of [['motif', 'Motif colouring']] as const) {
+  for (const [id, label] of [['motif', 'Motif'], ['pattern', 'Pattern']] as const) {
     const b = document.createElement('button');
     b.textContent = label;
     onTap(b, () => setColourMode(id));
@@ -2006,6 +2007,43 @@ export function buildShell(
   colourKindRow.appendChild(colourKind);
   colourKindRow.appendChild(colourDone);
   repeatPanel.appendChild(colourKindRow);
+
+  // Pattern Colouring: which copies form the second group — by their place in the lattice.
+  const patternRow = document.createElement('div');
+  patternRow.className = 'space-row';
+  const patternLabel = document.createElement('span');
+  patternLabel.className = 'space-label';
+  patternLabel.textContent = 'Alternate';
+  const patternSeg = document.createElement('div');
+  patternSeg.className = 'segmented-mini';
+  patternSeg.setAttribute('role', 'group');
+  patternSeg.setAttribute('aria-label', 'Alternate');
+  const patternBtns = new Map<PatternBy, HTMLButtonElement>();
+  for (const [id, label, title] of [
+    ['copies', 'Copies', 'Every other copy'],
+    ['rows', 'Rows', 'Every other row'],
+    ['columns', 'Columns', 'Every other column'],
+  ] as const) {
+    const b = document.createElement('button');
+    b.textContent = label;
+    b.title = title;
+    onTap(b, () => setPatternBy(id));
+    patternBtns.set(id, b);
+    patternSeg.appendChild(b);
+  }
+  patternRow.appendChild(patternLabel);
+  patternRow.appendChild(patternSeg);
+  repeatPanel.appendChild(patternRow);
+  /** How copies alternate — a choice about the pattern, so one Undo step (and a recorded moment). */
+  function setPatternBy(by: PatternBy): void {
+    const now = controller.doc.repeatSetup?.colour?.pattern;
+    if (now?.by === by) return;
+    controller.commit((d) => {
+      const c = structuredClone(d.repeatSetup?.colour ?? {});
+      c.pattern = { by, regions: c.pattern?.regions ?? {} };
+      d.repeatSetup = { ...(d.repeatSetup ?? { source: repeatSource(d) }), colour: c };
+    });
+  }
 
   const colourToolRow = document.createElement('div');
   colourToolRow.className = 'space-row';
@@ -2056,6 +2094,12 @@ export function buildShell(
     controller.repeatColourMode = mode;
     if (mode) controller.spaceMode = false;
     if (mode === 'motif') showToast('Tap a region to colour it in every copy');
+    if (mode === 'pattern') {
+      // Copies alternating is where a pattern starts; rows or columns are one tap away.
+      const p = controller.doc.repeatSetup?.colour?.pattern;
+      if (!p || p.by === 'none') setPatternBy('copies');
+      showToast('Marked copies are the second group · tap a region to colour it there');
+    }
     controller.notify();
   }
   function refreshColourRows(): void {
@@ -2063,6 +2107,8 @@ export function buildShell(
     colouringBtn.classList.toggle('active', !!mode);
     colouringBtn.setAttribute('aria-pressed', String(!!mode));
     for (const [id, b] of colourKindBtns) b.classList.toggle('active', mode === id);
+    const by = controller.doc.repeatSetup?.colour?.pattern?.by;
+    for (const [id, b] of patternBtns) b.classList.toggle('active', by === id);
     const paint = repeatPaint(controller);
     paintDot.classList.toggle('none', !paint);
     paintDot.style.background = paint ?? '';
@@ -3098,6 +3144,7 @@ export function buildShell(
     spaceRow.style.display = inRepeat && !colouring ? '' : 'none';
     colourKindRow.style.display = colouring ? '' : 'none';
     colourToolRow.style.display = colouring ? '' : 'none';
+    patternRow.style.display = colouring && controller.repeatColourMode === 'pattern' ? '' : 'none';
     if (colouring) refreshColourRows();
     // Spread arranges the instances: it belongs to Select's instance arranging — never under a
     // construction tool's ribbon, nor while an alignment (Parallel · Join, Point Snap, Match Edge)

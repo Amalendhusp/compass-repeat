@@ -558,7 +558,7 @@ export function renderRepeat(ctx: CanvasRenderingContext2D, controller: AppContr
   const detail = instances.length > LOD_COPIES ? 0.5 : 1;
   // Pattern Colouring: copies of the second group are drawn with their own colours.
   const colour = doc.repeatSetup?.colour;
-  const grouped = colouringInUse(colour) && !!colour?.pattern && colour.pattern.by !== 'none';
+  const grouped = !!colour?.pattern && colour.pattern.by !== 'none' && (colouringInUse(colour) || controller.repeatColourMode === 'pattern');
   const groupOf = (pose: InstancePose): 0 | 1 => (grouped ? patternGroup(colour, pose.i, pose.j) : 0);
   const bitmaps = exp ? null : ([0, 1] as const).map((g) => (g === 0 || grouped ? motifSprite(doc, display, view.zoom, detail, controller.viewGesture, showFills, showStrokes, unit, g) : null));
 
@@ -599,6 +599,23 @@ export function renderRepeat(ctx: CanvasRenderingContext2D, controller: AppContr
       const reference = instancePose(repeat, 0, 0);
       if (unit) for (const member of unit.members) drawFrameOutline(ctx, view, pivot, composePose(reference, member), doc, 0.6);
       else drawFrameOutline(ctx, view, pivot, reference, doc, 0.6);
+    }
+  }
+  // Pattern Colouring, while colouring: a quiet mark on each copy of the second group (screen only).
+  if (!exp && controller.repeatColourMode === 'pattern' && grouped) {
+    const ink = lightness(display.background) < 0.45 ? color.paper : color.ink;
+    for (const pose of instances) {
+      if (groupOf(pose) !== 1) continue;
+      const at = worldToScreen(view, { x: pivot.x + pose.translate.x, y: pivot.y + pose.translate.y });
+      ctx.beginPath();
+      ctx.arc(at.x, at.y, 6, 0, Math.PI * 2);
+      ctx.fillStyle = ink;
+      ctx.globalAlpha = 0.75;
+      ctx.fill();
+      ctx.globalAlpha = 1;
+      ctx.lineWidth = 2;
+      ctx.strokeStyle = display.background;
+      ctx.stroke();
     }
   }
   if (!exp && display.handles && !controller.spaceMode && !controller.repeatColourMode) {
