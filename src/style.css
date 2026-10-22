@@ -2032,42 +2032,51 @@ canvas.stage {
 }
 /* Reference Transform: announced plainly while the canvas's fingers move the reference. */
 .transform-bar {
-  align-self: center;
+  position: relative;
+  align-self: flex-end;
   display: flex;
-  flex-wrap: wrap; /* on a narrow phone the controls go under the text rather than off the screen */
   align-items: center;
-  justify-content: flex-end;
-  row-gap: 6px;
-  gap: 12px;
-  padding: 6px 6px 6px 14px;
+  gap: 6px;
+  padding: 4px;
   background: var(--paper);
   border: 1px solid var(--ink);
   border-radius: 14px;
   box-shadow: 0 6px 18px rgba(30, 42, 54, 0.14);
-  max-width: calc(100vw - 24px);
+  max-width: calc(100vw - 16px);
 }
-.transform-text {
-  display: flex;
-  flex: 1 1 180px;
-  flex-direction: column;
-  min-width: 0;
-}
-.transform-title {
-  font-size: 11px;
-  font-weight: 700;
-  letter-spacing: 0.06em;
-  text-transform: uppercase;
-  color: var(--ink);
-}
-.transform-hint {
-  font-size: 12px;
-  color: var(--muted);
+.transform-mode button {
+  height: 34px;
+  padding: 0 11px;
   white-space: nowrap;
-  overflow: hidden;
-  text-overflow: ellipsis;
+}
+.transform-remove-anchor {
+  height: 34px;
+  white-space: nowrap;
+}
+/* What the fingers do: shown briefly above the row when Transform begins or the mode changes. */
+.transform-hint {
+  position: absolute;
+  right: 0;
+  bottom: calc(100% + 6px);
+  width: max-content;
+  max-width: calc(100vw - 24px);
+  padding: 5px 10px;
+  border-radius: 10px;
+  background: var(--ink);
+  color: var(--paper);
+  font-size: 12px;
+  line-height: 1.35;
+  opacity: 0;
+  transform: translateY(4px);
+  transition: opacity 0.25s ease, transform 0.25s ease;
+  pointer-events: none;
+}
+.transform-hint.show {
+  opacity: 1;
+  transform: none;
 }
 .transform-done {
-  height: 36px;
+  height: 34px;
   padding: 0 16px;
   font-weight: 600;
 }

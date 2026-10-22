@@ -1768,58 +1768,75 @@ export function buildShell(
     controller.notifyView();
   });
 
-  // Reference Transform: an explicit mode, plainly announced, with an obvious way out. While on,
-  // every finger on the canvas moves the reference (main.ts → referenceTakeover); Done locks it, and
-  // the tools and the camera have the canvas again.
+  // Reference Transform: an explicit mode with an obvious way out — a compact row at the canvas's
+  // bottom right: [Move image | Anchors] says which of its two modes is on, Done locks the image.
+  // While Move image is on, every finger on the canvas moves the reference (main.ts →
+  // referenceTakeover); while Anchors is on, one finger places anchors and two move the camera. What
+  // the fingers do is said briefly, in a small bubble, when Transform begins or the mode changes.
   const transformBar = document.createElement('div');
   transformBar.className = 'transform-bar';
   transformBar.style.display = 'none';
-  const transformText = document.createElement('div');
-  transformText.className = 'transform-text';
-  const transformTitle = document.createElement('span');
-  transformTitle.className = 'transform-title';
-  transformTitle.textContent = 'Reference · Transform';
-  const transformHint = document.createElement('span');
+  const transformHint = document.createElement('div');
   transformHint.className = 'transform-hint';
+  transformHint.setAttribute('role', 'status');
   // A desktop has no second finger on the canvas: say what the trackpad and keys do instead.
   const finePointer = typeof matchMedia === 'function' && matchMedia('(hover: hover) and (pointer: fine)').matches;
   const moveHint = finePointer ? 'Drag to move · pinch or ⌘-scroll to scale · ⌥-scroll to turn' : 'Drag to move · two fingers to scale and turn';
-  const anchorHint = 'Tap the image to add an anchor · drag one to refine it';
-  transformHint.textContent = moveHint;
-  transformText.appendChild(transformTitle);
-  transformText.appendChild(transformHint);
+  const anchorHint = finePointer ? 'Press the image to place an anchor · slide to refine' : 'Press the image to place an anchor · slide to refine · two fingers zoom';
+  const HINT_MS = 3800;
+  let hintTimer: ReturnType<typeof setTimeout> | null = null;
+  function showTransformHint(): void {
+    transformHint.textContent = controller.referenceAnchorMode ? anchorHint : moveHint;
+    transformHint.classList.add('show');
+    if (hintTimer) clearTimeout(hintTimer);
+    hintTimer = setTimeout(() => transformHint.classList.remove('show'), HINT_MS);
+  }
   const transformDone = document.createElement('button');
   transformDone.className = 'space-chip active transform-done';
   transformDone.textContent = 'Done';
   transformDone.setAttribute('aria-label', 'Done — lock the reference');
   onTap(transformDone, () => setReferenceTransform(false));
-  // Anchors: places marked in the image to align it by (reference/anchors.ts) — placed and refined
-  // here, then used by the gentle snapping while the image is moved.
+  // The two modes. Anchors: places marked in the image to align it by (reference/anchors.ts) —
+  // placed and refined here, then used by the gentle snapping while the image is moved.
+  const transformMode = document.createElement('div');
+  transformMode.className = 'segmented-mini transform-mode';
+  transformMode.setAttribute('role', 'group');
+  transformMode.setAttribute('aria-label', 'Transform mode');
+  const moveBtn = document.createElement('button');
+  moveBtn.className = 'transform-move';
+  moveBtn.textContent = 'Move image';
   const anchorsBtn = document.createElement('button');
-  anchorsBtn.className = 'space-chip transform-anchors';
+  anchorsBtn.className = 'transform-anchors';
   anchorsBtn.textContent = 'Anchors';
-  anchorsBtn.setAttribute('aria-pressed', 'false');
-  onTap(anchorsBtn, () => {
-    controller.referenceAnchorMode = !controller.referenceAnchorMode;
+  const setAnchorMode = (on: boolean) => {
+    if (controller.referenceAnchorMode === on) return;
+    controller.referenceAnchorMode = on;
     controller.anchorSelected = null;
     controller.anchorDraft = null;
     controller.anchorLoupe = null;
     refreshTransformBar();
+    showTransformHint();
     controller.notify();
-  });
+  };
+  onTap(moveBtn, () => setAnchorMode(false));
+  onTap(anchorsBtn, () => setAnchorMode(true));
+  transformMode.appendChild(moveBtn);
+  transformMode.appendChild(anchorsBtn);
   const removeAnchorBtn = document.createElement('button');
   removeAnchorBtn.className = 'space-chip transform-remove-anchor';
-  removeAnchorBtn.textContent = 'Remove anchor';
+  removeAnchorBtn.textContent = 'Remove';
+  removeAnchorBtn.setAttribute('aria-label', 'Remove anchor');
   onTap(removeAnchorBtn, () => removeSelectedAnchor(controller));
   function refreshTransformBar(): void {
     const anchoring = controller.referenceAnchorMode;
+    moveBtn.classList.toggle('active', !anchoring);
+    moveBtn.setAttribute('aria-pressed', String(!anchoring));
     anchorsBtn.classList.toggle('active', anchoring);
     anchorsBtn.setAttribute('aria-pressed', String(anchoring));
-    transformHint.textContent = anchoring ? anchorHint : moveHint;
     removeAnchorBtn.style.display = anchoring && controller.anchorSelected ? '' : 'none';
   }
-  transformBar.appendChild(transformText);
-  transformBar.appendChild(anchorsBtn);
+  transformBar.appendChild(transformHint);
+  transformBar.appendChild(transformMode);
   transformBar.appendChild(removeAnchorBtn);
   transformBar.appendChild(transformDone);
   function setReferenceTransform(on: boolean): void {
@@ -1833,6 +1850,8 @@ export function buildShell(
     refreshTransformBar();
     controller.underlayDraft = null;
     transformBar.style.display = on ? '' : 'none';
+    if (on) showTransformHint();
+    else transformHint.classList.remove('show');
     referencePanelBtn.classList.toggle('transforming', on);
     controller.notifyView();
   }
