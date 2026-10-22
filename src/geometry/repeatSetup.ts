@@ -6,8 +6,8 @@
 // - The first time a source is chosen, its spacing is suggested for what it repeats: for the motif,
 //   Repeat's usual comfortable spacing; for an Intersect arrangement, one worked out from the
 //   arrangement's actual extent — every instance where it is placed and turned. The suggestion keeps
-//   the lattice's shape and only scales it, so that the arrangement's bounding boxes just clear one
-//   another (plus a little room). It is a starting point, not a claim that the copies tessellate or
+//   the lattice's shape and orientation and only scales it, so that the arrangement's bounding boxes
+//   just clear one another (plus a little room). It is a starting point, not a claim that the copies tessellate or
 //   never touch: their actual shapes may still overlap or leave gaps, and the participant is free to
 //   bring them closer, overlap them or spread them out.
 // - While the spacing is still exactly as suggested it follows the arrangement: change the Intersect
@@ -116,16 +116,18 @@ function arrangementBox(doc: Doc, repeat: RepeatSystem): { w: number; h: number 
 /** A little room between the suggested neighbours' boxes. */
 const ROOM = 1.05;
 
-/** The lattice vectors Repeat suggests for a source and family. */
-export function suggestedLattice(doc: Doc, family: LatticeFamily, source: RepeatSourceKind): { a: Vec2; b: Vec2 } {
+/** The lattice vectors Repeat suggests for a source and family — for the Intersect arrangement,
+ * `shape` (default: the family's own) scaled to suit it, its proportions and orientation kept. */
+export function suggestedLattice(doc: Doc, family: LatticeFamily, source: RepeatSourceKind, shape?: { a: Vec2; b: Vec2 }): { a: Vec2; b: Vec2 } {
   const base = defaultLatticeVectors(doc, family);
   if (source === 'motif') return base;
-  // Keep the family's shape (and the motif's usual direction); scale it until no neighbour's
-  // bounding box overlaps another's.
-  const len = Math.hypot(base.a.x, base.a.y);
-  const e1 = { x: base.a.x / len, y: base.a.y / len };
-  const e2 = { x: base.b.x / len, y: base.b.y / len };
-  const { w, h } = arrangementBox(doc, { ...doc.repeat, family, a: base.a, b: base.b });
+  const from = shape ?? base;
+  // Scale the shape until no neighbour's bounding box overlaps another's.
+  const len = Math.hypot(from.a.x, from.a.y);
+  if (!(len > 1e-9)) return base;
+  const e1 = { x: from.a.x / len, y: from.a.y / len };
+  const e2 = { x: from.b.x / len, y: from.b.y / len };
+  const { w, h } = arrangementBox(doc, { ...doc.repeat, family, a: from.a, b: from.b });
   let scale = 0;
   for (let i = -3; i <= 3; i++) {
     for (let j = -3; j <= 3; j++) {
@@ -162,7 +164,7 @@ export function switchRepeatSource(controller: AppController, to: RepeatSourceKi
       // First time: the lattice's family, rule and rotation carry over; the spacing is suggested for
       // this source; Space colours belong to the motif's own repeat. The appearance carries over.
       const family = (d.repeat.family ?? 'square') as LatticeFamily;
-      const v = suggestedLattice({ ...d, repeatSetup: setup }, family, to);
+      const v = suggestedLattice({ ...d, repeatSetup: setup }, family, to, to === 'intersect' ? { a: d.repeat.a, b: d.repeat.b } : undefined);
       d.repeat = { ...d.repeat, a: v.a, b: v.b, motif: { ...d.repeat.motif }, rule: { ...d.repeat.rule }, gapFills: new Map() };
       setup.auto = { a: { ...v.a }, b: { ...v.b } };
       d.repeatDisplay = withAppearance(d.repeatDisplay, appearanceOf(d.repeatDisplay));
@@ -180,7 +182,7 @@ export function switchRepeatSource(controller: AppController, to: RepeatSourceKi
 export function refreshSuggestedSpacing(doc: Doc): boolean {
   const setup = doc.repeatSetup;
   if (!setup || setup.source !== 'intersect' || !spacingIsSuggested(doc) || doc.repeat.family === undefined) return false;
-  const v = suggestedLattice(doc, doc.repeat.family as LatticeFamily, 'intersect');
+  const v = suggestedLattice(doc, doc.repeat.family as LatticeFamily, 'intersect', { a: doc.repeat.a, b: doc.repeat.b });
   if (near(v.a, doc.repeat.a) && near(v.b, doc.repeat.b)) return false;
   doc.repeat = { ...doc.repeat, a: v.a, b: v.b };
   doc.repeatSetup = { ...setup, auto: { a: { ...v.a }, b: { ...v.b } } };
