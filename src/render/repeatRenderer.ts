@@ -32,6 +32,8 @@ import {
   type InstancePose,
 } from '../geometry/lattice.ts';
 import { repeatUnit, type RepeatUnit } from '../geometry/repeatUnit.ts';
+import { colouringInUse, patternGroup, regionColour, regionKey } from '../geometry/repeatColour.ts';
+import type { FaceSig, RepeatColouring } from '../model/types.ts';
 import { color, stroke } from './tokens.ts';
 import { makePath } from './svgContext.ts';
 import type { ArtworkExport } from './renderer.ts';
@@ -358,7 +360,7 @@ function flatMotif(doc: Doc): FlatMotif {
     f = {
       strokes,
       regions,
-      holesOf: filled && filled.size > 0 ? computeDirectHoles(regions) : null,
+      holesOf: (filled && filled.size > 0) || colouringInUse(doc.repeatSetup?.colour) ? computeDirectHoles(regions) : null,
       maxStroke: strokes.reduce((m, st) => Math.max(m, st.state.stroke?.width ?? stroke.fairDefault), 0),
     };
     flatCache.set(doc, f);
@@ -368,16 +370,28 @@ function flatMotif(doc: Doc): FlatMotif {
 
 const IDENTITY: InstancePose = { i: 0, j: 0, translate: { x: 0, y: 0 }, rotation: 0, mirror: false };
 
+/** Repeat's own colour for a region of this copy (undefined: as designed) — see repeatColour.ts. */
+type RegionPaint = (sig: FaceSig) => string | null | undefined;
+
+/** The paint for one instance (null: the motif itself) of a copy in `group`, or null if Repeat
+ * colours nothing. */
+function paintFor(colour: RepeatColouring | undefined, instanceKey: string | null, group: 0 | 1): RegionPaint | null {
+  if (!colouringInUse(colour)) return null;
+  return (sig) => regionColour(colour, regionKey(instanceKey, sig), group);
+}
+
 /** One copy's fills and Fair strokes, exactly as the vector path draws them. `lineScale` converts
- * the on-screen stroke widths into this target's pixels (1 on screen; DPR × detail in a sprite). */
-function drawCopy(ctx: CanvasRenderingContext2D, doc: Doc, view: ViewTransform, pose: InstancePose, flat: FlatMotif, display: RepeatDisplay, showFills: boolean, showStrokes: boolean, lineScale: number, skip?: ReadonlySet<number> | null): void {
+ * the on-screen stroke widths into this target's pixels (1 on screen; DPR × detail in a sprite).
+ * `paint`: Repeat's own region colours over the design's fills (Repeat Colouring). */
+function drawCopy(ctx: CanvasRenderingContext2D, doc: Doc, view: ViewTransform, pose: InstancePose, flat: FlatMotif, display: RepeatDisplay, showFills: boolean, showStrokes: boolean, lineScale: number, skip?: ReadonlySet<number> | null, paint?: RegionPaint | null): void {
   const pivot = doc.frame.origin;
   const filledMap = doc.fills.get(doc.activeColourway);
-  if (showFills && flat.holesOf && filledMap) {
+  if (showFills && flat.holesOf && (filledMap || paint)) {
     // Effective fill opacity = the region's own alpha (in its colour) × Repeat's Fill opacity.
     ctx.globalAlpha = display.fillOpacity;
     for (const region of flat.regions) {
-      const colour = filledMap.get(region.sig);
+      const own = paint?.(region.sig);
+      const colour = own === undefined ? filledMap?.get(region.sig) : own;
       if (!colour) continue;
       const path = makePath(ctx);
       appendTransformedLoop(path, view, pivot, pose, region.samplePoints);
@@ -450,9 +464,10 @@ function unitSkips(doc: Doc, flat: FlatMotif, unit: RepeatUnit): (Set<number> | 
 
 /** A whole unit at one lattice placement: each instance as the motif is drawn, placed by its own
  * placement and then the lattice's. */
-function drawUnit(ctx: CanvasRenderingContext2D, doc: Doc, view: ViewTransform, pose: InstancePose, unit: RepeatUnit, flat: FlatMotif, display: RepeatDisplay, showFills: boolean, showStrokes: boolean, lineScale: number): void {
+function drawUnit(ctx: CanvasRenderingContext2D, doc: Doc, view: ViewTransform, pose: InstancePose, unit: RepeatUnit, flat: FlatMotif, display: RepeatDisplay, showFills: boolean, showStrokes: boolean, lineScale: number, group: 0 | 1): void {
   const skips = unitSkips(doc, flat, unit);
-  unit.members.forEach((member, k) => drawCopy(ctx, doc, view, composePose(pose, member), flat, display, showFills, showStrokes, lineScale, skips[k]));
+  const colour = doc.repeatSetup?.colour;
+  unit.members.forEach((member, k) => drawCopy(ctx, doc, view, composePose(pose, member), flat, display, showFills, showStrokes, lineScale, skips[k], paintFor(colour, unit.keys[k]!, group)));
 }
 
 interface Sprite {
@@ -462,7 +477,8 @@ interface Sprite {
   zoom: number; // the view zoom it was drawn for
   cssSize: number; // its size on screen at that zoom, in CSS px
 }
-let sprite: Sprite | null = null;
+/** One bitmap per Pattern Colouring group (only the first while copies all look alike). */
+const sprites = new Map<0 | 1, Sprite>();
 const MAX_SPRITE_PX = 2048;
 /** Level of detail: with this many copies on screen, the shared bitmap is drawn at half resolution. */
 const LOD_COPIES = 150;
@@ -472,9 +488,10 @@ const LOD_COPIES = 150;
  * mirrored per copy as its pose says). While fingers are pinching/panning, the last bitmap is simply
  * scaled (`allowStale`) and redrawn sharp on release. Null when it would be too large to be worth it.
  */
-function motifSprite(doc: Doc, display: RepeatDisplay, zoom: number, detail: number, allowStale: boolean, showFills: boolean, showStrokes: boolean, unit: RepeatUnit | null = null): Sprite | null {
+function motifSprite(doc: Doc, display: RepeatDisplay, zoom: number, detail: number, allowStale: boolean, showFills: boolean, showStrokes: boolean, unit: RepeatUnit | null = null, group: 0 | 1 = 0): Sprite | null {
   // With a unit (Repeat from Intersect) the bitmap is the whole unit, about the lattice position.
   const key = `${display.artwork}|${display.fillOpacity}|${display.strokeColour ?? ''}|${display.strokeWidth ?? ''}|${detail}${unit ? `|unit:${unit.key}` : ''}`;
+  const sprite = sprites.get(group) ?? null;
   const sameKind = !!sprite && sprite.key.includes('|unit:') === !!unit;
   if (sprite && sprite.doc === doc && ((allowStale && sameKind) || (sprite.key === key && Math.abs(sprite.zoom / zoom - 1) < 0.005))) return sprite;
   const flat = flatMotif(doc);
@@ -491,10 +508,11 @@ function motifSprite(doc: Doc, display: RepeatDisplay, zoom: number, detail: num
   sctx.clearRect(0, 0, px, px);
   const pivot = doc.frame.origin;
   const local: ViewTransform = { zoom: zoom * scale, pan: { x: -pivot.x, y: -pivot.y }, w: px, h: px };
-  if (unit) drawUnit(sctx, doc, local, IDENTITY, unit, flat, display, showFills, showStrokes, scale);
-  else drawCopy(sctx, doc, local, IDENTITY, flat, display, showFills, showStrokes, scale);
-  sprite = { canvas, doc, key, zoom, cssSize: px / scale };
-  return sprite;
+  if (unit) drawUnit(sctx, doc, local, IDENTITY, unit, flat, display, showFills, showStrokes, scale, group);
+  else drawCopy(sctx, doc, local, IDENTITY, flat, display, showFills, showStrokes, scale, null, paintFor(doc.repeatSetup?.colour, null, group));
+  const made: Sprite = { canvas, doc, key, zoom, cssSize: px / scale };
+  sprites.set(group, made);
+  return made;
 }
 
 /** On screen, `exp` is absent. With `exp` (Phase 5.3 export): the same field at the same zoom/pan,
@@ -538,7 +556,11 @@ export function renderRepeat(ctx: CanvasRenderingContext2D, controller: AppContr
   layers?.underlay(ctx, view);
 
   const detail = instances.length > LOD_COPIES ? 0.5 : 1;
-  const bitmap = exp ? null : motifSprite(doc, display, view.zoom, detail, controller.viewGesture, showFills, showStrokes, unit);
+  // Pattern Colouring: copies of the second group are drawn with their own colours.
+  const colour = doc.repeatSetup?.colour;
+  const grouped = colouringInUse(colour) && !!colour?.pattern && colour.pattern.by !== 'none';
+  const groupOf = (pose: InstancePose): 0 | 1 => (grouped ? patternGroup(colour, pose.i, pose.j) : 0);
+  const bitmaps = exp ? null : ([0, 1] as const).map((g) => (g === 0 || grouped ? motifSprite(doc, display, view.zoom, detail, controller.viewGesture, showFills, showStrokes, unit, g) : null));
 
   drawArtworkLayer(ctx, layers, (ctx) => {
     // Spaces sit on the background, under every motif. While a handle or the ring is being dragged
@@ -547,6 +569,8 @@ export function renderRepeat(ctx: CanvasRenderingContext2D, controller: AppContr
     if (showFills && !drag && !rotating && !unit) drawSpaces(ctx, doc, view);
 
     for (const pose of instances) {
+      const group = groupOf(pose);
+      const bitmap = bitmaps?.[group] ?? null;
       if (bitmap) {
         const at = worldToScreen(view, { x: pivot.x + pose.translate.x, y: pivot.y + pose.translate.y });
         const size = bitmap.cssSize * (view.zoom / bitmap.zoom);
@@ -557,9 +581,9 @@ export function renderRepeat(ctx: CanvasRenderingContext2D, controller: AppContr
         ctx.drawImage(bitmap.canvas, -size / 2, -size / 2, size, size);
         ctx.restore();
       } else if (unit) {
-        drawUnit(ctx, doc, view, pose, unit, flat, display, showFills, showStrokes, 1);
+        drawUnit(ctx, doc, view, pose, unit, flat, display, showFills, showStrokes, 1, group);
       } else {
-        drawCopy(ctx, doc, view, pose, flat, display, showFills, showStrokes, 1);
+        drawCopy(ctx, doc, view, pose, flat, display, showFills, showStrokes, 1, null, paintFor(colour, null, group));
       }
     }
   });
@@ -577,7 +601,7 @@ export function renderRepeat(ctx: CanvasRenderingContext2D, controller: AppContr
       else drawFrameOutline(ctx, view, pivot, reference, doc, 0.6);
     }
   }
-  if (!exp && display.handles && !controller.spaceMode) {
+  if (!exp && display.handles && !controller.spaceMode && !controller.repeatColourMode) {
     drawLatticeHandles(ctx, controller, repeat, view);
     drawRotationRing(ctx, controller, view);
   }

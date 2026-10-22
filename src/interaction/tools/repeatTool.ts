@@ -11,6 +11,8 @@ import { contactModel, motifRadius, snapRotation, type ContactModel } from '../.
 import { dist } from '../../geometry/vec.ts';
 import { computeSpaces, spaceAt } from '../../geometry/spaces.ts';
 import { withAlpha } from '../../model/colour.ts';
+import { patternGroup, regionAtInRepeat, toggleRegion } from '../../geometry/repeatColour.ts';
+import { repeatSourceOf } from '../../geometry/repeatSetup.ts';
 import { showToast } from '../../ui/toast.ts';
 import type { Gesture, ToolModule } from './types.ts';
 
@@ -224,6 +226,39 @@ function spaceTapGesture(controller: AppController, view: ViewTransform): Gestur
   };
 }
 
+/** The colour Repeat Colouring applies next (null = unfilled). */
+export const REPEAT_PAINT_DEFAULT = '#1E3A6E';
+export function repeatPaint(controller: AppController): string | null {
+  const p = controller.doc.repeatPaint;
+  return p ? p.colour : REPEAT_PAINT_DEFAULT;
+}
+
+/** Repeat Colouring: a tap colours the region under it — in every copy (Motif Colouring), or, in
+ * Pattern Colouring, in every copy of the group the tapped copy belongs to — or, if that region
+ * already has exactly this colour there, returns it to as designed. One Undo step; only Repeat's
+ * own colouring changes, never the construction or its fills. */
+function colourTapGesture(controller: AppController, view: ViewTransform): Gesture {
+  return {
+    onMove() {},
+    onUp(sp, wasDrag) {
+      if (wasDrag) return;
+      const doc = controller.doc;
+      const hit = regionAtInRepeat(doc, view, sp);
+      if (!hit) {
+        showToast('Not a closed region of the design');
+        return;
+      }
+      const colour = doc.repeatSetup?.colour;
+      const group = controller.repeatColourMode === 'pattern' ? patternGroup(colour, hit.i, hit.j) : 0;
+      const paint = repeatPaint(controller);
+      controller.commit((d) => {
+        d.repeatSetup = { ...(d.repeatSetup ?? { source: repeatSourceOf(d) }), colour: toggleRegion(d.repeatSetup?.colour, hit.key, paint, group) };
+      });
+    },
+    onCancel() {},
+  };
+}
+
 export const repeatTool: ToolModule = {
   id: 'select', // never looked up by id — main.ts routes to this tool directly for the Repeat workspace
   hint() {
@@ -231,6 +266,7 @@ export const repeatTool: ToolModule = {
   },
   beginGesture(controller, view, screenPos): Gesture | null {
     if (controller.spaceMode) return spaceTapGesture(controller, view);
+    if (controller.repeatColourMode) return colourTapGesture(controller, view);
     if (!controller.doc.repeatDisplay.handles) return null; // hidden handles are not interactive
     const doc = controller.doc;
     const pivot = doc.frame.origin;

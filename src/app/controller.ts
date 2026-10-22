@@ -323,6 +323,9 @@ export class AppController {
   /** Phase 5.6 item 19: Repeat's Space action — while on, a one-finger tap colours negative-space
    * classes instead of reaching the lattice handles. Session state, never saved. */
   spaceMode = false;
+  /** Repeat Colouring (geometry/repeatColour.ts): while on, a tap in Repeat colours a region —
+   * of every copy ('motif'), or of the second group of copies ('pattern'). Session state. */
+  repeatColourMode: 'motif' | 'pattern' | null = null;
   /** Mobile performance: true while two fingers pan/zoom — renderers may draw a lighter version and
    * restore full quality on release. Session state only. */
   viewGesture = false;
