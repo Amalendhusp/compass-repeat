@@ -544,21 +544,48 @@ function designStroke(doc: Doc): { colour: string; width: number } {
   return { colour: most(colours, color.ink as string), width: most(widths, stroke.fairDefault) };
 }
 
+/** Which part of Repeat's Appearance panel was last open (session). */
+let appearanceTab: 'fill' | 'stroke' | 'background' = 'stroke';
+
 /**
- * Phase 5.1 items 3–6 / Phase 5.3 items 2–5: Repeat's Appearance panel — how the repeated design is
- * drawn, never what it is. Every control writes only `doc.repeatDisplay` (a display preference:
- * not undo-tracked, persisted by autosave). One panel, grouped by what each control affects: Stroke
- * (As constructed, or Repeat's own colour and width), Background (the colour behind the pattern) and
- * Fill (the opacity of the design's own fill regions). Swatch
- * rows scroll sideways if a narrow screen needs it.
+ * Repeat's Appearance — how the repeated design is drawn, never what it is: three independent
+ * parts, one at a time in a compact panel. Fill: Repeat's own region colours (a mode on the
+ * canvas — "Colour regions") and how strongly fills are drawn. Stroke: the outlines. Background:
+ * the colour behind the pattern. Nothing here changes the construction or its own styling.
  */
-function showRepeatAppearancePanel(anchor: HTMLElement, controller: AppController): void {
+function showRepeatAppearancePanel(anchor: HTMLElement, controller: AppController, hooks: { colourRegions: () => void }): void {
   const display = (): RepeatDisplay => controller.doc.repeatDisplay;
   const changed = () => controller.notifyView();
 
   mountPopover(
     anchor,
-    (menu) => {
+    (panel) => {
+      panel.classList.add('appearance-panel');
+      panelSegmented(
+        panel,
+        [
+          { id: 'fill' as const, label: 'Fill' },
+          { id: 'stroke' as const, label: 'Stroke' },
+          { id: 'background' as const, label: 'Background' },
+        ],
+        () => appearanceTab,
+        (id) => {
+          appearanceTab = id;
+          build();
+        },
+        'Appearance',
+      );
+      const body = document.createElement('div');
+      body.className = 'appearance-body';
+      panel.appendChild(body);
+      const build = () => {
+        body.replaceChildren();
+        if (appearanceTab === 'stroke') buildStroke(body);
+        else if (appearanceTab === 'background') buildBackground(body);
+        else buildFill(body);
+      };
+
+      const buildStroke = (menu: HTMLElement) => {
       // Stroke: the repeated design's outline colour and width — Repeat's own style, applied at render
       // time over every Fair piece. "As constructed" (the default) keeps each piece's own Construct
       // colour/width, and the colour and width controls rest until it is turned off.
@@ -626,7 +653,9 @@ function showRepeatAppearancePanel(anchor: HTMLElement, controller: AppControlle
         }
       };
       buildStrokeSection();
+      };
 
+      const buildBackground = (menu: HTMLElement) => {
       // Background: the colour behind the repeated pattern (what shows through and around it).
       popoverSectionLabel(menu, 'Background');
       const swatchRow = document.createElement('div');
@@ -668,9 +697,18 @@ function showRepeatAppearancePanel(anchor: HTMLElement, controller: AppControlle
       swatchRow.appendChild(customWrap);
       refreshSwatches();
       menu.appendChild(swatchRow);
+      };
 
-      // Fill: how strongly the design's own fill regions are drawn (not the background or strokes).
+      const buildFill = (menu: HTMLElement) => {
+      // Fill: Repeat's own region colours — a mode on the canvas (the panel steps aside for it) —
+      // and how strongly every fill is drawn (not the background or strokes).
       popoverSectionLabel(menu, 'Fill');
+      const regionsRow = document.createElement('button');
+      regionsRow.className = 'popover-row appearance-regions';
+      regionsRow.textContent = 'Colour regions…';
+      regionsRow.title = 'Tap regions of the pattern to colour them (Motif or Pattern colouring)';
+      onTap(regionsRow, () => hooks.colourRegions());
+      menu.appendChild(regionsRow);
       panelSliderRow(menu, 'Fill opacity', {
         min: 0,
         max: 100,
@@ -682,6 +720,8 @@ function showRepeatAppearancePanel(anchor: HTMLElement, controller: AppControlle
           changed();
         },
       });
+      };
+      build();
     },
     { shieldCanvas: true, panel: true },
   );
@@ -1579,7 +1619,7 @@ export function buildShell(
   appearanceBtn.className = 'icon-btn';
   appearanceBtn.setAttribute('aria-label', 'Appearance');
   appearanceBtn.innerHTML = iconSvg('appearance');
-  onTap(appearanceBtn, () => togglePanel(appearanceBtn, () => showRepeatAppearancePanel(appearanceBtn, controller)));
+  onTap(appearanceBtn, () => togglePanel(appearanceBtn, () => showRepeatAppearancePanel(appearanceBtn, controller, { colourRegions: () => startColouring() })));
   leftSide.appendChild(appearanceBtn);
 
   // Intersection: in that slot, the Copies panel — its icon a little 2×2 of the constructions' own
@@ -1953,7 +1993,7 @@ export function buildShell(
   const ruleRow = document.createElement('div');
   ruleRow.className = 'segmented-mini';
   const RULES: { id: RepeatSystem['rule']['kind']; label: string }[] = [
-    { id: 'same', label: 'Same' },
+    { id: 'same', label: 'Uniform' },
     { id: 'alternate', label: 'Alternate' },
     { id: 'mirror', label: 'Mirror' },
   ];
@@ -1978,7 +2018,8 @@ export function buildShell(
   ruleLine.appendChild(ruleRow);
   const colouringBtn = document.createElement('button');
   colouringBtn.className = 'space-chip';
-  colouringBtn.textContent = 'Colouring';
+  colouringBtn.textContent = 'Fill';
+  colouringBtn.title = 'Colour regions of the pattern';
   colouringBtn.setAttribute('aria-pressed', 'false');
   onTap(colouringBtn, () => setColourMode(controller.repeatColourMode ? null : 'motif'));
   ruleLine.appendChild(colouringBtn);
@@ -2092,6 +2133,10 @@ export function buildShell(
   colourToolRow.appendChild(asDesignedBtn);
   repeatPanel.appendChild(colourToolRow);
 
+  /** Appearance → Fill → Colour regions: the colouring mode, as the Fill chip starts it. */
+  function startColouring(): void {
+    setColourMode(controller.repeatColourMode ?? 'motif');
+  }
   function setColourMode(mode: 'motif' | 'pattern' | null): void {
     closeAnyPopover();
     if (mode === controller.repeatColourMode) return;
@@ -2188,7 +2233,7 @@ export function buildShell(
   sourceSeg.setAttribute('aria-label', 'Repeat source');
   const sourceBtns = new Map<RepeatSource, HTMLButtonElement>();
   for (const [id, label, title] of [
-    ['motif', 'Motif', 'Repeat the motif itself'],
+    ['motif', 'Construct', 'Repeat the construction itself'],
     ['intersect', 'Intersect', 'Repeat the Intersect arrangement as one unit'],
   ] as const) {
     const b = document.createElement('button');
