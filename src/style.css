@@ -2249,6 +2249,9 @@ canvas.stage {
 .source-group .segmented-mini button {
   padding: 6px 10px;
 }
+.source-group.pattern-group {
+  margin-left: 0;
+}
 .space-chip:disabled {
   opacity: 0.4;
   cursor: default;

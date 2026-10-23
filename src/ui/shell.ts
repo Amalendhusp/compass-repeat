@@ -2031,8 +2031,12 @@ export function buildShell(
     patternBtns.set(id, b);
     patternSeg.appendChild(b);
   }
-  patternRow.appendChild(patternLabel);
-  patternRow.appendChild(patternSeg);
+  // Like Source: label and choice on one quiet pill, readable over the pattern.
+  const patternGroup = document.createElement('div');
+  patternGroup.className = 'source-group pattern-group';
+  patternGroup.appendChild(patternLabel);
+  patternGroup.appendChild(patternSeg);
+  patternRow.appendChild(patternGroup);
   repeatPanel.appendChild(patternRow);
   /** How copies alternate — a choice about the pattern, so one Undo step (and a recorded moment). */
   function setPatternBy(by: PatternBy): void {
