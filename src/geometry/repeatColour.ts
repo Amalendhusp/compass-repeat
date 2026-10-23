@@ -78,6 +78,9 @@ export interface RegionHit {
   instanceKey: string | null;
   i: number;
   j: number;
+  /** Another copy or instance has a region under the same spot too: an overlap, which is not a
+   * region of its own (only the source's own faces are) — the one on top was found. */
+  overlapped: boolean;
 }
 
 /** The region under a canvas point in Repeat (paper px): the copy drawn on top there, and its
@@ -89,16 +92,22 @@ export function regionAtInRepeat(doc: Doc, view: ViewTransform, paper: Vec2): Re
   const pivot = doc.frame.origin;
   const unit = repeatUnit(doc);
   const poses = visibleInstances(doc, view, unit?.extent);
+  let found: RegionHit | null = null;
   for (let n = poses.length - 1; n >= 0; n--) {
     const pose = poses[n]!;
     const members: { key: string | null; pose: InstancePose }[] = unit ? unit.members.map((m, k) => ({ key: unit.keys[k]!, pose: composePose(pose, m) })) : [{ key: null, pose }];
     for (let k = members.length - 1; k >= 0; k--) {
       const m = members[k]!;
       const r = findRegionAt(regions, intoMotif(pivot, m.pose, w));
-      if (r) return { key: regionKey(m.key, r.sig), sig: r.sig, instanceKey: m.key, i: pose.i, j: pose.j };
+      if (!r) continue;
+      if (found) {
+        found.overlapped = true;
+        return found;
+      }
+      found = { key: regionKey(m.key, r.sig), sig: r.sig, instanceKey: m.key, i: pose.i, j: pose.j, overlapped: false };
     }
   }
-  return null;
+  return found;
 }
 
 /**

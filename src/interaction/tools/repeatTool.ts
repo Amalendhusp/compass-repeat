@@ -254,6 +254,8 @@ function colourTapGesture(controller: AppController, view: ViewTransform): Gestu
       controller.commit((d) => {
         d.repeatSetup = { ...(d.repeatSetup ?? { source: repeatSourceOf(d) }), colour: toggleRegion(d.repeatSetup?.colour, hit.key, paint, group) };
       });
+      // Overlaps are not regions of their own: say plainly which one was coloured.
+      if (hit.overlapped) showToast('Overlap · the region on top was coloured');
     },
     onCancel() {},
   };
