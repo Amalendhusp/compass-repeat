@@ -216,12 +216,29 @@ export interface RepeatColouring {
   pattern?: { by: 'none' | 'copies' | 'rows' | 'columns'; regions: Record<string, string | null> };
 }
 
+/** One layer of Repeat's outline style: a colour and a width (screen px) along every line. */
+export interface RepeatStrokeLayer {
+  colour: string;
+  width: number;
+}
+
+/**
+ * Repeat's own outline style for every visible line of the repeated design — 1 to 3 layers drawn
+ * along exactly the same paths, widest first (outer, inner, centre), each narrower than the one
+ * before: a double or triple line is rendered, never constructed (no new geometry, no offset
+ * paths). No layers = as designed (each line's own Construct colour and width).
+ */
+export interface RepeatStroke {
+  layers: RepeatStrokeLayer[];
+}
+
 /** One source's whole Repeat configuration, kept while the other source is showing. */
 export interface RepeatConfig {
   /** doc.repeat as it was (gapFills as entries). */
   repeat: Omit<RepeatSystem, 'gapFills'> & { gapFills: [string, string][] };
   appearance: RepeatAppearance;
   colour?: RepeatColouring;
+  stroke?: RepeatStroke;
   auto?: { a: Vec2; b: Vec2 } | null;
 }
 
@@ -235,6 +252,8 @@ export interface RepeatSetup {
   saved?: Partial<Record<RepeatSourceKind, RepeatConfig>>;
   /** The active source's colouring. */
   colour?: RepeatColouring;
+  /** The active source's outline style (absent: the older display-level style, if any, applies). */
+  stroke?: RepeatStroke;
   /** The lattice vectors as Repeat suggested them for this source — while doc.repeat still has
    * exactly these, the spacing is the suggestion (and follows changes to an Intersect
    * arrangement); once the participant adjusts it, it is theirs and is never replaced. */

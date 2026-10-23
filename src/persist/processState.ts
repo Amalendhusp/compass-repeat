@@ -384,11 +384,12 @@ export function describeChange(a: ArtworkState, b: ArtworkState, source: Process
   if (!same(a.appearance, b.appearance)) tags.push('appearance');
   // Repeat's setup: only a real change between two recorded setups is a moment of its own — its
   // first appearance in an older history is not something the participant did.
-  const sa = a.repeatSetup as { source?: string; colour?: unknown } | undefined;
-  const sb = b.repeatSetup as { source?: string; colour?: unknown } | undefined;
+  const sa = a.repeatSetup as { source?: string; colour?: unknown; stroke?: unknown } | undefined;
+  const sb = b.repeatSetup as { source?: string; colour?: unknown; stroke?: unknown } | undefined;
   if (sa && sb) {
     if (sa.source !== sb.source) tags.push('repeat-source');
     if (!same(sa.colour, sb.colour)) tags.push('repeat-colour');
+    if (!same(sa.stroke, sb.stroke)) tags.push('repeat-stroke');
   }
 
   // Intersect's arrangement: what happened to the instances.
@@ -420,6 +421,6 @@ export function describeChange(a: ArtworkState, b: ArtworkState, source: Process
 
   const unique = [...new Set(tags)];
   if (source === 'undo' || source === 'redo' || source === 'baseline' || source === 'resync') return { kind: source, tags: unique };
-  const priority = ['arc', 'circle', 'line', 'divide', 'delete', 'trim', 'fair', 'unfair', 'stroke', 'fill', 'edit-point', 'edit', 'intersect-copies', 'intersect-arrange', 'intersect-move', 'intersect-rotate', 'intersect-spread', 'intersect-style', 'intersect', 'repeat-setup', 'repeat-source', 'repeat-family', 'repeat-spacing', 'repeat-rotation', 'repeat-rule', 'repeat-space', 'repeat-colour', 'appearance', 'segment'];
+  const priority = ['arc', 'circle', 'line', 'divide', 'delete', 'trim', 'fair', 'unfair', 'stroke', 'fill', 'edit-point', 'edit', 'intersect-copies', 'intersect-arrange', 'intersect-move', 'intersect-rotate', 'intersect-spread', 'intersect-style', 'intersect', 'repeat-setup', 'repeat-source', 'repeat-family', 'repeat-spacing', 'repeat-rotation', 'repeat-rule', 'repeat-space', 'repeat-colour', 'repeat-stroke', 'appearance', 'segment'];
   return { kind: priority.find((t) => unique.includes(t)) ?? 'other', tags: unique };
 }

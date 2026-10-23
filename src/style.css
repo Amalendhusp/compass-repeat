@@ -1495,6 +1495,41 @@ canvas.stage {
   flex-shrink: 0;
 }
 
+/* Repeat Appearance: Fill | Stroke | Background, one at a time. */
+.appearance-panel {
+  width: min(330px, calc(100vw - 16px)) !important;
+}
+.appearance-panel > .popover-segmented {
+  margin: 4px 8px 2px;
+}
+.stroke-layer-row {
+  gap: 8px !important;
+}
+.stroke-layer-name {
+  width: 44px;
+  flex: 0 0 auto;
+}
+.stroke-layer-row .width-slider {
+  flex: 1 1 auto;
+  min-width: 0;
+}
+.stroke-layer-dot {
+  flex: 0 0 auto;
+  width: 26px;
+  height: 26px;
+  border-radius: 50%;
+  border: 2px solid var(--paper);
+  box-shadow: 0 0 0 1px rgba(30, 42, 54, 0.3);
+  cursor: pointer;
+  padding: 0;
+}
+.stroke-layer-dot.open {
+  box-shadow: 0 0 0 2px var(--ink);
+}
+.stroke-layer-swatches {
+  padding: 0 10px 6px;
+}
+
 /* ---- toast ---- */
 
 .toast {

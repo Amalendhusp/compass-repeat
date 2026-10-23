@@ -39,6 +39,7 @@ import { PICK_REACH_PX } from '../interaction/tools/intersectionTool.ts';
 import { repeatSource, type RepeatSource } from '../geometry/repeatUnit.ts';
 import { suggestForFamily, switchRepeatSource } from '../geometry/repeatSetup.ts';
 import { repeatPaint } from '../interaction/tools/repeatTool.ts';
+import { editableStroke, MAX_STROKE_PX, strokeKind, withColour, withKind, withWidth } from '../geometry/repeatStroke.ts';
 import type { PatternBy } from '../geometry/repeatColour.ts';
 import { artworksUsing, deleteReference, inLibrary, listReferences, setReferenceScope, type ReferenceRecord } from '../persist/referenceStore.ts';
 import { importReference, ReferenceImportError } from '../reference/importReference.ts';
@@ -50,7 +51,7 @@ import { syncSnapChooser } from './snapchooser.ts';
 import { deriveSelectableGroups } from '../geometry/segments.ts';
 import { deliverFile, exportVisibleView, fileShareSupport, type ExportSettings } from '../render/export.ts';
 import { createTimelapse, timelapseInfo, videoType, type TimelapseInfo, type TimelapseResult } from '../render/timelapse.ts';
-import type { RepeatDisplay, RepeatSystem } from '../model/types.ts';
+import type { RepeatDisplay, RepeatStroke, RepeatStrokeLayer, RepeatSystem } from '../model/types.ts';
 
 /** Phase 5.2 item 1: the final Construct dock. */
 const DOCK_BUTTONS: { id: ToolId; label: string; divider?: boolean }[] = [
@@ -546,6 +547,8 @@ function designStroke(doc: Doc): { colour: string; width: number } {
 
 /** Which part of Repeat's Appearance panel was last open (session). */
 let appearanceTab: 'fill' | 'stroke' | 'background' = 'stroke';
+/** Which stroke layer's colours are showing in the panel (session). */
+let strokeSwatchesOpen: number | null = null;
 
 /**
  * Repeat's Appearance — how the repeated design is drawn, never what it is: three independent
@@ -586,73 +589,124 @@ function showRepeatAppearancePanel(anchor: HTMLElement, controller: AppControlle
       };
 
       const buildStroke = (menu: HTMLElement) => {
-      // Stroke: the repeated design's outline colour and width — Repeat's own style, applied at render
-      // time over every Fair piece. "As constructed" (the default) keeps each piece's own Construct
-      // colour/width, and the colour and width controls rest until it is turned off.
-      const strokeSection = document.createElement('div');
-      strokeSection.className = 'panel-stroke-section';
-      menu.appendChild(strokeSection);
-      const styled = () => display().strokeColour != null || display().strokeWidth != null;
-      const saved = () => controller.notify(); // the thumbnail follows a settled change
-      const fmtWidth = (v: number) => (v === 0 ? 'None' : `${Number(v.toFixed(2))} px`);
-      const buildStrokeSection = () => {
-        strokeSection.replaceChildren();
-        popoverSectionLabel(strokeSection, 'Stroke');
-        const asDesigned = popoverToggleRow(
-          strokeSection,
-          'As constructed',
-          () => !styled(),
-          (on) => {
-            if (on) {
-              display().strokeColour = null;
-              display().strokeWidth = null;
-            } else {
-              // Start Repeat's style from what the design mostly uses, so nothing jumps.
-              const typical = designStroke(controller.doc);
-              display().strokeColour = typical.colour;
-              display().strokeWidth = typical.width;
-            }
-            buildStrokeSection();
-            changed();
-            saved();
+        // Stroke: Repeat's own outline style for every line of the repeated design — As designed
+        // (each line's own Construct colour and width), or one, two or three strokes along the same
+        // paths (geometry untouched). Each choice is one Undo step; a width slider shows its change
+        // live and commits it on release.
+        popoverSectionLabel(menu, 'Stroke');
+        const design: RepeatStrokeLayer = designStroke(controller.doc);
+        const current = (): RepeatStroke => controller.repeatStrokeDraft ?? editableStroke(controller.doc, design);
+        const commitStroke = (next: RepeatStroke) => {
+          controller.repeatStrokeDraft = null;
+          controller.commit((d) => {
+            d.repeatSetup = { ...(d.repeatSetup ?? { source: repeatSource(d) }), stroke: next };
+          });
+        };
+        panelSegmented(
+          menu,
+          [
+            { id: 'designed' as const, label: 'As designed' },
+            { id: 'single' as const, label: 'Single' },
+            { id: 'double' as const, label: 'Double' },
+            { id: 'triple' as const, label: 'Triple' },
+          ],
+          () => strokeKind(current()),
+          (kind) => {
+            if (kind === strokeKind(current())) return;
+            strokeSwatchesOpen = null;
+            commitStroke(withKind(current(), kind, design));
+            build();
           },
-          'Each outline keeps its own colour and width from Construct',
+          'Stroke style',
         );
-        const controls = document.createElement('div');
-        controls.className = 'panel-stroke-controls' + (styled() ? '' : ' resting');
-        strokeSection.appendChild(controls);
-        const swatches = document.createElement('div');
-        swatches.className = 'panel-swatches-host';
-        colourSwatchRow(swatches, display().strokeColour ?? null, (c) => {
-          display().strokeColour = c;
-          if (display().strokeWidth == null) display().strokeWidth = designStroke(controller.doc).width;
-          asDesigned.refresh();
-          changed();
-          saved();
+        const style = current();
+        const names = style.layers.length === 1 ? ['Line'] : style.layers.length === 2 ? ['Outer', 'Inner'] : ['Outer', 'Inner', 'Centre'];
+        const fmt = (v: number) => (v === 0 ? 'None' : `${Number(v.toFixed(2))} px`);
+        const rows: { slider: HTMLInputElement; value: HTMLSpanElement }[] = [];
+        const showWidths = (st: RepeatStroke) =>
+          st.layers.forEach((l, k) => {
+            const r = rows[k];
+            if (!r) return;
+            r.slider.value = String(l.width);
+            r.value.textContent = fmt(l.width);
+          });
+        style.layers.forEach((layer, k) => {
+          const row = document.createElement('div');
+          row.className = 'popover-toggle-row stroke-layer-row';
+          const label = document.createElement('span');
+          label.className = 'popover-row-label stroke-layer-name';
+          label.textContent = names[k]!;
+          const dot = document.createElement('button');
+          dot.className = 'stroke-layer-dot' + (strokeSwatchesOpen === k ? ' open' : '');
+          dot.style.background = layer.colour;
+          dot.setAttribute('aria-label', `${names[k]} colour ${layer.colour}`);
+          dot.setAttribute('aria-expanded', String(strokeSwatchesOpen === k));
+          onTap(dot, () => {
+            strokeSwatchesOpen = strokeSwatchesOpen === k ? null : k;
+            build();
+          });
+          const slider = document.createElement('input');
+          slider.type = 'range';
+          slider.min = style.layers.length === 1 ? '0' : '0.5';
+          slider.max = String(MAX_STROKE_PX);
+          slider.step = '0.25';
+          slider.value = String(layer.width);
+          slider.className = 'width-slider';
+          slider.setAttribute('aria-label', `${names[k]} width`);
+          const value = document.createElement('span');
+          value.className = 'popover-row-label popover-value';
+          value.textContent = fmt(layer.width);
+          slider.addEventListener('input', (e) => {
+            e.stopPropagation();
+            const next = withWidth(current(), k, Number(slider.value));
+            controller.repeatStrokeDraft = next;
+            showWidths(next); // neighbours pushed to keep outer > inner > centre show it at once
+            controller.notifyView();
+          });
+          slider.addEventListener('change', (e) => {
+            e.stopPropagation();
+            commitStroke(controller.repeatStrokeDraft ?? withWidth(current(), k, Number(slider.value)));
+          });
+          row.appendChild(label);
+          row.appendChild(dot);
+          row.appendChild(slider);
+          row.appendChild(value);
+          menu.appendChild(row);
+          rows.push({ slider, value });
+          if (strokeSwatchesOpen === k) {
+            const swatches = document.createElement('div');
+            swatches.className = 'swatch-row panel-swatches stroke-layer-swatches';
+            swatches.setAttribute('role', 'group');
+            swatches.setAttribute('aria-label', `${names[k]} colour`);
+            for (const p of REPEAT_BACKGROUNDS) {
+              const sw = document.createElement('button');
+              sw.className = 'swatch' + (p.colour.toLowerCase() === layer.colour.toLowerCase() ? ' active' : '');
+              sw.style.background = p.colour;
+              sw.setAttribute('aria-label', p.name);
+              sw.title = p.name;
+              onTap(sw, () => {
+                commitStroke(withColour(current(), k, p.colour));
+                build();
+              });
+              swatches.appendChild(sw);
+            }
+            const customWrap = document.createElement('label');
+            customWrap.className = 'swatch swatch-custom';
+            customWrap.title = 'Mine';
+            const custom = document.createElement('input');
+            custom.type = 'color';
+            custom.setAttribute('aria-label', `Custom ${names[k]!.toLowerCase()} colour`);
+            custom.value = /^#[0-9a-f]{6}$/i.test(layer.colour) ? layer.colour : '#1e2a36';
+            custom.addEventListener('click', (e) => e.stopPropagation());
+            custom.addEventListener('change', () => {
+              commitStroke(withColour(current(), k, custom.value));
+              build();
+            });
+            customWrap.appendChild(custom);
+            swatches.appendChild(customWrap);
+            menu.appendChild(swatches);
+          }
         });
-        swatches.firstElementChild?.classList.add('panel-swatches');
-        swatches.firstElementChild?.setAttribute('aria-label', 'Stroke colour');
-        controls.appendChild(swatches.firstElementChild!);
-        const width = panelSliderRow(controls, 'Width', {
-          min: 0,
-          max: 12,
-          step: 0.25,
-          value: display().strokeWidth ?? designStroke(controller.doc).width,
-          format: fmtWidth,
-          onInput: (v) => {
-            display().strokeWidth = v;
-            if (display().strokeColour == null) display().strokeColour = designStroke(controller.doc).colour;
-            asDesigned.refresh();
-            changed();
-          },
-          onCommit: saved,
-        });
-        if (!styled()) {
-          width.value.textContent = 'As constructed';
-          width.slider.disabled = true;
-        }
-      };
-      buildStrokeSection();
       };
 
       const buildBackground = (menu: HTMLElement) => {

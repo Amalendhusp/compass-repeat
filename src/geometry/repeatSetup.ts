@@ -54,6 +54,7 @@ export function activeConfig(doc: Doc): RepeatConfig {
     repeat: { ...structuredClone(rest), gapFills: [...gapFills] },
     appearance: appearanceOf(doc.repeatDisplay),
     ...(setup?.colour ? { colour: structuredClone(setup.colour) } : null),
+    ...(setup?.stroke ? { stroke: structuredClone(setup.stroke) } : null),
     ...(setup?.auto ? { auto: structuredClone(setup.auto) } : null),
   };
 }
@@ -159,6 +160,7 @@ export function switchRepeatSource(controller: AppController, to: RepeatSourceKi
       d.repeat = repeatFrom(saved);
       d.repeatDisplay = withAppearance(d.repeatDisplay, saved.appearance);
       if (saved.colour) setup.colour = structuredClone(saved.colour);
+      if (saved.stroke) setup.stroke = structuredClone(saved.stroke);
       if (saved.auto) setup.auto = structuredClone(saved.auto);
     } else {
       // First time: the lattice's family, rule and rotation carry over; the spacing is suggested for
@@ -168,6 +170,8 @@ export function switchRepeatSource(controller: AppController, to: RepeatSourceKi
       d.repeat = { ...d.repeat, a: v.a, b: v.b, motif: { ...d.repeat.motif }, rule: { ...d.repeat.rule }, gapFills: new Map() };
       setup.auto = { a: { ...v.a }, b: { ...v.b } };
       d.repeatDisplay = withAppearance(d.repeatDisplay, appearanceOf(d.repeatDisplay));
+      // The outline style, like the rest of the appearance, carries over the first time.
+      if (before.stroke) setup.stroke = structuredClone(before.stroke);
     }
     d.repeatSetup = setup;
     // A suggestion made for an earlier arrangement follows the arrangement as it is now.
