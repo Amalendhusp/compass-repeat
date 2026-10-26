@@ -99,7 +99,27 @@ function commitPlacement(controller: AppController, key: string, at: Vec2, rotat
   });
 }
 
+/** A press on a locked construction: a tap still does what a tap does (select, pick); a drag or a
+ * turn moves nothing and says why, once. */
+function lockedGesture(controller: AppController, copy: IntersectionCopy, down: Vec2, onTap: () => void): Gesture {
+  let told = false;
+  return {
+    onMove(sp) {
+      if (told || dist(sp, down) <= DRAG_SLOP_PX) return;
+      told = true;
+      controller.intersectionSelected = copy.key;
+      showToast(`${copy.label} is locked · unlock it to move`);
+      controller.notify();
+    },
+    onUp() {
+      if (!told) onTap();
+    },
+    onCancel() {},
+  };
+}
+
 function moveGesture(controller: AppController, view: ViewTransform, copy: IntersectionCopy, down: Vec2, onTap: () => void): Gesture {
+  if (copy.locked) return lockedGesture(controller, copy, down, onTap);
   const start = copy.pose.translate;
   let moving = false;
   return {
@@ -124,6 +144,7 @@ function moveGesture(controller: AppController, view: ViewTransform, copy: Inter
 }
 
 function turnGesture(controller: AppController, view: ViewTransform, copy: IntersectionCopy, down: Vec2): Gesture {
+  if (copy.locked) return lockedGesture(controller, copy, down, () => selectAt(controller, view, down));
   const centre = centreOf(controller, view, copy);
   const angleAt = (sp: Vec2) => Math.atan2(sp.y - centre.y, sp.x - centre.x);
   let moving = false;
@@ -172,7 +193,7 @@ export const intersectionTool: ToolModule = {
     const copies = intersectionCopies(controller.doc);
     // The selected construction's rotation handle first (it is drawn over everything): Rotate only.
     const selected = copies.find((c) => c.key === controller.intersectionSelected);
-    if (selected && dist(sp, rotationHandle(controller.doc, view, selected)) <= HANDLE_TOUCH_PX) {
+    if (selected && !selected.locked && dist(sp, rotationHandle(controller.doc, view, selected)) <= HANDLE_TOUCH_PX) {
       return turnGesture(controller, view, selected, sp);
     }
     // Instance-first (the default): the selected instance when the press is on it — it is the one

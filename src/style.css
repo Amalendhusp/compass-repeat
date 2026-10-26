@@ -1495,6 +1495,12 @@ canvas.stage {
   flex-shrink: 0;
 }
 
+/* Intersect: the Lock toggle for the selected construction — an icon chip. */
+.space-chip.lock-chip {
+  padding: 0 10px;
+  flex: 0 0 auto;
+}
+
 /* Repeat Appearance: Fill | Stroke | Background, one at a time. */
 .appearance-panel {
   width: min(330px, calc(100vw - 16px)) !important;

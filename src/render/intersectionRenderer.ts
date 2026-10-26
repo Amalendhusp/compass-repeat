@@ -145,9 +145,34 @@ export function renderIntersection(ctx: CanvasRenderingContext2D, controller: Ap
   // on the ACTIVE instance (the selected one — the Primary until another is): only a quiet ring.
   const building = !!controller.tool && controller.tool !== 'select';
   const selected = copies.find((c) => c.key === controller.intersectionSelected) ?? (building ? copies[0] : undefined);
-  if (selected) drawRotationRing(ctx, doc, view, selected, controller.intersectionDrag?.key === selected.key && controller.intersectionDrag.mode === 'turn', !building);
+  // A locked construction has nothing to grab: its ring, without a handle.
+  if (selected) drawRotationRing(ctx, doc, view, selected, controller.intersectionDrag?.key === selected.key && controller.intersectionDrag.mode === 'turn', !building && !selected.locked);
+  // Locked constructions: a small padlock at the centre, in their own colour (screen only).
+  for (const c of copies) if (c.locked) drawLockMark(ctx, doc, view, c);
   ctx.restore();
   return copies.length;
+}
+
+/** A quiet padlock at a locked construction's centre. */
+function drawLockMark(ctx: CanvasRenderingContext2D, doc: Doc, view: ViewTransform, copy: IntersectionCopy): void {
+  const pivot = doc.frame.origin;
+  const c = worldToScreen(view, { x: pivot.x + copy.pose.translate.x, y: pivot.y + copy.pose.translate.y });
+  ctx.save();
+  ctx.translate(c.x, c.y);
+  ctx.beginPath();
+  ctx.arc(0, 0, 11, 0, Math.PI * 2);
+  ctx.fillStyle = color.paper;
+  ctx.globalAlpha = 0.9;
+  ctx.fill();
+  ctx.globalAlpha = 1;
+  ctx.strokeStyle = copy.colour;
+  ctx.fillStyle = copy.colour;
+  ctx.lineWidth = 1.6;
+  ctx.beginPath();
+  ctx.arc(0, -1.5, 3.2, Math.PI, 0);
+  ctx.stroke();
+  ctx.fillRect(-4.5, -1.5, 9, 6.5);
+  ctx.restore();
 }
 
 const EXTENSION_ALPHA = 0.36;

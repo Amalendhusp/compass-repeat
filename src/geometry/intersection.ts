@@ -70,6 +70,9 @@ export interface IntersectionCopy {
   extensions: boolean;
   /** Where it is shown: its frame centre moved by `translate`, turned by `rotation` about it. */
   pose: InstancePose;
+  /** Locked: it stays exactly where it is — never dragged, turned, aligned onto another or spread —
+   * while it stays selectable and a reference others can be aligned to. */
+  locked: boolean;
 }
 
 /** Every construction as shown — including a live move/turn (`controller.intersectionDrag`) and a
@@ -79,8 +82,10 @@ export function intersectionCopies(doc: Doc, live?: { drag?: { key: string; x: n
   const saved = doc.intersection?.copies ?? {};
   const spread = live?.spread ?? layout.spread;
   return layout.pieces.map((piece, n) => {
-    const drag = live?.drag?.key === piece.key ? live.drag : null;
-    const at = drag ? { x: drag.x, y: drag.y } : shownAt(layout, piece, spread);
+    const locked = !!saved[piece.key]?.locked;
+    const drag = !locked && live?.drag?.key === piece.key ? live.drag : null;
+    // A locked construction is not spread while Spread is being dragged (see withSpreadAround).
+    const at = drag ? { x: drag.x, y: drag.y } : shownAt(layout, piece, locked ? layout.spread : spread);
     const [i, j] = piece.key.split(',').map(Number) as [number, number];
     return {
       key: piece.key,
@@ -88,6 +93,7 @@ export function intersectionCopies(doc: Doc, live?: { drag?: { key: string; x: n
       colour: saved[piece.key]?.colour ?? LEGACY_COLOURS[piece.key] ?? PALETTE[n % PALETTE.length]!,
       extensions: saved[piece.key]?.extensions ?? true,
       pose: { i, j, translate: at, rotation: drag ? drag.rotation : piece.rotation, mirror: false },
+      locked,
     };
   });
 }
@@ -175,6 +181,38 @@ export function sliderToSpread(pos: number): number {
 
 export function withSpread(layout: IntersectionLayout, spread: number): IntersectionLayout {
   return { ...layout, pieces: layout.pieces.map((p) => ({ ...p })), spread: Math.min(SPREAD_MAX, Math.max(SPREAD_MIN, spread)) };
+}
+
+/** Spread changed for the unlocked constructions only: each locked one's reference is re-stated so
+ * it stays exactly where it is shown (Spread then moves the others in or out about the same centre —
+ * no longer a uniform scaling of the whole group, which is what locking one means). */
+export function withSpreadAround(doc: Doc, spread: number): IntersectionLayout {
+  const layout = layoutOf(doc);
+  const next = withSpread(layout, spread);
+  const copies = doc.intersection?.copies ?? {};
+  return {
+    ...next,
+    pieces: next.pieces.map((p) => {
+      if (!copies[p.key]?.locked) return p;
+      const shown = shownAt(layout, p, layout.spread);
+      return { ...p, x: next.centre.x + (shown.x - next.centre.x) / next.spread, y: next.centre.y + (shown.y - next.centre.y) / next.spread };
+    }),
+  };
+}
+
+/** Whether a construction is locked in place. */
+export function isLocked(doc: Doc, key: string): boolean {
+  return !!doc.intersection?.copies?.[key]?.locked;
+}
+
+/** The artwork's Intersection with one construction locked or unlocked (nothing moves). */
+export function withLock(doc: Doc, key: string, locked: boolean): NonNullable<Doc['intersection']> {
+  const copies = { ...(doc.intersection?.copies ?? {}) };
+  const own = { ...copies[key] };
+  if (locked) own.locked = true;
+  else delete own.locked;
+  copies[key] = own;
+  return { copies, layout: structuredClone(layoutOf(doc)) };
 }
 
 /** The world-space bounds of the constructions as shown — what Intersection's Fit frames. */

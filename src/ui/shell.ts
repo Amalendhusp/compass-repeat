@@ -33,7 +33,7 @@ import { onTap } from './tap.ts';
 import { color, fairPalette, stroke } from '../render/tokens.ts';
 import { isSixtyDegreeFamily, type LatticeFamily } from '../geometry/lattice.ts';
 import { rotationFractionLabel } from '../render/repeatRenderer.ts';
-import { asReference, intersectionCopies, layoutOf, MAX_CONSTRUCTIONS, placedAt, PRIMARY, referenceCurrent, sliderToSpread, SPREAD_SLIDER_MAX, spreadToSlider, withAddedCopy, withCopySetting, withLayout, withoutCopy, withSpread } from '../geometry/intersection.ts';
+import { asReference, intersectionCopies, layoutOf, MAX_CONSTRUCTIONS, placedAt, PRIMARY, referenceCurrent, sliderToSpread, SPREAD_SLIDER_MAX, spreadToSlider, withAddedCopy, withCopySetting, withLayout, withLock, withoutCopy, withSpreadAround, isLocked } from '../geometry/intersection.ts';
 import { canMoveAgainst, convertPick, isPointPick, planMatchEdge, planSnap, resolvePick, type PickKind } from '../geometry/intersectionSnap.ts';
 import { PICK_REACH_PX } from '../interaction/tools/intersectionTool.ts';
 import { repeatSource, type RepeatSource } from '../geometry/repeatUnit.ts';
@@ -2348,7 +2348,8 @@ export function buildShell(
       return;
     }
     controller.commit((d) => {
-      d.intersection = withLayout(d, withSpread(layoutOf(d), spread));
+      // Locked constructions stay where they are; the others spread about the centre.
+      d.intersection = withLayout(d, withSpreadAround(d, spread));
     });
   });
   const referenceBtn = document.createElement('button');
@@ -2446,6 +2447,22 @@ export function buildShell(
     onTap(b, () => setPickKind(kind));
     alignRow.appendChild(b);
   }
+  // Lock: the selected construction stays exactly where it is (it can still be selected, and be the
+  // one others are aligned to). Which construction is the reference of an alignment is chosen by
+  // the picks; Lock only decides which may move. One Undo step.
+  const lockBtn = document.createElement('button');
+  lockBtn.className = 'space-chip lock-chip';
+  onTap(lockBtn, () => {
+    const key = controller.intersectionSelected;
+    if (!key) return;
+    const locked = isLocked(controller.doc, key);
+    controller.commit((d) => {
+      d.intersection = withLock(d, key, !locked);
+    });
+  });
+  alignRow.appendChild(lockBtn);
+  const LOCK_ICON = (closed: boolean) =>
+    `<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" aria-hidden="true"><rect x="5" y="11" width="14" height="10" rx="2"/><path d="${closed ? 'M8 11V8a4 4 0 0 1 8 0v3' : 'M8 11V8a4 4 0 0 1 7.5-2'}"/></svg>`;
   const snapClearBtn = document.createElement('button');
   snapClearBtn.className = 'space-chip snap-clear';
   snapClearBtn.setAttribute('aria-label', 'Clear the selection');
@@ -2454,6 +2471,10 @@ export function buildShell(
   const placeCopy = (key: string, shift: Vec2, rotation: number | null) => {
     const copy = intersectionCopies(controller.doc).find((c) => c.key === key);
     if (!copy) return;
+    if (copy.locked) {
+      showToast(`${copy.label} is locked · unlock it to move`);
+      return;
+    }
     const at = { x: copy.pose.translate.x + shift.x, y: copy.pose.translate.y + shift.y };
     controller.commit((d) => {
       d.intersection = withLayout(d, placedAt(layoutOf(d), key, at, rotation ?? copy.pose.rotation));
@@ -2482,6 +2503,10 @@ export function buildShell(
     if (controller.intersectionPickKind !== 'edge' || !moving || !target) return;
     const plan = planMatchEdge(controller.doc, intersectionCopies(controller.doc), moving, target);
     if (plan.kind !== 'edge' || plan.matched) return;
+    if (isLocked(controller.doc, plan.moving)) {
+      showToast('That construction is locked · unlock it to move');
+      return;
+    }
     // One exact rigid move — one Undo step.
     controller.commit((d) => {
       d.intersection = withLayout(d, placedAt(layoutOf(d), plan.moving, plan.translate, plan.rotation));
@@ -2530,9 +2555,15 @@ export function buildShell(
       snapControls.style.display = 'none';
       alignRow.style.display = '';
       if (!sel) return;
-      snapText.textContent = `${sel.label} selected · drag to move, handle to turn`;
+      snapText.textContent = sel.locked ? `${sel.label} locked · stays in place` : `${sel.label} selected · drag to move, handle to turn`;
       snapDot.style.display = '';
       snapDot.style.background = sel.colour;
+      // A padlock (closed while locked) — compact enough for the row on a phone; the status says it.
+      lockBtn.innerHTML = LOCK_ICON(sel.locked);
+      lockBtn.title = sel.locked ? 'Unlock — let it move again' : 'Lock — keep it exactly where it is';
+      lockBtn.classList.toggle('active', sel.locked);
+      lockBtn.setAttribute('aria-pressed', String(sel.locked));
+      lockBtn.setAttribute('aria-label', sel.locked ? `Unlock ${sel.label}` : `Lock ${sel.label}`);
       return;
     }
     // An alignment being set up: its picks, the operations, the switch between what taps take, ×.
@@ -2550,12 +2581,14 @@ export function buildShell(
       if (!reference) edgeText = 'Match Edge · tap the edge that moves';
       else if (!edgePlan) edgeText = `${labelOf(reference.kind === 'line' ? reference.copy : '')} edge moves · now tap the edge it goes onto`;
       else if (edgePlan.kind === 'none') edgeText = edgePlan.note;
-      else edgeText = edgePlan.matched ? 'Edges matched' : `Match Edge moves ${labelOf(edgePlan.moving)} onto ${labelOf(edgePlan.target)}`;
+      else if (edgePlan.matched) edgeText = 'Edges matched';
+      else if (isLocked(controller.doc, edgePlan.moving)) edgeText = `${labelOf(edgePlan.moving)} is locked · unlock it to move`;
+      else edgeText = `Match Edge moves ${labelOf(edgePlan.moving)} onto ${labelOf(edgePlan.target)}`;
       const dotKey = edgePlan?.kind === 'edge' ? edgePlan.moving : reference?.kind === 'line' ? reference.copy : '';
       snapText.textContent = edgeText;
       snapDot.style.display = dotKey ? '' : 'none';
       snapDot.style.background = colourOf(dotKey);
-      matchEdgeBtn.disabled = edgePlan?.kind !== 'edge' || edgePlan.matched;
+      matchEdgeBtn.disabled = edgePlan?.kind !== 'edge' || edgePlan.matched || isLocked(controller.doc, edgePlan.moving);
       return;
     }
     if (!reference) {
@@ -2575,7 +2608,8 @@ export function buildShell(
     else {
       dot = colourOf(plan.moving);
       const who = labelOf(plan.moving);
-      if (plan.kind === 'points') text = plan.snapped ? 'Points coincide' : `Snap moves ${who}`;
+      if (isLocked(controller.doc, plan.moving) && !(plan.kind === 'points' ? plan.snapped : plan.joined)) text = `${who} is locked · unlock it to move`;
+      else if (plan.kind === 'points') text = plan.snapped ? 'Points coincide' : `Snap moves ${who}`;
       else if (plan.joined) text = 'Lines joined';
       else if (plan.parallel) text = `Parallel — Join moves ${who}`;
       else {
@@ -2589,9 +2623,10 @@ export function buildShell(
     parallelBtn.style.display = lines && plan ? '' : 'none';
     joinBtn.style.display = lines && plan ? '' : 'none';
     pointSnapBtn.style.display = !lines && plan ? '' : 'none';
-    parallelBtn.disabled = plan?.kind !== 'lines' || plan.parallel;
-    joinBtn.disabled = plan?.kind !== 'lines' || !plan.parallel || plan.joined;
-    pointSnapBtn.disabled = plan?.kind !== 'points' || plan.snapped;
+    const movingLocked = !!plan && plan.kind !== 'none' && isLocked(controller.doc, plan.moving);
+    parallelBtn.disabled = plan?.kind !== 'lines' || plan.parallel || movingLocked;
+    joinBtn.disabled = plan?.kind !== 'lines' || !plan.parallel || plan.joined || movingLocked;
+    pointSnapBtn.disabled = plan?.kind !== 'points' || plan.snapped || movingLocked;
   }
 
   function refreshIntersectionRows(): void {
