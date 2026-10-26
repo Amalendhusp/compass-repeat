@@ -148,7 +148,8 @@ function dragHandleGesture(controller: AppController, view: ViewTransform, dir: 
         if (navigator.userActivation?.hasBeenActive) navigator.vibrate?.(8);
       }
       relation = next;
-      const shown = relation ? relation.at : step.shown;
+      // A relation the arm already had gives back the arm itself (no rounding drift, no Undo step).
+      const shown = relation ? (Math.hypot(relation.at.x - start.x, relation.at.y - start.y) <= 1e-9 * Math.max(1, Math.hypot(start.x, start.y)) ? start : relation.at) : step.shown;
       controller.repeatDrag = { dir, translate: shown, snapped: snap !== null || relation !== null };
       controller.notifyView();
     },

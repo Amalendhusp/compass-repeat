@@ -5,7 +5,7 @@
 // - its length: exactly the other arm's ("Equal arms");
 // - both at once: a regular lattice — square (90°) or 60° (triangle / hexagon).
 // It takes hold only near the relation (in screen px, so the same at every zoom) and lets go once the
-// finger moves on well past it, so nothing is forced: any lattice can still be made. Contact with
+// finger moves on past it, so nothing is forced: any lattice can still be made. Contact with
 // the neighbouring motif (repeatTool's detents and contour) keeps priority over these.
 
 import type { Vec2 } from '../model/types.ts';
@@ -24,8 +24,10 @@ export interface Relation {
 /** A relation takes hold within this (px) — a regular lattice a little sooner. */
 const ENTER_PX = 10;
 const ENTER_REGULAR_PX = 12;
-/** …and lets go once the finger is this far (px) from it. */
+/** …and lets go once the finger is this far (px) from it — a regular lattice sooner, so a small pull
+ * on a square or 60° lattice moves the arm (keeping its angle or its length, which then hold). */
 const RELEASE_PX = 26;
+const RELEASE_REGULAR_PX = 18;
 
 const ANGLES = [90, 60, 120] as const;
 
@@ -64,7 +66,7 @@ export function stepRelation(other: Vec2, raw: Vec2, prev: Relation | null, zoom
   const regular = all.filter((r) => r.kind === 'regular' && px(r) <= ENTER_REGULAR_PX).sort((p, q) => px(p) - px(q))[0];
   if (prev) {
     const held = all.find((r) => r.key === prev.key);
-    if (held && px(held) <= RELEASE_PX) return held.kind !== 'regular' && regular ? regular : held;
+    if (held && px(held) <= (held.kind === 'regular' ? RELEASE_REGULAR_PX : RELEASE_PX)) return held.kind !== 'regular' && regular ? regular : held;
   }
   if (regular) return regular;
   return all.filter((r) => r.kind !== 'regular' && px(r) <= ENTER_PX).sort((p, q) => px(p) - px(q))[0] ?? null;
