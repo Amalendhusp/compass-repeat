@@ -44,7 +44,7 @@ const LINE_FLASH_MS = 1600;
 
 /** Nothing was made because the line is already there: say so, and briefly mark that line. */
 function lineExists(controller: AppController, entityId: EntityId | undefined): void {
-  showToast('This line already exists');
+  showToast('This line already exists', 2200, 'warning');
   controller.snapConfirm = null; // no point label (not even A's, still showing): no line was made
   if (!entityId) return;
   const record = { entityId, until: performance.now() + LINE_FLASH_MS };
@@ -466,7 +466,7 @@ function beginGuidedGesture(controller: AppController, view: ViewTransform, scre
         }
         if (!line) {
           if (nothingHere(doc, view, sp)) endGuide(controller);
-          else showToast('Tap a straight line');
+          else showToast('Tap a straight line', 2200, 'warning');
           return;
         }
         controller.lineReference = line;

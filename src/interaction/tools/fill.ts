@@ -42,7 +42,7 @@ export const fillTool: ToolModule = {
         if (!region) {
           // Phase 4 item 3: never guess a missing boundary, never flood past it. Phase 5.4: and
           // show WHERE it's open — the chain and its loose ends, briefly; nothing is changed.
-          showToast('Open boundary');
+          showToast('Open boundary', 2200, 'warning');
           const diagnosis = diagnoseOpenBoundary(doc, tapWorld, 70 / view.zoom);
           if (diagnosis) controller.showFillDiagnostic(diagnosis);
           controller.notify();

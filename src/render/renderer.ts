@@ -656,8 +656,9 @@ function drawLabelPill(ctx: CanvasRenderingContext2D, at: Vec2, lines: string[],
   ctx.restore();
 }
 
-/** Smart Snap: the point just used says what it was, briefly (Phase 5.9: with a hint line after a
- * crowded tap); and any brief canvas cue ("Trace the line you want"). */
+/** Smart Snap: the point just used is ringed, briefly — what it was (and, after a crowded tap, that
+ * holding chooses) is said in the status line (ui/toast.ts), as are brief cues ("Trace the line you
+ * want"), so nothing is written over the drawing. */
 function drawSnapFeedback(ctx: CanvasRenderingContext2D, controller: AppController, view: ViewTransform): void {
   const conf = controller.snapConfirm;
   if (conf && performance.now() < conf.until) {
@@ -669,12 +670,6 @@ function drawSnapFeedback(ctx: CanvasRenderingContext2D, controller: AppControll
     ctx.lineWidth = 2;
     ctx.stroke();
     ctx.restore();
-    drawLabelPill(ctx, { x: s.x, y: s.y - (conf.hint ? 34 : 26) }, conf.hint ? [conf.label, conf.hint] : [conf.label], view, 0.95);
-  }
-  const cue = controller.cue;
-  if (cue && performance.now() < cue.until) {
-    const s = worldToScreen(view, cue.at);
-    drawLabelPill(ctx, { x: s.x, y: s.y - 44 }, [cue.text], view, 0.97);
   }
   drawNoPoint(ctx, controller, view);
 }

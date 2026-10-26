@@ -84,7 +84,7 @@ export const circleTool: ToolModule = {
 
     const finish = (throughRef: PointRef) => {
       if (circleExists(doc, centreRef, dist(refLocation(doc, centreRef), refLocation(doc, throughRef)))) {
-        showToast('Already drawn');
+        showToast('Already drawn', 2200, 'warning');
         controller.cancelPending();
         controller.nodeInset = null;
         return;
@@ -432,7 +432,7 @@ function createFromEdges(controller: AppController, state: IncircleState): void 
     return g.kind === 'circle' && dist(g.centre, c.centre) < tol && Math.abs(g.radius - c.radius) < tol;
   });
   if (exists) {
-    showToast('Already drawn');
+    showToast('Already drawn', 2200, 'warning');
     return;
   }
   let k = 0;
@@ -549,7 +549,7 @@ function copyCircleGesture(controller: AppController, view: ViewTransform, scree
       }
       const centre: PointRef = p.kind === 'point' ? refFromHit(p.hit) : refAt(p.at);
       if (circleExists(doc, centre, radius)) {
-        showToast('Already drawn');
+        showToast('Already drawn', 2200, 'warning');
         controller.notify();
         return;
       }

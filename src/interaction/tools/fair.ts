@@ -26,6 +26,7 @@ import { dist } from '../../geometry/vec.ts';
 import { curveCandidatesAt, curveDistanceAt, segmentContainingParam } from '../hittest.ts';
 import { ensureCircleSegments, setSegmentFair } from '../../model/doc.ts';
 import type { Gesture, ToolModule } from './types.ts';
+import { showToast } from '../../ui/toast.ts';
 
 function fairStateFor(controller: AppController, entity: Entity, seg: DerivedSegment): SegmentState {
   return fairSegmentState(controller.doc, entity, seg, controller.doc.fairDefaults);
@@ -743,6 +744,7 @@ function commitDraft(controller: AppController, draft: Map<SegmentKey, SegmentSt
 export function showCue(controller: AppController, at: Vec2, text: string, ms = CUE_MS): void {
   const record = { at, text, until: performance.now() + ms };
   controller.cue = record;
+  showToast(text, ms); // said in the status line, not over the drawing
   controller.notifyView();
   setTimeout(() => {
     if (controller.cue === record) {

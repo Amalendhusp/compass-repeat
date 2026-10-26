@@ -108,7 +108,7 @@ function lockedGesture(controller: AppController, copy: IntersectionCopy, down: 
       if (told || dist(sp, down) <= DRAG_SLOP_PX) return;
       told = true;
       controller.intersectionSelected = copy.key;
-      showToast(`${copy.label} is locked · unlock it to move`);
+      showToast(`${copy.label} is locked · unlock it to move`, 2200, 'warning');
       controller.notify();
     },
     onUp() {

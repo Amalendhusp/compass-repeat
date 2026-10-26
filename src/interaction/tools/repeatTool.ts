@@ -208,7 +208,7 @@ function spaceTapGesture(controller: AppController, view: ViewTransform): Gestur
       const topology = computeSpaces(doc);
       const hit = spaceAt(topology, screenToWorld(view, sp));
       if (!hit) {
-        showToast(topology.classes.length > 0 ? 'Not an enclosed space' : 'No enclosed spaces yet');
+        showToast(topology.classes.length > 0 ? 'Not an enclosed space' : 'No enclosed spaces yet', 2200, 'warning');
         return;
       }
       const keys = (topology.groups.get(hit.group) ?? [hit]).map((c) => c.key);
@@ -245,7 +245,7 @@ function colourTapGesture(controller: AppController, view: ViewTransform): Gestu
       const doc = controller.doc;
       const hit = regionAtInRepeat(doc, view, sp);
       if (!hit) {
-        showToast('Not a closed region of the design');
+        showToast('Not a closed region of the design', 2200, 'warning');
         return;
       }
       const colour = doc.repeatSetup?.colour;

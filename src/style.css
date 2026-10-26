@@ -212,6 +212,7 @@ canvas.stage {
 }
 
 .util-row {
+  position: relative; /* the status line (.toast) sits just above it */
   display: flex;
   justify-content: space-between;
   align-items: center;
@@ -1554,13 +1555,29 @@ canvas.stage {
   pointer-events: none;
   opacity: 0;
   transition: opacity 0.15s ease;
-  white-space: nowrap;
-  max-width: calc(100% - 32px);
-  overflow: hidden;
-  text-overflow: ellipsis;
+  /* Wraps rather than run off a narrow screen; never wider than it. */
+  width: max-content;
+  max-width: calc(100vw - 24px);
+  text-align: center;
+  line-height: 1.35;
 }
 .toast.show {
   opacity: 1;
+}
+/* The status line in its place: just above the canvas's control row (Undo/Redo · canvas buttons),
+ * centred, compact — clear of the drawing where the finger is, and of every control. */
+.util-row > .toast {
+  bottom: calc(100% + 8px);
+  font-size: 12.5px;
+  padding: 7px 12px;
+  border-radius: 10px;
+}
+/* Restrained colours for what kind of message it is. */
+.toast[data-kind='warning'] {
+  background: #6a5424;
+}
+.toast[data-kind='error'] {
+  background: #7d3226;
 }
 
 /* ---- Phase 5.3 items 2–6: top-bar panels — one compact, light grammar for Construct and Repeat.

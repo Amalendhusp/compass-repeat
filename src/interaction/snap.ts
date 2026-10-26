@@ -29,6 +29,7 @@ import type { Gesture } from './tools/types.ts';
 import { CONTEXT_YIELD_PX, curveCandidatesAt, isPointTargetEligibleIn, pickPointTarget, POINT_HIT_RADIUS, type PointHit } from './hittest.ts';
 import { contextPointAt } from './context.ts';
 import { closePrecision, movePrecision, openPrecision } from './precision.ts';
+import { showToast } from '../ui/toast.ts';
 
 export const SWITCH_PX = 6;
 export const AMBIGUITY_PX = 7;
@@ -302,6 +303,8 @@ export function confirmSnap(controller: AppController, hit: SnapHit | null, hint
   const ms = hint ? CONFIRM_WITH_HINT_MS : CONFIRM_MS;
   const record = { at: hit.at, label, hint, until: performance.now() + ms };
   controller.snapConfirm = record;
+  // What was taken is said in the status line (the point itself is only ringed on the canvas).
+  showToast(hint ? `Crowded ${label.toLowerCase()} · ${hint}` : label, ms);
   controller.notifyView();
   setTimeout(() => {
     if (controller.snapConfirm === record) {
@@ -311,7 +314,7 @@ export function confirmSnap(controller: AppController, hit: SnapHit | null, hint
   }, ms + 20);
 }
 
-const CONFIRM_WITH_HINT_MS = 2200;
+const CONFIRM_WITH_HINT_MS = 2600;
 
 /**
  * A released tap. Phase 5.9: never a list — the nearest location is used at once. When other
@@ -322,7 +325,7 @@ export function resolveTap(controller: AppController, tracker: SnapTracker, hit:
   if (!hit) return;
   // `use` answering false means nothing was made with the point: then it is not announced either.
   if (use(hit) === false) return;
-  confirmSnap(controller, hit, hit.id && tracker.ambiguous() ? 'Crowded here · hold to choose' : undefined);
+  confirmSnap(controller, hit, hit.id && tracker.ambiguous() ? 'Hold to choose' : undefined);
 }
 
 // ---- Phase 5.9: press and hold on crowded points opens the precision loupe ----

@@ -1027,7 +1027,7 @@ function showReferencePanel(anchor: HTMLElement, controller: AppController, hook
         try {
           users = await artworksUsing(r.id, doc);
         } catch {
-          showToast('Couldn’t check which artworks use it');
+          showToast('Couldn’t check which artworks use it', 2600, 'error');
           return;
         }
         if (users.length > 0) {
@@ -1043,7 +1043,7 @@ function showReferencePanel(anchor: HTMLElement, controller: AppController, hook
                   showToast('Removed from the library');
                   if (menu.isConnected) build();
                 })
-                .catch(() => showToast('Couldn’t change the library'));
+                .catch(() => showToast('Couldn’t change the library', 2600, 'error'));
             },
           });
           return;
@@ -1063,7 +1063,7 @@ function showReferencePanel(anchor: HTMLElement, controller: AppController, hook
                 onChange();
                 if (menu.isConnected) build();
               })
-              .catch(() => showToast('Couldn’t delete the reference'));
+              .catch(() => showToast('Couldn’t delete the reference', 2600, 'error'));
           },
         });
       };
@@ -1120,7 +1120,7 @@ function showReferencePanel(anchor: HTMLElement, controller: AppController, hook
                   showToast('Added to the Reference Library');
                   if (menu.isConnected) build();
                 })
-                .catch(() => showToast('Couldn’t change the library'));
+                .catch(() => showToast('Couldn’t change the library', 2600, 'error'));
             });
             menu.appendChild(own);
           }
@@ -1236,7 +1236,7 @@ function showReferencePanel(anchor: HTMLElement, controller: AppController, hook
                 await importReference(file);
                 added++;
               } catch (err) {
-                showToast(err instanceof ReferenceImportError ? err.message : 'Couldn’t add the image');
+                showToast(err instanceof ReferenceImportError ? err.message : 'Couldn’t add the image', 2600, 'error');
                 if (err instanceof ReferenceImportError && err.reason === 'storage') break;
               }
             }
@@ -1268,7 +1268,7 @@ function showReferencePanel(anchor: HTMLElement, controller: AppController, hook
               useReference(r);
               showToast('Reference added to this artwork');
             } catch (err) {
-              showToast(err instanceof ReferenceImportError ? err.message : 'Couldn’t add the image');
+              showToast(err instanceof ReferenceImportError ? err.message : 'Couldn’t add the image', 2600, 'error');
             }
             adding = false;
             library = await listReferences().catch(() => library);
@@ -1297,7 +1297,7 @@ function showReferencePanel(anchor: HTMLElement, controller: AppController, hook
         })
         .catch(() => {
           library = [];
-          showToast('Couldn’t open the Reference Library');
+          showToast('Couldn’t open the Reference Library', 2600, 'error');
         })
         .finally(() => {
           if (menu.isConnected) build();
@@ -1563,8 +1563,8 @@ function showExportPanel(anchor: HTMLElement, controller: AppController, getView
             if (run !== thisRun || thisRun.stopped) return;
             making = false;
             refreshFormat();
-            if (e.message === 'hidden') showToast('Timelapse stopped — keep the app open while it’s made');
-            else if (menu.isConnected) showToast('Couldn’t create the timelapse');
+            if (e.message === 'hidden') showToast('Timelapse stopped — keep the app open while it’s made', 2200, 'warning');
+            else if (menu.isConnected) showToast('Couldn’t create the timelapse', 2600, 'error');
           });
       };
 
@@ -1584,7 +1584,7 @@ function showExportPanel(anchor: HTMLElement, controller: AppController, getView
             .then((result) => {
               if (result === 'saved') showToast(canShareFiles ? `Share sheet unavailable · saved ${v.filename}` : `Saved ${v.filename}`);
             })
-            .catch(() => showToast('Couldn’t share the video'))
+            .catch(() => showToast('Couldn’t share the video', 2600, 'error'))
             .finally(() => close());
           return;
         }
@@ -1597,7 +1597,7 @@ function showExportPanel(anchor: HTMLElement, controller: AppController, getView
             // Never implies a share sheet that didn't open: a refused sheet says so.
             if (result === 'saved') showToast(canShareFiles ? `Share sheet unavailable · saved ${name}` : `Saved ${name}`);
           })
-          .catch(() => showToast('Couldn’t create the file'))
+          .catch(() => showToast('Couldn’t create the file', 2600, 'error'))
           .finally(() => close());
       });
       refreshFormat();
@@ -2419,7 +2419,7 @@ export function buildShell(
     const ref = reference ? convertPick(controller.doc, copies, reference, kind, reach) : null;
     const mov = ref && moving ? convertPick(controller.doc, copies, moving, kind, reach, (p) => canMoveAgainst(ref, p)) : null;
     const picks = ref ? (mov ? [ref, mov] : [ref]) : [];
-    if (picks.length < controller.intersectionPicks.length) showToast(kind === 'point' ? 'No point there — tap one' : 'No line there — tap one');
+    if (picks.length < controller.intersectionPicks.length) showToast(kind === 'point' ? 'No point there — tap one' : 'No line there — tap one', 2200, 'warning');
     controller.intersectionPicks = picks;
     controller.notify();
   }
@@ -2472,7 +2472,7 @@ export function buildShell(
     const copy = intersectionCopies(controller.doc).find((c) => c.key === key);
     if (!copy) return;
     if (copy.locked) {
-      showToast(`${copy.label} is locked · unlock it to move`);
+      showToast(`${copy.label} is locked · unlock it to move`, 2200, 'warning');
       return;
     }
     const at = { x: copy.pose.translate.x + shift.x, y: copy.pose.translate.y + shift.y };
@@ -2504,7 +2504,7 @@ export function buildShell(
     const plan = planMatchEdge(controller.doc, intersectionCopies(controller.doc), moving, target);
     if (plan.kind !== 'edge' || plan.matched) return;
     if (isLocked(controller.doc, plan.moving)) {
-      showToast('That construction is locked · unlock it to move');
+      showToast('That construction is locked · unlock it to move', 2200, 'warning');
       return;
     }
     // One exact rigid move — one Undo step.

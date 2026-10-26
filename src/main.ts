@@ -260,7 +260,8 @@ function boot(doc: Doc, opts: { fitToScreen: boolean; history?: { undo: Doc[]; r
   // on every boot — a toast mounted before that point, as this used to be at module scope, ends
   // up appended then immediately detached, so showToast() would set text on an orphaned node no
   // one could ever see. Mounting it fresh after the shell exists keeps it alive for this boot.
-  initToast(root!);
+  // The status line sits just above the canvas's control row (ui/toast.ts).
+  initToast(root!.querySelector<HTMLElement>('.util-row') ?? root!);
 
   const ctx = canvas.getContext('2d');
   if (!ctx) throw new Error('2d context unavailable');
@@ -670,7 +671,7 @@ async function deleteFromStart(id: string): Promise<void> {
 
 async function openFromStart(id: string): Promise<void> {
   if (await openArtwork(id)) return;
-  showToast('That artwork could not be opened');
+  showToast('That artwork could not be opened', 2600, 'error');
   if (!session) showStart('artworks');
 }
 
