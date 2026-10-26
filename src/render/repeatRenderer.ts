@@ -34,6 +34,7 @@ import {
 import { repeatUnit, type RepeatUnit } from '../geometry/repeatUnit.ts';
 import { colouringInUse, patternGroup, regionColour, regionKey } from '../geometry/repeatColour.ts';
 import { drawnLayers, type DrawnLayer } from '../geometry/repeatStroke.ts';
+import { latticeShape } from '../geometry/latticeSnap.ts';
 import type { FaceSig, RepeatColouring } from '../model/types.ts';
 import { color, stroke } from './tokens.ts';
 import { makePath } from './svgContext.ts';
@@ -158,19 +159,24 @@ const MAX_GRID_CELLS = 3000;
 
 /**
  * Phase 5.1 item 8: the real lattice — every line comes from the current `a`/`b` basis (live
- * mid-drag too), never a decorative grid, and motif rotation never touches it (item 9).
- * - Square: the parallelogram cell each motif sits in (cells centred on the motif).
- * - Triangle: the triangulation joining motif centres along a, b and b − a.
- * - Hexagon: that same triangulation's dual — the honeycomb cell around each motif, its corners
- *   at each triangle's centroid. For a true 60° basis that's the regular hexagon; for a dragged,
- *   skewed basis it stays an exact affine honeycomb, so it always tiles.
+ * mid-drag too), never a decorative grid, and motif rotation never touches it (item 9). What is
+ * drawn is read off the arms themselves (geometry/latticeSnap.ts — latticeShape), never a label:
+ * - Any lattice (square, rectangular, skewed): the parallelogram cell each motif sits in (cells
+ *   centred on the motif) — exact for every lattice, so never a misleading regular grid.
+ * - A regular 60° lattice (equal arms at 60° or 120°): the triangulation joining motif centres —
+ *   or, for a hexagon frame (or an artwork that chose Hexagon), its dual, the honeycomb cell around
+ *   each motif, its corners at each triangle's centroid.
  */
 function drawLatticeGrid(ctx: CanvasRenderingContext2D, doc: Doc, repeat: RepeatSystem, view: ViewTransform, strong: boolean, ink: string): void {
-  const range = visibleLatticeRange({ ...doc, repeat }, view, motifRadius(doc) * 1.2);
+  const shape = latticeShape(repeat.a, repeat.b);
+  const style = shape.kind === 'cells' ? 'cells' : repeat.family === 'hex' || doc.frame.kind === 'hexagon' ? 'hex' : 'triangle';
+  // A 120° pair is drawn as its 60° pair (the same lattice).
+  const basis: RepeatSystem = shape.kind === 'sixty' ? { ...repeat, b: shape.b60 } : repeat;
+  const range = visibleLatticeRange({ ...doc, repeat: basis }, view, motifRadius(doc) * 1.2);
   if (!range) return;
   const { i0, i1, j0, j1 } = range;
   if ((i1 - i0 + 1) * (j1 - j0 + 1) > MAX_GRID_CELLS) return; // too dense to read — nothing useful to show
-  const { a, b } = repeat;
+  const { a, b } = basis;
   const pivot = doc.frame.origin;
   const at = (i: number, j: number): Vec2 => worldToScreen(view, { x: pivot.x + a.x * i + b.x * j, y: pivot.y + a.y * i + b.y * j });
 
@@ -180,7 +186,7 @@ function drawLatticeGrid(ctx: CanvasRenderingContext2D, doc: Doc, repeat: Repeat
     path.lineTo(q.x, q.y);
   };
 
-  if (repeat.family === 'hex') {
+  if (style === 'hex') {
     const ring = [a, b, { x: b.x - a.x, y: b.y - a.y }, { x: -a.x, y: -a.y }, { x: -b.x, y: -b.y }, { x: a.x - b.x, y: a.y - b.y }];
     const corners = ring.map((u, k) => {
       const v = ring[(k + 1) % 6]!;
@@ -198,7 +204,7 @@ function drawLatticeGrid(ctx: CanvasRenderingContext2D, doc: Doc, repeat: Repeat
         path.closePath();
       }
     }
-  } else if (repeat.family === 'triangle') {
+  } else if (style === 'triangle') {
     for (let j = j0; j <= j1; j++) segment(at(i0, j), at(i1, j));
     for (let i = i0; i <= i1; i++) segment(at(i, j0), at(i, j1));
     // b − a direction: points with i + j = k lie on one line.

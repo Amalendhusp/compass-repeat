@@ -31,7 +31,7 @@ import { showToast } from './toast.ts';
 import { isInConfirmLayer, openConfirmSheet } from './confirmsheet.ts';
 import { onTap } from './tap.ts';
 import { color, fairPalette, stroke } from '../render/tokens.ts';
-import { isSixtyDegreeFamily, type LatticeFamily } from '../geometry/lattice.ts';
+import { suggestedFamily, type LatticeFamily } from '../geometry/lattice.ts';
 import { rotationFractionLabel } from '../render/repeatRenderer.ts';
 import { asReference, intersectionCopies, layoutOf, MAX_CONSTRUCTIONS, placedAt, PRIMARY, referenceCurrent, sliderToSpread, SPREAD_SLIDER_MAX, spreadToSlider, withAddedCopy, withCopySetting, withLayout, withLock, withoutCopy, withSpreadAround, isLocked } from '../geometry/intersection.ts';
 import { canMoveAgainst, convertPick, isPointPick, planMatchEdge, planSnap, resolvePick, type PickKind } from '../geometry/intersectionSnap.ts';
@@ -1334,6 +1334,26 @@ function showRepeatGuidesPanel(anchor: HTMLElement, controller: AppController, o
       rows.push(popoverToggleRow(menu, 'Grid', () => display().grid, (on) => set(() => (display().grid = on))));
       rows.push(popoverToggleRow(menu, 'Handles', () => display().handles, (on) => set(() => (display().handles = on))));
       rows.push(popoverToggleRow(menu, 'Motif boundary', () => display().motifBoundary, (on) => set(() => (display().motifBoundary = on))));
+      // Reset lattice: back to the lattice Repeat first suggests for this artwork and source — the
+      // frame's natural shape (square; 60° for a triangle or hexagon frame) at its comfortable
+      // spacing (for the Intersect arrangement, spaced to its extent). The rule, the motif's
+      // rotation and every colour stay as they are. One Undo step; Undo also restores a lattice made
+      // by hand.
+      const reset = document.createElement('button');
+      reset.className = 'popover-row guides-reset';
+      reset.textContent = 'Reset lattice';
+      reset.title = 'Back to the lattice Repeat first suggests (rule, rotation and colours kept)';
+      onTap(reset, () => {
+        controller.commit((d) => {
+          const family: LatticeFamily = suggestedFamily(d.frame.kind);
+          const { a, b } = suggestForFamily(d, family);
+          d.repeat.family = family;
+          d.repeat.a = a;
+          d.repeat.b = b;
+        });
+        showToast('Lattice reset');
+      });
+      menu.appendChild(reset);
     },
     { shieldCanvas: true, panel: true },
   );
@@ -2014,38 +2034,8 @@ export function buildShell(
   repeatStatus.className = 'repeat-status';
   repeatPanel.appendChild(repeatStatus);
 
-  const familyRow = document.createElement('div');
-  familyRow.className = 'segmented-mini';
-  const FAMILIES: { id: LatticeFamily; label: string }[] = [
-    { id: 'square', label: 'Square' },
-    { id: 'triangle', label: 'Triangle' },
-    { id: 'hex', label: 'Hexagon' },
-  ];
-  const familyBtns = new Map<LatticeFamily, HTMLButtonElement>();
-  for (const f of FAMILIES) {
-    const btn = document.createElement('button');
-    btn.textContent = f.label;
-    btn.addEventListener('click', () => {
-      const current = controller.doc.repeat.family;
-      if (current === f.id) return;
-      // Phase 5 item 3: switching between Square and a 60° family resets a/b to that family's
-      // own comfortable defaults. Phase 5.1 item 10: Triangle ↔ Hexagon is the SAME lattice, only
-      // presented differently, so the participant's arrangement carries straight across.
-      const keepVectors = isSixtyDegreeFamily(current) && isSixtyDegreeFamily(f.id);
-      controller.commit((d) => {
-        d.repeat.family = f.id;
-        if (keepVectors) return;
-        // The family's own suggested spacing — for what is being repeated (the motif, or the
-        // Intersect arrangement's extent).
-        const { a, b } = suggestForFamily(d, f.id);
-        d.repeat.a = a;
-        d.repeat.b = b;
-      });
-    });
-    familyBtns.set(f.id, btn);
-    familyRow.appendChild(btn);
-  }
-  repeatPanel.appendChild(familyRow);
+  // The lattice is shaped by its handles alone (precise 90° / 60° relations and equal arms snap —
+  // geometry/latticeSnap.ts); Grid and guides keeps a Reset lattice.
 
   const ruleRow = document.createElement('div');
   ruleRow.className = 'segmented-mini';
@@ -3280,7 +3270,6 @@ export function buildShell(
     // Repeat's lattice controls belong to Repeat; Intersection has its own rows.
     // While colouring, the lattice rows step aside for the colouring controls.
     const colouring = inRepeat && !!controller.repeatColourMode;
-    familyRow.style.display = inRepeat && !colouring ? '' : 'none';
     ruleLine.style.display = inRepeat && !colouring ? '' : 'none';
     spaceRow.style.display = inRepeat && !colouring ? '' : 'none';
     colourKindRow.style.display = colouring ? '' : 'none';
@@ -3296,7 +3285,6 @@ export function buildShell(
     ixSnapshotsBtn.style.display = inIntersection ? '' : 'none';
 
     if (placing) {
-      for (const [id, btn] of familyBtns) btn.classList.toggle('active', controller.doc.repeat.family === id);
       for (const [id, btn] of ruleBtns) btn.classList.toggle('active', controller.doc.repeat.rule.kind === id);
       if (inRepeat) refreshSpaceRow();
       else {

@@ -128,9 +128,9 @@ const repeat: CoachStep = {
     const c = ctx.controller;
     const doc = c.doc;
     if (doc.view.workspace !== 'repeat') return { text: 'Turn your design into a pattern. Tap Repeat.', targets: [ctx.find('.topbar button', 'Repeat')] };
-    // What "moved" is measured from: the spacing as Repeat first showed it — and again after any
-    // lattice switch (Square / Triangle / Hexagon), which resets the spacing itself. Only the
-    // handles change the spacing within one lattice.
+    // What "moved" is measured from: the spacing as Repeat first showed it — and again whenever the
+    // stored lattice family changes (Reset lattice on an older artwork), which resets the spacing
+    // itself. Only the handles change the spacing within one lattice.
     if (ctx.memo.family !== doc.repeat.family) {
       ctx.memo.family = doc.repeat.family;
       ctx.memo.base = spacing(doc);

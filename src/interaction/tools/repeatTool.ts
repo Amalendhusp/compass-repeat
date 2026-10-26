@@ -13,6 +13,7 @@ import { computeSpaces, spaceAt } from '../../geometry/spaces.ts';
 import { withAlpha } from '../../model/colour.ts';
 import { patternGroup, regionAtInRepeat, toggleRegion } from '../../geometry/repeatColour.ts';
 import { repeatSourceOf } from '../../geometry/repeatSetup.ts';
+import { stepRelation, type Relation } from '../../geometry/latticeSnap.ts';
 import { showToast } from '../../ui/toast.ts';
 import type { Gesture, ToolModule } from './types.ts';
 
@@ -119,12 +120,17 @@ function dragHandleGesture(controller: AppController, view: ViewTransform, dir: 
   let snap: Snap = initial.snap;
   let lastUnit = initial.unit;
   let moving = false;
+  // Precise relations with the other arm (geometry/latticeSnap.ts) — 90° / 60° / 120°, equal arms, a
+  // regular lattice — wherever the neighbour is not in contact. Likewise one already held starts held.
+  const other = controller.doc.repeat[dir === 'a' ? 'b' : 'a'];
+  let relation: Relation | null = stepRelation(other, start, null, view.zoom);
 
   return {
     onMove(sp) {
       if (!moving && dist(sp, downScreen) <= DRAG_SLOP_PX) return;
       moving = true;
-      const step = stepSnap(model, snap, rawAt(sp), view.zoom, lastUnit);
+      const raw = rawAt(sp);
+      const step = stepSnap(model, snap, raw, view.zoom, lastUnit);
       lastUnit = step.unit;
       if (step.snap && !sameSnap(step.snap, snap)) {
         const label = contactLabel(model, step.shown);
@@ -135,7 +141,15 @@ function dragHandleGesture(controller: AppController, view: ViewTransform, dir: 
         }
       }
       snap = step.snap;
-      controller.repeatDrag = { dir, translate: step.shown, snapped: snap !== null };
+      // Not touching the neighbour: an exact relation with the other arm may hold the arm instead.
+      const next = snap ? null : stepRelation(other, raw, relation, view.zoom);
+      if (next && next.key !== relation?.key) {
+        controller.flashRepeatContact(next.label);
+        if (navigator.userActivation?.hasBeenActive) navigator.vibrate?.(8);
+      }
+      relation = next;
+      const shown = relation ? relation.at : step.shown;
+      controller.repeatDrag = { dir, translate: shown, snapped: snap !== null || relation !== null };
       controller.notifyView();
     },
     onUp() {

@@ -264,7 +264,7 @@ canvas.stage {
   box-shadow: 0 4px 12px rgba(30, 42, 54, 0.06);
 }
 
-/* Phase 5: Repeat's compact control panel — lattice family, orientation rule, and the transient
+/* Phase 5: Repeat's compact control panel — orientation rule, and the transient
  * contact/rotation status line. Stacks as its own small column, replacing the Construct
  * dock/context-bar while the Repeat workspace is active. */
 .repeat-panel {
