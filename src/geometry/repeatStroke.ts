@@ -11,7 +11,8 @@
 
 import type { Doc, RepeatStroke, RepeatStrokeLayer } from '../model/types.ts';
 
-/** One layer as drawn: a colour or width left null keeps each line's own from Construct. */
+/** One layer as drawn: a colour or width left null keeps each line's own from Construct. Widths are
+ * in the artwork's own units (px at 100% zoom): they scale with the pattern. */
 export interface DrawnLayer {
   colour: string | null;
   width: number | null;

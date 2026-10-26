@@ -621,7 +621,9 @@ function showRepeatAppearancePanel(anchor: HTMLElement, controller: AppControlle
         );
         const style = current();
         const names = style.layers.length === 1 ? ['Line'] : style.layers.length === 2 ? ['Outer', 'Inner'] : ['Outer', 'Inner', 'Centre'];
-        const fmt = (v: number) => (v === 0 ? 'None' : `${Number(v.toFixed(2))} px`);
+        // Widths are the design's own (they scale with the pattern): shown as plain numbers — px at
+        // 100% zoom.
+        const fmt = (v: number) => (v === 0 ? 'None' : `${Number(v.toFixed(2))}`);
         const rows: { slider: HTMLInputElement; value: HTMLSpanElement }[] = [];
         const showWidths = (st: RepeatStroke) =>
           st.layers.forEach((l, k) => {
@@ -653,6 +655,7 @@ function showRepeatAppearancePanel(anchor: HTMLElement, controller: AppControlle
           slider.value = String(layer.width);
           slider.className = 'width-slider';
           slider.setAttribute('aria-label', `${names[k]} width`);
+          slider.title = 'Width in the design — it scales with the pattern (px at 100% zoom)';
           const value = document.createElement('span');
           value.className = 'popover-row-label popover-value';
           value.textContent = fmt(layer.width);

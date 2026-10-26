@@ -216,7 +216,8 @@ export interface RepeatColouring {
   pattern?: { by: 'none' | 'copies' | 'rows' | 'columns'; regions: Record<string, string | null> };
 }
 
-/** One layer of Repeat's outline style: a colour and a width (screen px) along every line. */
+/** One layer of Repeat's outline style: a colour and a width along every line — in the artwork's own
+ * units (px at 100% zoom), so it scales with the pattern. */
 export interface RepeatStrokeLayer {
   colour: string;
   width: number;

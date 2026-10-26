@@ -381,10 +381,14 @@ function paintFor(colour: RepeatColouring | undefined, instanceKey: string | nul
   return (sig) => regionColour(colour, regionKey(instanceKey, sig), group);
 }
 
-/** One copy's fills and Fair strokes, exactly as the vector path draws them. `lineScale` converts
- * the on-screen stroke widths into this target's pixels (1 on screen; DPR × detail in a sprite).
- * `paint`: Repeat's own region colours over the design's fills (Repeat Colouring). */
-function drawCopy(ctx: CanvasRenderingContext2D, doc: Doc, view: ViewTransform, pose: InstancePose, flat: FlatMotif, display: RepeatDisplay, showFills: boolean, showStrokes: boolean, lineScale: number, skip?: ReadonlySet<number> | null, paint?: RegionPaint | null, layer?: DrawnLayer): void {
+/** One copy's fills and Fair strokes, exactly as the vector path draws them.
+ * `paint`: Repeat's own region colours over the design's fills (Repeat Colouring).
+ *
+ * Stroke widths are the design's: a width w is w units of the artwork's own coordinates (w px at
+ * 100% zoom), so lines scale with the pattern exactly as its geometry does — on screen, while a
+ * pinch stretches the cached bitmap, in exports and in Timelapse alike, and the layers of a Double
+ * or Triple keep their proportions at every zoom. (Guides, handles and rings stay screen-sized.) */
+function drawCopy(ctx: CanvasRenderingContext2D, doc: Doc, view: ViewTransform, pose: InstancePose, flat: FlatMotif, display: RepeatDisplay, showFills: boolean, showStrokes: boolean, skip?: ReadonlySet<number> | null, paint?: RegionPaint | null, layer?: DrawnLayer): void {
   const pivot = doc.frame.origin;
   const filledMap = doc.fills.get(doc.activeColourway);
   if (showFills && flat.holesOf && (filledMap || paint)) {
@@ -411,7 +415,7 @@ function drawCopy(ctx: CanvasRenderingContext2D, doc: Doc, view: ViewTransform, 
     if (skip?.has(n)) continue; // already drawn, exactly here, by an earlier instance of the unit
     const { entity, seg, state } = flat.strokes[n]!;
     ctx.strokeStyle = colourOverride ?? state.stroke?.colour ?? color.ink;
-    ctx.lineWidth = (widthOverride ?? state.stroke?.width ?? stroke.fairDefault) * lineScale;
+    ctx.lineWidth = (widthOverride ?? state.stroke?.width ?? stroke.fairDefault) * view.zoom;
     ctx.lineCap = 'round';
     ctx.lineJoin = 'round';
     pathTransformedPiece(ctx, view, pivot, pose, doc, entity, seg.fromParam, seg.toParam);
@@ -466,10 +470,10 @@ function unitSkips(doc: Doc, flat: FlatMotif, unit: RepeatUnit): (Set<number> | 
 
 /** A whole unit at one lattice placement: each instance as the motif is drawn, placed by its own
  * placement and then the lattice's. */
-function drawUnit(ctx: CanvasRenderingContext2D, doc: Doc, view: ViewTransform, pose: InstancePose, unit: RepeatUnit, flat: FlatMotif, display: RepeatDisplay, showFills: boolean, showStrokes: boolean, lineScale: number, group: 0 | 1, layer?: DrawnLayer): void {
+function drawUnit(ctx: CanvasRenderingContext2D, doc: Doc, view: ViewTransform, pose: InstancePose, unit: RepeatUnit, flat: FlatMotif, display: RepeatDisplay, showFills: boolean, showStrokes: boolean, group: 0 | 1, layer?: DrawnLayer): void {
   const skips = unitSkips(doc, flat, unit);
   const colour = doc.repeatSetup?.colour;
-  unit.members.forEach((member, k) => drawCopy(ctx, doc, view, composePose(pose, member), flat, display, showFills, showStrokes, lineScale, skips[k], paintFor(colour, unit.keys[k]!, group), layer));
+  unit.members.forEach((member, k) => drawCopy(ctx, doc, view, composePose(pose, member), flat, display, showFills, showStrokes, skips[k], paintFor(colour, unit.keys[k]!, group), layer));
 }
 
 /**
@@ -515,7 +519,7 @@ function motifSprite(doc: Doc, display: RepeatDisplay, zoom: number, detail: num
   const sameKind = !!sprite && sprite.key.includes('|unit:') === !!unit;
   if (sprite && sprite.doc === doc && ((allowStale && sameKind) || (sprite.key === key && Math.abs(sprite.zoom / zoom - 1) < 0.005))) return sprite;
   const flat = flatMotif(doc);
-  const half = (unit ? unit.extent : motifExtent(doc)) * zoom + (pass.layer.width ?? flat.maxStroke) + 2; // CSS px
+  const half = ((unit ? unit.extent : motifExtent(doc)) + (pass.layer.width ?? flat.maxStroke)) * zoom + 2; // CSS px
   const scale = effectiveDpr() * detail;
   const px = Math.ceil(half * 2 * scale);
   if (px > (layered ? MAX_LAYERED_SPRITE_PX : MAX_SPRITE_PX) || px < 4) return null;
@@ -528,8 +532,8 @@ function motifSprite(doc: Doc, display: RepeatDisplay, zoom: number, detail: num
   sctx.clearRect(0, 0, px, px);
   const pivot = doc.frame.origin;
   const local: ViewTransform = { zoom: zoom * scale, pan: { x: -pivot.x, y: -pivot.y }, w: px, h: px };
-  if (unit) drawUnit(sctx, doc, local, IDENTITY, unit, flat, display, pass.fills, pass.strokes, scale, group, pass.layer);
-  else drawCopy(sctx, doc, local, IDENTITY, flat, display, pass.fills, pass.strokes, scale, null, paintFor(doc.repeatSetup?.colour, null, group), pass.layer);
+  if (unit) drawUnit(sctx, doc, local, IDENTITY, unit, flat, display, pass.fills, pass.strokes, group, pass.layer);
+  else drawCopy(sctx, doc, local, IDENTITY, flat, display, pass.fills, pass.strokes, null, paintFor(doc.repeatSetup?.colour, null, group), pass.layer);
   const made: Sprite = { canvas, doc, key, zoom, cssSize: px / scale };
   sprites.set(slot, made);
   return made;
@@ -612,9 +616,9 @@ export function renderRepeat(ctx: CanvasRenderingContext2D, controller: AppContr
         ctx.drawImage(bitmap.canvas, -size / 2, -size / 2, size, size);
         ctx.restore();
       } else if (unit) {
-        drawUnit(ctx, doc, view, pose, unit, flat, display, pass.fills, pass.strokes, 1, group, pass.layer);
+        drawUnit(ctx, doc, view, pose, unit, flat, display, pass.fills, pass.strokes, group, pass.layer);
       } else {
-        drawCopy(ctx, doc, view, pose, flat, display, pass.fills, pass.strokes, 1, null, paintFor(colour, null, group), pass.layer);
+        drawCopy(ctx, doc, view, pose, flat, display, pass.fills, pass.strokes, null, paintFor(colour, null, group), pass.layer);
       }
     }
   });
