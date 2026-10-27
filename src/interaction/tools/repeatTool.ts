@@ -13,7 +13,7 @@ import { computeSpaces, spaceAt } from '../../geometry/spaces.ts';
 import { withAlpha } from '../../model/colour.ts';
 import { patternGroup, regionAtInRepeat, toggleRegion } from '../../geometry/repeatColour.ts';
 import { repeatSourceOf } from '../../geometry/repeatSetup.ts';
-import { coincidentLabels, handleTargets, startSnap, stepHandleSnap, type SnapTarget } from '../../geometry/handleSnap.ts';
+import { coincident, handleTargets, startSnap, stepHandleSnap, type SnapTarget } from '../../geometry/handleSnap.ts';
 import type { RepeatSnapFeedback } from '../../app/controller.ts';
 import { showToast } from '../../ui/toast.ts';
 import type { Gesture, ToolModule } from './types.ts';
@@ -27,7 +27,7 @@ const DRAG_SLOP_PX = 6;
 
 /** What a held snap means, for the marks drawn while dragging (repeatRenderer). */
 function feedbackFor(targets: SnapTarget[], held: SnapTarget, at: Vec2, zoom: number): RepeatSnapFeedback {
-  const all = [held, ...targets.filter((t) => t !== held && t.tier === 1 && t.dist(at) * zoom < 0.5)];
+  const all = coincident(targets, held, at, zoom);
   return {
     contact: all.some((t) => t.kind === 'edges' || t.kind === 'tips' || t.kind === 'touch'),
     angle: all.find((t) => t.angle !== undefined)?.angle ?? null,
@@ -63,7 +63,7 @@ function dragHandleGesture(controller: AppController, view: ViewTransform, dir: 
       const raw = rawAt(sp);
       const step = stepHandleSnap(targets, state, raw, view.zoom, performance.now());
       if (step.captured) {
-        controller.flashRepeatContact(coincidentLabels(targets, step.captured, step.shown, view.zoom).join(' · '));
+        controller.flashRepeatContact(coincident(targets, step.captured, step.shown, view.zoom).map((t) => t.label).join(' · '));
         // A tactile tick where supported (Android); iOS Safari has no vibrate API at all.
         if (navigator.userActivation?.hasBeenActive) navigator.vibrate?.(8);
       }

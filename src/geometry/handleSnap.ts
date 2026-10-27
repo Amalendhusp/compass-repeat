@@ -195,13 +195,19 @@ export function stepHandleSnap(targets: SnapTarget[], state: SnapState, raw: Vec
   return { held, shown: held ? held.at(raw) : { ...raw }, captured };
 }
 
-/** Labels of every target sitting exactly where `t` holds the arm (e.g. "Edges meet · Square
- * lattice" when an edge contact is also a regular lattice). */
-export function coincidentLabels(targets: SnapTarget[], held: SnapTarget, at: Vec2, zoom: number): string[] {
-  const labels = [held.label];
-  for (const t of targets) {
-    if (t === held || labels.includes(t.label) || t.tier !== 1) continue;
-    if (t.dist(at) * zoom < 0.5) labels.push(t.label);
+/** Every target the arm exactly satisfies where `held` puts it, `held` first — so feedback can say
+ * all of it ("Tips touch · 90°", "Edges meet · Square lattice"). Nothing said twice: no "Touching"
+ * beside an exact contact, no angle or "Equal arms" beside the regular lattice that implies them. */
+export function coincident(targets: SnapTarget[], held: SnapTarget, at: Vec2, zoom: number): SnapTarget[] {
+  const here = targets.filter((t) => t !== held && t.dist(at) * zoom < 0.5);
+  const all = [held, ...here.filter((t) => t.tier === 1), ...here.filter((t) => t.tier === 2)];
+  const contact = all.some((t) => t.kind === 'edges' || t.kind === 'tips');
+  const regular = all.some((t) => t.kind === 'regular');
+  const out: SnapTarget[] = [];
+  for (const t of all) {
+    if (t !== held && ((t.kind === 'touch' && contact) || ((t.kind === 'angle' || t.kind === 'equal') && regular))) continue;
+    if (out.some((o) => o.label === t.label)) continue;
+    out.push(t);
   }
-  return labels;
+  return out;
 }
