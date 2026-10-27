@@ -11,6 +11,15 @@ import type { IntersectionPick, PickKind } from '../geometry/intersectionSnap.ts
  * existing polygon groups stay fully supported as data and as Select targets. */
 export type ToolId = 'select' | 'circle' | 'line' | 'arc' | 'divide' | 'fair' | 'fill';
 
+/** Phase 1.1: what a snap holding a lattice handle means, for the marks drawn while dragging —
+ * touching the neighbour, an exact angle (degrees) between the arms, equal arms (both: a regular
+ * lattice). */
+export interface RepeatSnapFeedback {
+  contact: boolean;
+  angle: number | null;
+  equal: boolean;
+}
+
 /** Circle's three ways of making a circle (Phase 5.13 labels: By radius · Between edges · Copy circle). */
 export type CircleVariant = 'centre-radius' | 'three-lines' | 'copy-radius';
 
@@ -385,10 +394,10 @@ export class AppController {
    * and its likely open ends, shown briefly. Interaction feedback only: never part of the doc. */
   fillDiagnostic: { keys: SegmentKey[]; endpoints: PointId[]; until: number } | null = null;
   private diagnosticTimer: ReturnType<typeof setInterval> | null = null;
-  /** Phase 5 item 4/6: non-null while a lattice-arm handle is being dragged. Phase 5.1: `translate`
-   * is what is shown (finger position after magnetic attraction/hysteresis snapping), and exactly
-   * what gets committed on release; `snapped` says whether it currently sits on a contact detent. */
-  repeatDrag: { dir: 'a' | 'b'; translate: Vec2; snapped: boolean } | null = null;
+  /** Phase 5 item 4/6: non-null while a lattice-arm handle is being dragged. `translate` is what is
+   * shown (the finger's arm, or the snap holding it — geometry/handleSnap.ts) and exactly what gets
+   * committed on release; `snapped` says whether a snap holds it, `feedback` what that snap means. */
+  repeatDrag: { dir: 'a' | 'b'; translate: Vec2; snapped: boolean; feedback?: RepeatSnapFeedback | null } | null = null;
   repeatContactFlash: { label: string } | null = null;
   /** Phase 5 item 7: non-null while the rotation ring is being dragged — same draft/commit split
    * as `repeatDrag`. */

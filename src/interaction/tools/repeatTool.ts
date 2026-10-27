@@ -7,106 +7,45 @@
 import type { Vec2 } from '../../model/types.ts';
 import type { AppController, ViewTransform } from '../../app/controller.ts';
 import { screenToWorld, worldToScreen } from '../../app/controller.ts';
-import { contactModel, motifRadius, snapRotation, type ContactModel } from '../../geometry/lattice.ts';
+import { contactModel, motifRadius, snapRotation } from '../../geometry/lattice.ts';
 import { dist } from '../../geometry/vec.ts';
 import { computeSpaces, spaceAt } from '../../geometry/spaces.ts';
 import { withAlpha } from '../../model/colour.ts';
 import { patternGroup, regionAtInRepeat, toggleRegion } from '../../geometry/repeatColour.ts';
 import { repeatSourceOf } from '../../geometry/repeatSetup.ts';
-import { stepRelation, type Relation } from '../../geometry/latticeSnap.ts';
+import { coincidentLabels, handleTargets, startSnap, stepHandleSnap, type SnapTarget } from '../../geometry/handleSnap.ts';
+import type { RepeatSnapFeedback } from '../../app/controller.ts';
 import { showToast } from '../../ui/toast.ts';
 import type { Gesture, ToolModule } from './types.ts';
 
 const HANDLE_HIT_RADIUS = 26; // px — generous, these are the only two draggable points
 const RING_HIT_BAND = 22; // px either side of the ring's own radius
 
-// Phase 5.1 item 1: contact hysteresis, in screen px so it feels the same at any zoom. Entering a
-// snap needs the finger close; leaving needs a deliberate pull well past that, so finger jitter
-// inside the band can never flip snapped → free → snapped.
-const DETENT_ENTER = 12;
-const DETENT_RELEASE = 32;
-const CONTOUR_ENTER = 9;
-const CONTOUR_RELEASE = 28;
-const ATTRACT_RADIUS = 36; // magnetic approach begins here…
-const ATTRACT_MAX = 0.55; // …pulling at most this fraction of the way toward the detent before it snaps
 // vNext Phase 1: a press that stays within this of where it went down moves nothing — so a tap or
 // a resting finger never nudges the lattice — and beyond it, whatever is shown is what is kept.
 const DRAG_SLOP_PX = 6;
 
-type Snap = { kind: 'detent'; index: number } | { kind: 'contour' } | null;
-
-function sameSnap(a: Snap, b: Snap): boolean {
-  if (!a || !b) return a === b;
-  if (a.kind === 'detent' && b.kind === 'detent') return a.index === b.index;
-  return a.kind === b.kind;
-}
-
-function attraction(distPx: number, enterPx: number): number {
-  if (distPx >= ATTRACT_RADIUS) return 0;
-  const t = (ATTRACT_RADIUS - distPx) / (ATTRACT_RADIUS - enterPx);
-  return Math.min(1, t) ** 2 * ATTRACT_MAX;
-}
-
-interface SnapResult {
-  snap: Snap;
-  shown: Vec2;
+/** What a held snap means, for the marks drawn while dragging (repeatRenderer). */
+function feedbackFor(targets: SnapTarget[], held: SnapTarget, at: Vec2, zoom: number): RepeatSnapFeedback {
+  const all = [held, ...targets.filter((t) => t !== held && t.tier === 1 && t.dist(at) * zoom < 0.5)];
+  return {
+    contact: all.some((t) => t.kind === 'edges' || t.kind === 'tips' || t.kind === 'touch'),
+    angle: all.find((t) => t.angle !== undefined)?.angle ?? null,
+    equal: all.some((t) => !!t.equal),
+  };
 }
 
 /**
- * One step of the free → magnetic approach → snapped → deliberate pull-away → free machine.
- * Detents (exact edge-to-edge / corner-to-corner placements) outrank the contact contour (any
- * touching position along the current drag direction); while on the contour, sliding toward a
- * detent is what captures it, so the neighbour can glide round the reference into alignment.
+ * Phase 1.1: dragging a lattice handle (geometry/handleSnap.ts). The handle stays under the finger
+ * unless a target has taken hold — contact with the neighbour (edges meet, tips touch, touching) or
+ * an exact relation with the other arm (90° / 60° / 120°, equal arms, a regular lattice). Capture
+ * needs a slow approach towards the target; release is measured from the finger itself.
  */
-function stepSnap(model: ContactModel, prev: Snap, raw: Vec2, zoom: number, lastUnit: Vec2): SnapResult & { unit: Vec2 } {
-  const len = Math.hypot(raw.x, raw.y);
-  const unit = len > 1e-9 ? { x: raw.x / len, y: raw.y / len } : lastUnit;
-  const contactLen = model.contactDistance(unit);
-  const contourPos = { x: unit.x * contactLen, y: unit.y * contactLen };
-  const radialPx = Math.abs(len - contactLen) * zoom;
-  // Measured along the contact (not straight from the finger) once the neighbour is touching, so
-  // gliding round the reference reaches — and leaves — a detent by sliding. Entering uses the
-  // tight contour band, releasing the loose one: the same asymmetry as everything else here.
-  const onContour = prev?.kind === 'contour' || radialPx <= CONTOUR_ENTER;
-  const enterProbe = onContour ? contourPos : raw;
-  const releaseProbe = radialPx <= CONTOUR_RELEASE ? contourPos : raw;
-
-  let nearest = -1;
-  let nearestPx = Infinity;
-  model.detents.forEach((d, i) => {
-    const px = dist(enterProbe, d.translate) * zoom;
-    if (px < nearestPx) {
-      nearestPx = px;
-      nearest = i;
-    }
-  });
-
-  let snap: Snap = prev;
-  if (snap?.kind === 'detent' && dist(releaseProbe, model.detents[snap.index]!.translate) * zoom > DETENT_RELEASE) snap = null;
-  if (snap?.kind === 'contour' && radialPx > CONTOUR_RELEASE) snap = null;
-  if (snap?.kind !== 'detent' && nearest >= 0 && nearestPx <= DETENT_ENTER) snap = { kind: 'detent', index: nearest };
-  if (!snap && radialPx <= CONTOUR_ENTER) snap = { kind: 'contour' };
-
-  if (snap?.kind === 'detent') return { snap, shown: model.detents[snap.index]!.translate, unit };
-  if (snap?.kind === 'contour') return { snap, shown: contourPos, unit };
-
-  // Free: a soft pull toward whichever detent/contour is closest, never all the way.
-  const wDetent = nearest >= 0 ? attraction(dist(raw, model.detents[nearest]!.translate) * zoom, DETENT_ENTER) : 0;
-  const wContour = attraction(radialPx, CONTOUR_ENTER);
-  const target = wDetent >= wContour && nearest >= 0 ? model.detents[nearest]!.translate : contourPos;
-  const w = Math.max(wDetent, wContour);
-  return { snap: null, shown: { x: raw.x + (target.x - raw.x) * w, y: raw.y + (target.y - raw.y) * w }, unit };
-}
-
-function contactLabel(model: ContactModel, t: Vec2): string | null {
-  const state = model.classify(t);
-  return state === 'edges-meet' ? 'Edges meet' : state === 'tips-touch' ? 'Tips touch' : null;
-}
-
 function dragHandleGesture(controller: AppController, view: ViewTransform, dir: 'a' | 'b', downScreen: Vec2): Gesture {
   const pivot = controller.doc.frame.origin;
   const start = controller.doc.repeat[dir];
-  const model = contactModel(controller.doc, dir);
+  const other = controller.doc.repeat[dir === 'a' ? 'b' : 'a'];
+  const targets = handleTargets(contactModel(controller.doc, dir), other);
   // Keep the handle where it was relative to the finger rather than jumping it under the fingertip.
   const downWorld = screenToWorld(view, downScreen);
   const grab = { x: start.x - (downWorld.x - pivot.x), y: start.y - (downWorld.y - pivot.y) };
@@ -114,51 +53,29 @@ function dragHandleGesture(controller: AppController, view: ViewTransform, dir: 
     const w = screenToWorld(view, sp);
     return { x: w.x - pivot.x + grab.x, y: w.y - pivot.y + grab.y };
   };
-
-  // A neighbour already resting on a detent starts snapped, so picking it up doesn't re-announce it.
-  const initial = stepSnap(model, null, start, view.zoom, { x: 1, y: 0 });
-  let snap: Snap = initial.snap;
-  let lastUnit = initial.unit;
+  const state = startSnap(start, performance.now());
   let moving = false;
-  // Precise relations with the other arm (geometry/latticeSnap.ts) — 90° / 60° / 120°, equal arms, a
-  // regular lattice — wherever the neighbour is not in contact. Likewise one already held starts held.
-  const other = controller.doc.repeat[dir === 'a' ? 'b' : 'a'];
-  let relation: Relation | null = stepRelation(other, start, null, view.zoom);
 
   return {
     onMove(sp) {
       if (!moving && dist(sp, downScreen) <= DRAG_SLOP_PX) return;
       moving = true;
       const raw = rawAt(sp);
-      const step = stepSnap(model, snap, raw, view.zoom, lastUnit);
-      lastUnit = step.unit;
-      if (step.snap && !sameSnap(step.snap, snap)) {
-        const label = contactLabel(model, step.shown);
-        if (label && (snap === null || step.snap.kind === 'detent')) {
-          controller.flashRepeatContact(label);
-          // A tactile tick where supported (Android); iOS Safari has no vibrate API at all.
-          if (navigator.userActivation?.hasBeenActive) navigator.vibrate?.(8);
-        }
-      }
-      snap = step.snap;
-      // Not touching the neighbour: an exact relation with the other arm may hold the arm instead.
-      const next = snap ? null : stepRelation(other, raw, relation, view.zoom);
-      if (next && next.key !== relation?.key) {
-        controller.flashRepeatContact(next.label);
+      const step = stepHandleSnap(targets, state, raw, view.zoom, performance.now());
+      if (step.captured) {
+        controller.flashRepeatContact(coincidentLabels(targets, step.captured, step.shown, view.zoom).join(' · '));
+        // A tactile tick where supported (Android); iOS Safari has no vibrate API at all.
         if (navigator.userActivation?.hasBeenActive) navigator.vibrate?.(8);
       }
-      relation = next;
-      // A relation the arm already had gives back the arm itself (no rounding drift, no Undo step).
-      const shown = relation ? (Math.hypot(relation.at.x - start.x, relation.at.y - start.y) <= 1e-9 * Math.max(1, Math.hypot(start.x, start.y)) ? start : relation.at) : step.shown;
-      controller.repeatDrag = { dir, translate: shown, snapped: snap !== null || relation !== null };
+      // A target the arm already had gives back the arm itself (no rounding drift, no Undo step).
+      const shown = step.held && Math.hypot(step.shown.x - start.x, step.shown.y - start.y) <= 1e-9 * Math.max(1, Math.hypot(start.x, start.y)) ? start : step.shown;
+      controller.repeatDrag = { dir, translate: shown, snapped: !!step.held, feedback: step.held ? feedbackFor(targets, step.held, shown, view.zoom) : null };
       controller.notifyView();
     },
     onUp() {
       // vNext Phase 1: what was on screen when the finger lifted is exactly what's kept — the snapped
       // (or freely dragged) translation itself, never recomputed from where the pointer came up,
-      // and kept however short the drag was: a small final push into contact is a real move, not a
-      // tap. (The pointer layer's tap/drag distinction used to throw such pushes away, springing the
-      // neighbour back to where it started.)
+      // and kept however short the drag was.
       const shown = controller.repeatDrag?.translate;
       controller.repeatDrag = null;
       if (!shown || (shown.x === start.x && shown.y === start.y)) {
