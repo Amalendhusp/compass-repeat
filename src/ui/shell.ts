@@ -3211,13 +3211,12 @@ export function buildShell(
     contextBar.classList.toggle('hidden', !contextBar.hasChildNodes());
   }
 
-  /** Phase 5.1 item 1: a contact is announced briefly as it's first reached, then fades — never a
-   * permanent readout. The rotation-fraction label still shows while (and only while) rotating.
-   * Updated on the cheap view-only channel too, since both track a drag at pointermove rate. */
+  /** The rotation-fraction label shows while (and only while) rotating. Updated on the cheap
+   * view-only channel too, since it tracks a drag at pointermove rate. (Phase 1.2: the lattice
+   * handles no longer snap, so there are no contacts to announce.) */
   function updateRepeatStatus(): void {
-    const flash = controller.repeatContactFlash;
     const rotating = controller.repeatRotateDrag;
-    const text = flash ? flash.label : rotating ? (rotationFractionLabel(rotating.rawRotation) ?? 'Rotating…') : null;
+    const text = rotating ? (rotationFractionLabel(rotating.rawRotation) ?? 'Rotating…') : null;
     if (text) repeatStatus.textContent = text; // keep the last text while fading out
     repeatStatus.classList.toggle('show', !!text);
   }

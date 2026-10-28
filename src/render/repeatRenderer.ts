@@ -13,7 +13,7 @@
 
 import { drawArtworkLayer, type ScreenLayers } from './underlay.ts';
 import type { Doc, Entity, RepeatDisplay, RepeatSystem, SegmentState, Vec2 } from '../model/types.ts';
-import type { AppController, RepeatSnapFeedback, ViewTransform } from '../app/controller.ts';
+import type { AppController, ViewTransform } from '../app/controller.ts';
 import { screenToWorld, worldToScreen } from '../app/controller.ts';
 import { computeSpaces, spaceTranslations } from '../geometry/spaces.ts';
 import { resolveEntityGeom } from '../geometry/kernel.ts';
@@ -255,8 +255,8 @@ function drawBasisArrows(ctx: CanvasRenderingContext2D, doc: Doc, repeat: Repeat
 }
 
 /** Phase 5 items 6/14: the two lattice-arm handles — always the PURE translation point (the
- * orientation rule styles a neighbour's own tile, never where its anchor sits). Phase 5.1: a
- * snapped handle shows it, so the settled state is legible without a permanent label. */
+ * orientation rule styles a neighbour's own tile, never where its anchor sits). The one being
+ * dragged is drawn larger and filled. */
 function drawLatticeHandles(ctx: CanvasRenderingContext2D, controller: AppController, repeat: RepeatSystem, view: ViewTransform): void {
   const pivot = controller.doc.frame.origin;
   const pivotScreen = worldToScreen(view, pivot);
@@ -275,14 +275,6 @@ function drawLatticeHandles(ctx: CanvasRenderingContext2D, controller: AppContro
     ctx.restore();
 
     const drag = controller.repeatDrag?.dir === dir ? controller.repeatDrag : null;
-    if (drag?.snapped) {
-      ctx.beginPath();
-      ctx.arc(anchorScreen.x, anchorScreen.y, 19, 0, Math.PI * 2);
-      ctx.fillStyle = color.signalLight;
-      ctx.globalAlpha = 0.85;
-      ctx.fill();
-      ctx.globalAlpha = 1;
-    }
     ctx.beginPath();
     ctx.arc(anchorScreen.x, anchorScreen.y, drag ? 13 : 10, 0, Math.PI * 2);
     ctx.fillStyle = drag ? color.signal : color.paper;
@@ -291,49 +283,6 @@ function drawLatticeHandles(ctx: CanvasRenderingContext2D, controller: AppContro
     ctx.strokeStyle = color.signal;
     ctx.stroke();
   }
-  const feedback = controller.repeatDrag?.snapped ? controller.repeatDrag.feedback : null;
-  if (feedback) drawSnapMarks(ctx, pivotScreen, worldToScreen(view, { x: pivot.x + repeat.a.x, y: pivot.y + repeat.a.y }), worldToScreen(view, { x: pivot.x + repeat.b.x, y: pivot.y + repeat.b.y }), feedback);
-}
-
-/** Phase 1.1: while a snap holds a handle, small marks say what it is — an angle mark between the
- * arms at the pivot (a square corner for 90°), a tick across each arm for equal arms (both for a
- * regular lattice). Contact is shown by the handle's halo alone. Thin, and only while dragging. */
-function drawSnapMarks(ctx: CanvasRenderingContext2D, o: Vec2, pa: Vec2, pb: Vec2, f: RepeatSnapFeedback): void {
-  const ua = unitOf(pa.x - o.x, pa.y - o.y);
-  const ub = unitOf(pb.x - o.x, pb.y - o.y);
-  if (!ua || !ub) return;
-  ctx.save();
-  ctx.strokeStyle = color.signal;
-  ctx.lineWidth = 1.6;
-  ctx.globalAlpha = 0.9;
-  ctx.beginPath();
-  if (f.angle === 90) {
-    const r = 13;
-    ctx.moveTo(o.x + ua.x * r, o.y + ua.y * r);
-    ctx.lineTo(o.x + (ua.x + ub.x) * r, o.y + (ua.y + ub.y) * r);
-    ctx.lineTo(o.x + ub.x * r, o.y + ub.y * r);
-  } else if (f.angle !== null) {
-    const r = 22;
-    const a0 = Math.atan2(ua.y, ua.x);
-    let sweep = Math.atan2(ub.y, ub.x) - a0;
-    while (sweep > Math.PI) sweep -= Math.PI * 2;
-    while (sweep < -Math.PI) sweep += Math.PI * 2;
-    ctx.arc(o.x, o.y, r, a0, a0 + sweep, sweep < 0);
-  }
-  if (f.equal) {
-    for (const [p, u] of [[pa, ua], [pb, ub]] as const) {
-      const m = { x: (o.x + p.x) / 2, y: (o.y + p.y) / 2 };
-      ctx.moveTo(m.x - u.y * 6, m.y + u.x * 6);
-      ctx.lineTo(m.x + u.y * 6, m.y - u.x * 6);
-    }
-  }
-  ctx.stroke();
-  ctx.restore();
-}
-
-function unitOf(x: number, y: number): Vec2 | null {
-  const l = Math.hypot(x, y);
-  return l > 1e-6 ? { x: x / l, y: y / l } : null;
 }
 
 /** Phase 5 item 7: a circular drag handle around the reference motif — the whole ring is the

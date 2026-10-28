@@ -7,14 +7,12 @@
 import type { Vec2 } from '../../model/types.ts';
 import type { AppController, ViewTransform } from '../../app/controller.ts';
 import { screenToWorld, worldToScreen } from '../../app/controller.ts';
-import { contactModel, motifRadius, snapRotation } from '../../geometry/lattice.ts';
+import { motifRadius, snapRotation } from '../../geometry/lattice.ts';
 import { dist } from '../../geometry/vec.ts';
 import { computeSpaces, spaceAt } from '../../geometry/spaces.ts';
 import { withAlpha } from '../../model/colour.ts';
 import { patternGroup, regionAtInRepeat, toggleRegion } from '../../geometry/repeatColour.ts';
 import { repeatSourceOf } from '../../geometry/repeatSetup.ts';
-import { coincident, handleTargets, startSnap, stepHandleSnap, type SnapTarget } from '../../geometry/handleSnap.ts';
-import type { RepeatSnapFeedback } from '../../app/controller.ts';
 import { showToast } from '../../ui/toast.ts';
 import type { Gesture, ToolModule } from './types.ts';
 
@@ -25,27 +23,14 @@ const RING_HIT_BAND = 22; // px either side of the ring's own radius
 // a resting finger never nudges the lattice — and beyond it, whatever is shown is what is kept.
 const DRAG_SLOP_PX = 6;
 
-/** What a held snap means, for the marks drawn while dragging (repeatRenderer). */
-function feedbackFor(targets: SnapTarget[], held: SnapTarget, at: Vec2, zoom: number): RepeatSnapFeedback {
-  const all = coincident(targets, held, at, zoom);
-  return {
-    contact: all.some((t) => t.kind === 'edges' || t.kind === 'tips' || t.kind === 'touch'),
-    angle: all.find((t) => t.angle !== undefined)?.angle ?? null,
-    equal: all.some((t) => !!t.equal),
-  };
-}
-
 /**
- * Phase 1.1: dragging a lattice handle (geometry/handleSnap.ts). The handle stays under the finger
- * unless a target has taken hold — contact with the neighbour (edges meet, tips touch, touching) or
- * an exact relation with the other arm (90° / 60° / 120°, equal arms, a regular lattice). Capture
- * needs a slow approach towards the target; release is measured from the finger itself.
+ * Phase 1.2: dragging a lattice handle moves its arm exactly with the finger — no snapping, no
+ * attraction, nothing to pull free of. (Exact arrangements come from stored coordinates, Reset
+ * lattice, and explicit operations.)
  */
 function dragHandleGesture(controller: AppController, view: ViewTransform, dir: 'a' | 'b', downScreen: Vec2): Gesture {
   const pivot = controller.doc.frame.origin;
   const start = controller.doc.repeat[dir];
-  const other = controller.doc.repeat[dir === 'a' ? 'b' : 'a'];
-  const targets = handleTargets(contactModel(controller.doc, dir), other);
   // Keep the handle where it was relative to the finger rather than jumping it under the fingertip.
   const downWorld = screenToWorld(view, downScreen);
   const grab = { x: start.x - (downWorld.x - pivot.x), y: start.y - (downWorld.y - pivot.y) };
@@ -53,29 +38,18 @@ function dragHandleGesture(controller: AppController, view: ViewTransform, dir: 
     const w = screenToWorld(view, sp);
     return { x: w.x - pivot.x + grab.x, y: w.y - pivot.y + grab.y };
   };
-  const state = startSnap(start, performance.now());
   let moving = false;
 
   return {
     onMove(sp) {
       if (!moving && dist(sp, downScreen) <= DRAG_SLOP_PX) return;
       moving = true;
-      const raw = rawAt(sp);
-      const step = stepHandleSnap(targets, state, raw, view.zoom, performance.now());
-      if (step.captured) {
-        controller.flashRepeatContact(coincident(targets, step.captured, step.shown, view.zoom).map((t) => t.label).join(' · '));
-        // A tactile tick where supported (Android); iOS Safari has no vibrate API at all.
-        if (navigator.userActivation?.hasBeenActive) navigator.vibrate?.(8);
-      }
-      // A target the arm already had gives back the arm itself (no rounding drift, no Undo step).
-      const shown = step.held && Math.hypot(step.shown.x - start.x, step.shown.y - start.y) <= 1e-9 * Math.max(1, Math.hypot(start.x, start.y)) ? start : step.shown;
-      controller.repeatDrag = { dir, translate: shown, snapped: !!step.held, feedback: step.held ? feedbackFor(targets, step.held, shown, view.zoom) : null };
+      controller.repeatDrag = { dir, translate: rawAt(sp) };
       controller.notifyView();
     },
     onUp() {
-      // vNext Phase 1: what was on screen when the finger lifted is exactly what's kept — the snapped
-      // (or freely dragged) translation itself, never recomputed from where the pointer came up,
-      // and kept however short the drag was.
+      // vNext Phase 1: what was on screen when the finger lifted is exactly what's kept, never
+      // recomputed from where the pointer came up; a press that never moved changes nothing.
       const shown = controller.repeatDrag?.translate;
       controller.repeatDrag = null;
       if (!shown || (shown.x === start.x && shown.y === start.y)) {

@@ -1,5 +1,4 @@
-// The shape of a Repeat lattice, read off its two arms — used to draw the grid guide. (The handles'
-// snapping to exact angles, equal arms and contact lives in geometry/handleSnap.ts.)
+// The shape of a Repeat lattice, read off its two arms — used to draw the grid guide.
 
 import type { Vec2 } from '../model/types.ts';
 
