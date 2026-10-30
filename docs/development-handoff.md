@@ -12,7 +12,7 @@ Keep this short and current. It is a starting point, not a substitute for readin
 | C1 | Individual construction colouring | done — `6b8e300` (branch `feature/c1-construction-colouring`) |
 | A | Colour-before-drawing (top-bar swatch) | done — see `git log` "Stage A" |
 | B | F0 shared geometry foundation | done — see `git log` "Stage B" |
-| C | Close Gap integration (from `feature/close-gap-poc` `f75482a`) | next |
+| C | Close Gap integration (from `feature/close-gap-poc` `f75482a`) | in progress — geometry module done ("Stage C 1/2"); Repeat UI next |
 | D | Intersect Form Development (independent Primary) | to do |
 
 ## Protected — never modify, merge into, push or deploy
@@ -66,11 +66,20 @@ Keep this short and current. It is a starting point, not a substitute for readin
 
 ## Exact next step
 
-Stage C: bring `closeGap.ts` from `feature/close-gap-poc` (f75482a) onto the shared services (keep its
-candidate/validation/`gapsNear` logic; its geometry now comes from `fairGeometry.ts` and features from
-`compositionFeatures`), then the Repeat interaction: a "Close gap" action (Grid and guides panel), tap near a
-gap → ≤3 local valid candidates, nearest previewed with a magnified view, arm + distance shown, Apply (one Undo
-step) / Cancel (nothing changes). Lattice handles stay completely free.
+Stage C 2/2 — the Repeat interaction for `src/geometry/closeGap.ts` (already on the shared services; all
+PoC fixtures identical — run `node scratchpad/closegap-run.mjs`):
+1. Grid and guides panel (`showRepeatGuidesPanel` in `src/ui/shell.ts`, beside Reset lattice): a "Close gap" row
+   that enters a mode `controller.closeGap = { phase: 'pick' }`.
+2. `src/interaction/tools/repeatTool.ts` `repeatTool` routes like `spaceMode` / `repeatColourMode` (line ~176): in
+   the mode, a tap → cached `findGaps` + `validate` (valid only) → `gapsNear(doc, valid, tapWorld, ~28px/zoom, 3)`.
+   None → status "No gap to close here" (+ count of rejected). Handle drags stay completely free (and cancel a
+   preview).
+3. Preview without changing the doc: a transient `controller.closeGapPreview` (corrected `repeat`, chosen local
+   candidate, site p/q); `repeatRenderer.ts` uses it like `repeatDrag` (line ~565) and draws a magnified inset
+   (current dashed / proposed solid, from `copyFeatures`).
+4. A row in the Repeat panel (like `colourKindRow`): chips for ≤3 local candidates ("1·A 2.0"), the arm and
+   distance, Apply (one `controller.commit` setting the arm) and Cancel (nothing changes).
+5. Test: fixtures, Intersect source, Plate 113, Undo/Redo, save/reopen, 375 px; commit "Stage C 2/2"; then Stage D.
 
 ## Commands
 
