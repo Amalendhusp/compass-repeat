@@ -83,7 +83,7 @@ function drawExtensionTails(ctx: CanvasRenderingContext2D, doc: Doc, view: ViewT
   const end = { x: g.a.x + (g.b.x - g.a.x) * maxParam, y: g.a.y + (g.b.y - g.a.y) * maxParam };
   const farStart = { x: start.x - g.dir.x * FAR, y: start.y - g.dir.y * FAR };
   const farEnd = { x: end.x + g.dir.x * FAR, y: end.y + g.dir.y * FAR };
-  ctx.strokeStyle = color.construction;
+  ctx.strokeStyle = constructionColour(entity);
   ctx.lineWidth = view.zoom < 0.6 ? 0.6 : stroke.construction;
   ctx.setLineDash(stroke.extensionDash);
   ctx.globalAlpha = alpha;
@@ -177,7 +177,7 @@ function drawEntities(ctx: CanvasRenderingContext2D, controller: AppController, 
     if (segs.length === 0) {
       if (!showConstruction) continue;
       wholeEntityPath(ctx, doc, view, e);
-      ctx.strokeStyle = color.construction;
+      ctx.strokeStyle = constructionColour(e);
       ctx.lineWidth = baseWidth;
       ctx.setLineDash([]);
       ctx.globalAlpha = (quiet ? quietAlpha : 1) * (focus && g ? focusAlpha(focus, g, 0, g.kind === 'circle' ? Math.PI * 2 : 1, view.zoom) : 1);
@@ -200,7 +200,7 @@ function drawEntities(ctx: CanvasRenderingContext2D, controller: AppController, 
         ctx.setLineDash([]);
         ctx.globalAlpha = 1;
       } else {
-        ctx.strokeStyle = color.construction;
+        ctx.strokeStyle = constructionColour(e);
         ctx.lineWidth = baseWidth;
         ctx.lineCap = 'butt';
         ctx.lineJoin = 'miter';
@@ -271,6 +271,29 @@ function drawFills(ctx: CanvasRenderingContext2D, controller: AppController, vie
   }
 }
 
+/** C1: a construction element's colour — its own, or the default construction grey. In Intersect
+ * (`doc` showing that workspace) the instances keep their identification colours, and the
+ * magnifiers drawn through an instance stay the plain construction grey they always were. */
+function constructionColour(e: Entity, doc?: Doc): string {
+  if (doc?.view.workspace === 'intersection') return color.construction;
+  return e.colour ?? color.construction;
+}
+
+/** C1: strokes the current path (or `path`) as a selection — first a thin light halo just wider than
+ * the stroke, then the stroke itself — so the selection reads over any construction colour, dark or
+ * light. */
+function strokeSelected(ctx: CanvasRenderingContext2D, path?: Path2D): void {
+  ctx.save();
+  ctx.strokeStyle = color.paper;
+  ctx.globalAlpha = 0.9;
+  ctx.lineWidth = ctx.lineWidth + 3;
+  if (path) ctx.stroke(path);
+  else ctx.stroke();
+  ctx.restore();
+  if (path) ctx.stroke(path);
+  else ctx.stroke();
+}
+
 /** Phase 1.2 item 3 / Phase 2A: a bold signal overlay for the segment/entity/group a Select
  * candidate refers to — a 'group' (Polygon) highlights every edge that shares its groupId.
  * Phase 2.1 item 4: a whole-entity/group highlight is drawn live-segment-by-live-segment too, so
@@ -293,7 +316,7 @@ function drawSelectionHighlights(ctx: CanvasRenderingContext2D, doc: Doc, view: 
           const seg = entity ? deriveSegments(doc, entity).find((s) => s.key === key) : undefined;
           if (!entity || !seg) continue;
           segmentPath(ctx, doc, view, entity, seg.fromParam, seg.toParam);
-          ctx.stroke();
+          strokeSelected(ctx);
         }
         continue;
       }
@@ -304,7 +327,7 @@ function drawSelectionHighlights(ctx: CanvasRenderingContext2D, doc: Doc, view: 
         ctx.globalAlpha = 0.35;
         ctx.fill(path);
         ctx.globalAlpha = 1;
-        ctx.stroke(path);
+        strokeSelected(ctx, path);
       }
       continue;
     }
@@ -335,7 +358,7 @@ function drawSelectionHighlights(ctx: CanvasRenderingContext2D, doc: Doc, view: 
         ctx.lineCap = 'round';
         for (const seg of pieces) {
           segmentPath(ctx, doc, view, entity, seg.fromParam, seg.toParam);
-          ctx.stroke();
+          strokeSelected(ctx);
         }
         for (const id of [cand.from, cand.to]) {
           const e = worldToScreen(view, resolvePoint(doc, id));
@@ -352,7 +375,7 @@ function drawSelectionHighlights(ctx: CanvasRenderingContext2D, doc: Doc, view: 
       const segs = deriveSegments(doc, entity);
       if (segs.length === 0) {
         wholeEntityPath(ctx, doc, view, entity);
-        ctx.stroke();
+        strokeSelected(ctx);
         continue;
       }
       // Phase 5.10: the whole shape — a wide soft halo over its full length, then the stroke.
@@ -364,7 +387,8 @@ function drawSelectionHighlights(ctx: CanvasRenderingContext2D, doc: Doc, view: 
         for (const seg of segs) {
           if ((doc.segmentStates.get(seg.key)?.state ?? 'construction') === 'trimmed') continue;
           segmentPath(ctx, doc, view, entity, seg.fromParam, seg.toParam);
-          ctx.stroke();
+          if (pass === 0) ctx.stroke();
+          else strokeSelected(ctx);
         }
         ctx.restore();
       }
@@ -517,7 +541,7 @@ function drawNodeInset(ctx: CanvasRenderingContext2D, controller: AppController,
         ctx.moveTo(lf.x, lf.y);
         ctx.lineTo(lt.x, lt.y);
       }
-      ctx.strokeStyle = isFair ? (st?.stroke?.colour ?? color.ink) : color.construction;
+      ctx.strokeStyle = isFair ? (st?.stroke?.colour ?? color.ink) : constructionColour(e, doc);
       ctx.lineWidth = isFair ? 2 : 1.2;
       ctx.globalAlpha = isFair ? 1 : 0.6;
       ctx.stroke();
@@ -774,7 +798,7 @@ function drawMagnified(ctx: CanvasRenderingContext2D, controller: AppController,
         ctx.lineTo(b.x, b.y);
       }
       const isFair = st?.state === 'fair';
-      ctx.strokeStyle = isFair ? (st?.stroke?.colour ?? color.ink) : color.construction;
+      ctx.strokeStyle = isFair ? (st?.stroke?.colour ?? color.ink) : constructionColour(e, doc);
       ctx.lineWidth = isFair ? 2.2 : 1.2;
       ctx.globalAlpha = isFair ? 1 : 0.7;
       ctx.stroke();

@@ -1,6 +1,6 @@
 import type { AppController, PointVisibility, SelectCandidate, ToolId, ViewTransform } from '../app/controller.ts';
 import { unturned } from '../app/controller.ts';
-import type { Doc, EntityId, PointId, SegmentKey, Vec2 } from '../model/types.ts';
+import type { Doc, Entity, EntityId, PointId, SegmentKey, Vec2 } from '../model/types.ts';
 import {
   addCircleDivision,
   addSegmentDivisionPoints,
@@ -14,6 +14,7 @@ import {
   promoteEntityToFair,
   removeRegionFill,
   setRegionFill,
+  setEntityColour,
   setSegmentFair,
   setSegmentStroke,
   trimSegment,
@@ -69,7 +70,7 @@ const DIVIDE_MAX = 64;
 
 /** Palette swatches plus a "Mine" custom colour, for any colour popover section. `extra` (e.g. No
  * fill) sits first. Swatches compare by #rrggbb, so a translucent fill still shows its colour. */
-function colourSwatchRow(menu: HTMLElement, current: string | null, onPick: (colour: string | null) => void, extra?: { label: string; value: null }): void {
+function colourSwatchRow(menu: HTMLElement, current: string | null, onPick: (colour: string | null) => void, extra?: { label: string; value: null; swatch?: string }): void {
   const row = document.createElement('div');
   row.className = 'swatch-row';
   const swatches: HTMLButtonElement[] = [];
@@ -77,7 +78,8 @@ function colourSwatchRow(menu: HTMLElement, current: string | null, onPick: (col
   const refresh = () => swatches.forEach((el) => el.classList.toggle('active', (el.dataset.colour ?? null) === active));
   if (extra) {
     const none = document.createElement('button');
-    none.className = 'swatch swatch-none';
+    none.className = extra.swatch ? 'swatch swatch-default' : 'swatch swatch-none';
+    if (extra.swatch) none.style.background = extra.swatch;
     none.setAttribute('aria-label', extra.label);
     none.title = extra.label;
     onTap(none, () => {
@@ -142,11 +144,13 @@ function sliderRow(menu: HTMLElement, opts: { min: number; max: number; step: nu
   menu.appendChild(row);
 }
 
-function showColourPopover(anchor: HTMLElement, sections: { title: string; current: string | null; noFill?: boolean; onPick: (colour: string | null) => void }[]): void {
+function showColourPopover(anchor: HTMLElement, sections: { title: string; current: string | null; noFill?: boolean; defaultSwatch?: string; onPick: (colour: string | null) => void }[]): void {
   mountPopover(anchor, (menu) => {
     for (const s of sections) {
       popoverSectionLabel(menu, s.title);
-      colourSwatchRow(menu, s.current, s.onPick, s.noFill ? { label: 'No fill', value: null } : undefined);
+      // C1: `defaultSwatch` offers "Default" — back to the default colour, shown as that colour.
+      const extra = s.noFill ? { label: 'No fill', value: null } : s.defaultSwatch ? { label: 'Default', value: null, swatch: s.defaultSwatch } : undefined;
+      colourSwatchRow(menu, s.current, s.onPick, extra);
     }
   });
 }
@@ -2911,6 +2915,31 @@ export function buildShell(
           });
           controller.select([]);
         });
+      }
+    }
+
+    // C1: a construction colour, for the WHOLE lines and circles the selection touches (a trimmed
+    // circle keeps one colour across all its pieces) — never the locked frame, never Fair strokes.
+    if (!fair) {
+      const frame = new Set(doc.frame.entityIds);
+      const own = entityIds.map((id) => doc.entities.find((e) => e.id === id)).filter((e): e is Entity => !!e && !frame.has(e.id));
+      if (own.length > 0) {
+        const first = own[0]!.colour ?? null;
+        const same = own.every((e) => (e.colour ?? null) === first);
+        const what = own.length === 1 ? (own[0]!.kind === 'circle' ? 'whole circle' : 'whole line') : `${own.length} lines and circles`;
+        chip(
+          'Colour',
+          (el) =>
+            showColourPopover(el, [
+              {
+                title: `Construction · ${what}`,
+                current: same ? first : null,
+                defaultSwatch: color.construction,
+                onPick: (colour) => controller.commit((d) => setEntityColour(d, own.map((e) => e.id), colour)),
+              },
+            ]),
+          same ? (first ?? color.construction) : color.construction,
+        );
       }
     }
 

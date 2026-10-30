@@ -1488,6 +1488,10 @@ canvas.stage {
 .swatch-none {
   background: linear-gradient(135deg, transparent 45%, #c6402c 45%, #c6402c 55%, transparent 55%), var(--paper) !important;
 }
+/* C1: "Default" in a construction colour row — the default grey, ringed so it reads as "reset". */
+.swatch-default {
+  box-shadow: inset 0 0 0 3px var(--paper);
+}
 .stroke-chip-dot {
   width: 12px;
   height: 12px;

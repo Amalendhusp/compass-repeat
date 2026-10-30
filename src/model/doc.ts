@@ -309,6 +309,23 @@ export function setSegmentStroke(doc: Doc, key: SegmentKey, colour: string, widt
  * own FaceSig — a stable identity recomputed from its current Fair boundary (geometry/regions.ts),
  * never chosen by the caller. Undo-tracked normally through commit(), same as any other
  * segmentStates-style write. */
+/**
+ * C1: colours whole construction elements — every Construction / Extension piece of each line or
+ * circle in `ids` — or, with `colour` null, returns them to the default grey. The construction frame
+ * is never coloured (V1). Fair pieces are unaffected (they keep their own stroke).
+ */
+export function setEntityColour(doc: Doc, ids: Iterable<EntityId>, colour: string | null): void {
+  const frame = new Set(doc.frame.entityIds);
+  for (const id of ids) {
+    if (frame.has(id)) continue;
+    const e = doc.entities.find((x) => x.id === id);
+    if (!e) continue;
+    if (colour === null) delete e.colour;
+    else e.colour = colour;
+  }
+  doc.updatedAt = Date.now();
+}
+
 export function setRegionFill(doc: Doc, sig: FaceSig, colour: string): void {
   let m = doc.fills.get(doc.activeColourway);
   if (!m) {

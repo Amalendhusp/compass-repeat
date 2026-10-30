@@ -39,8 +39,11 @@ export type Point =
   // stray dot on a fresh frame — see spec §4.5's "if the circle has none".
   | { id: PointId; kind: 'free'; x: number; y: number; hidden?: boolean };
 
+// colour (C1): the element's own construction colour (a hex string). Absent = the default
+// construction grey. It belongs to the whole line or circle — every Construction / Extension piece
+// of it, however it is split or trimmed — and never to its Fair pieces, which keep their own stroke.
 export type Entity =
-  | { id: EntityId; kind: 'circle'; centre: PointId; through: PointId; locked?: boolean }
+  | { id: EntityId; kind: 'circle'; centre: PointId; through: PointId; locked?: boolean; colour?: string }
   // groupId: not in the spec's snippet — Phase 2A's completion of "preserve polygon/group
   // identity so a completed polygon can later be selected as one shape": every edge line an
   // in-progress or completed Polygon commits shares one groupId, so Select can treat them as a
@@ -48,7 +51,7 @@ export type Entity =
   // axis: a horizontal ('h', 0°) or vertical ('v', 90°) extension through point `a`, made on demand
   // to find where it crosses other geometry. `b` is a hidden internal point fixing its direction.
   // Deleting an axis leaves what was built from its crossings in place (doc.ts — detach).
-  | { id: EntityId; kind: 'line'; a: PointId; b: PointId; extended: boolean; locked?: boolean; groupId?: string; axis?: 'h' | 'v' };
+  | { id: EntityId; kind: 'line'; a: PointId; b: PointId; extended: boolean; locked?: boolean; groupId?: string; axis?: 'h' | 'v'; colour?: string };
 
 export type SegmentKey = string; // `${entityId}:${fromPointId}:${toPointId}`
 
