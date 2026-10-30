@@ -11,8 +11,8 @@ Keep this short and current. It is a starting point, not a substitute for readin
 |---|---|---|
 | C1 | Individual construction colouring | done — `6b8e300` (branch `feature/c1-construction-colouring`) |
 | A | Colour-before-drawing (top-bar swatch) | done — see `git log` "Stage A" |
-| B | F0 shared geometry foundation | next |
-| C | Close Gap integration (from `feature/close-gap-poc` `f75482a`) | to do |
+| B | F0 shared geometry foundation | done — see `git log` "Stage B" |
+| C | Close Gap integration (from `feature/close-gap-poc` `f75482a`) | next |
 | D | Intersect Form Development (independent Primary) | to do |
 
 ## Protected — never modify, merge into, push or deploy
@@ -53,12 +53,24 @@ Keep this short and current. It is a starting point, not a substitute for readin
 - At 375 px a long selection ribbon scrolls sideways (existing pattern).
 - Undo does not revert Repeat background (display settings are outside history — existing behaviour).
 
+## Shared services (Stage B)
+
+- `src/geometry/fairGeometry.ts`: exact Fair primitives (line = two ends; arc = centre, radius, start,
+  sweep), `motifPieces`, `motifRuns`, `placePrim`/`placeAll`, `hits`/`relate`/`crossingsOf` (tangency judged on
+  centre/line distance), `insideOutline`, `nearPairs`, `motifScale`. Extracted unchanged from the Close Gap PoC.
+- `src/geometry/repeatComposition.ts`: `repeatComposition(doc)` (members: key, pose, owner) and
+  `compositionFeatures(doc, 'pieces' | 'runs')` (ids `${member}|${motif id}`, with source). `repeatUnit` now
+  reads its members from here. Stage D adds the 'developed' owner and Primary-copy opt-in here.
+- Proof: `scratchpad/f0-equivalence.mjs` (Node) — identical to the PoC on all fixtures and 20 000 random
+  line/arc pairs; Intersect-source Repeat fingerprint identical with old and new `repeatUnit`.
+
 ## Exact next step
 
-Stage B (F0): a shared Fair-geometry module (runs, exact segments, line/arc intersections, tangency and
-coincidence, placement through instance poses, ownership/source ids) taken from
-`feature/close-gap-poc:src/geometry/closeGap.ts`, plus `repeatComposition(doc)` returning today's unit
-(all instances for an Intersect source). Repeat output must stay byte-identical (drawing fingerprints).
+Stage C: bring `closeGap.ts` from `feature/close-gap-poc` (f75482a) onto the shared services (keep its
+candidate/validation/`gapsNear` logic; its geometry now comes from `fairGeometry.ts` and features from
+`compositionFeatures`), then the Repeat interaction: a "Close gap" action (Grid and guides panel), tap near a
+gap → ≤3 local valid candidates, nearest previewed with a magnified view, arm + distance shown, Apply (one Undo
+step) / Cancel (nothing changes). Lattice handles stay completely free.
 
 ## Commands
 

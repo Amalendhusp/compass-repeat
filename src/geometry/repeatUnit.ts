@@ -13,7 +13,7 @@
 
 import type { Doc } from '../model/types.ts';
 import { motifExtent, type InstancePose } from './lattice.ts';
-import { intersectionCopies } from './intersection.ts';
+import { repeatComposition } from './repeatComposition.ts';
 import { repeatSourceOf, type RepeatSourceKind } from './repeatSetup.ts';
 
 export type RepeatSource = RepeatSourceKind;
@@ -40,12 +40,13 @@ export function repeatUnit(doc: Doc): RepeatUnit | null {
   if (repeatSource(doc) !== 'intersect') return null;
   let unit = cache.get(doc);
   if (!unit) {
-    const copies = intersectionCopies(doc);
-    const members = copies.map((c) => c.pose);
+    // Stage B: the members come from the one composition service (repeatComposition.ts).
+    const comp = repeatComposition(doc).members;
+    const members = comp.map((m) => m.pose);
     const reach = motifExtent(doc);
     unit = {
       members,
-      keys: copies.map((c) => c.key),
+      keys: comp.map((m) => m.key),
       extent: Math.max(...members.map((m) => Math.hypot(m.translate.x, m.translate.y))) + reach,
       key: members.map((m) => `${m.translate.x},${m.translate.y},${m.rotation}`).join(';'),
     };
