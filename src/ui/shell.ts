@@ -1694,6 +1694,72 @@ export function buildShell(
   );
   leftSide.appendChild(menuBtn);
 
+  // Stage A: construction colour, beside the menu in Construct. With construction selected (Select),
+  // it recolours that selection — whole lines and circles — and leaves the drawing colour alone;
+  // otherwise it is the colour new lines, circles and arcs are drawn in. Fair colours are separate.
+  const ccBtn = document.createElement('button');
+  ccBtn.className = 'icon-btn cc-btn';
+  const ccDot = document.createElement('span');
+  ccDot.className = 'cc-dot';
+  ccBtn.appendChild(ccDot);
+  /** The construction the swatch would recolour: whole non-frame lines and circles under a
+   * non-Fair selection (Select only), or none — then it sets the drawing colour. */
+  function ccTargets(): Entity[] {
+    if (controller.tool !== 'select' || controller.doc.view.workspace !== 'construct') return [];
+    const doc = controller.doc;
+    const sel = controller.selection.filter((c) => c.kind !== 'point');
+    if (sel.length === 0) return [];
+    const keys = selectionKeys(doc, sel);
+    const regions = sel.filter((c) => c.kind === 'region') as Extract<SelectCandidate, { kind: 'region' }>[];
+    if (regions.length > 0 ? regions[0]!.fair : isUniformlyFair(doc, keys)) return [];
+    const frame = new Set(doc.frame.entityIds);
+    return selectionEntityIds(doc, sel, keys)
+      .map((id) => doc.entities.find((e) => e.id === id))
+      .filter((e): e is Entity => !!e && !frame.has(e.id));
+  }
+  function refreshCcBtn(): void {
+    const targets = ccTargets();
+    const active = controller.doc.toolPrefs?.constructionColour ?? null;
+    const shown = targets.length > 0 ? (targets.every((e) => (e.colour ?? null) === (targets[0]!.colour ?? null)) ? (targets[0]!.colour ?? null) : null) : active;
+    ccDot.style.background = shown ?? color.construction;
+    ccBtn.classList.toggle('recolour', targets.length > 0);
+    ccBtn.setAttribute('aria-label', targets.length > 0 ? 'Recolour the selected construction' : 'Construction colour for new lines and circles');
+  }
+  onTap(ccBtn, () =>
+    togglePanel(ccBtn, () => {
+      const targets = ccTargets();
+      if (targets.length > 0) {
+        const first = targets[0]!.colour ?? null;
+        const same = targets.every((e) => (e.colour ?? null) === first);
+        const what = targets.length === 1 ? (targets[0]!.kind === 'circle' ? 'whole circle' : 'whole line') : `${targets.length} lines and circles`;
+        showColourPopover(ccBtn, [
+          {
+            title: `Recolour · ${what}`,
+            current: same ? first : null,
+            defaultSwatch: color.construction,
+            onPick: (colour) => controller.commit((d) => setEntityColour(d, targets.map((e) => e.id), colour)),
+          },
+        ]);
+        return;
+      }
+      showColourPopover(ccBtn, [
+        {
+          title: 'New lines and circles',
+          current: controller.doc.toolPrefs?.constructionColour ?? null,
+          defaultSwatch: color.construction,
+          // A drawing preference, like Fill's colour: not a change to the artwork, so not an Undo step.
+          onPick: (colour) => {
+            const doc = controller.doc;
+            doc.toolPrefs = { ...doc.toolPrefs, constructionColour: colour };
+            refreshCcBtn();
+            controller.notify();
+          },
+        },
+      ]);
+    }),
+  );
+  leftSide.appendChild(ccBtn);
+
   // Phase 5.1 item 2: in Repeat, Appearance sits beside the menu (and Grid/Guides on the right,
   // below) — same header architecture, workspace-appropriate controls.
   const appearanceBtn = document.createElement('button');
@@ -2918,30 +2984,7 @@ export function buildShell(
       }
     }
 
-    // C1: a construction colour, for the WHOLE lines and circles the selection touches (a trimmed
-    // circle keeps one colour across all its pieces) — never the locked frame, never Fair strokes.
-    if (!fair) {
-      const frame = new Set(doc.frame.entityIds);
-      const own = entityIds.map((id) => doc.entities.find((e) => e.id === id)).filter((e): e is Entity => !!e && !frame.has(e.id));
-      if (own.length > 0) {
-        const first = own[0]!.colour ?? null;
-        const same = own.every((e) => (e.colour ?? null) === first);
-        const what = own.length === 1 ? (own[0]!.kind === 'circle' ? 'whole circle' : 'whole line') : `${own.length} lines and circles`;
-        chip(
-          'Colour',
-          (el) =>
-            showColourPopover(el, [
-              {
-                title: `Construction · ${what}`,
-                current: same ? first : null,
-                defaultSwatch: color.construction,
-                onPick: (colour) => controller.commit((d) => setEntityColour(d, own.map((e) => e.id), colour)),
-              },
-            ]),
-          same ? (first ?? color.construction) : color.construction,
-        );
-      }
-    }
+    // (Construction colour: the top-bar swatch — Stage A — recolours a construction selection.)
 
     if (fair) {
       const firstStroke = doc.segmentStates.get(keys[0]!)?.stroke ?? doc.fairDefaults;
@@ -3284,6 +3327,8 @@ export function buildShell(
     refreshReferenceButtons();
 
     appearanceBtn.style.display = inRepeat ? '' : 'none';
+    ccBtn.style.display = controller.doc.view.workspace === 'construct' ? '' : 'none';
+    refreshCcBtn();
     guidesBtn.style.display = inRepeat ? '' : 'none';
     handlesBtn.style.display = inRepeat ? '' : 'none';
     exportBtn.style.display = inIntersection ? 'none' : ''; // Intersection has nothing to share yet

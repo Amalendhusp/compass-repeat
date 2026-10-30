@@ -146,8 +146,15 @@ function mergeOrCreatePoint(doc: Doc, at: Vec2, build: (id: PointId) => Point): 
  * points — migrating segment state on every entity a new intersection lands on (§Phase 2B).
  * Phase 2.1 item 4 (true Trim): a location inside an already-trimmed segment of an existing
  * entity is skipped — a removed arc/line piece must not generate new intersections. */
+/** Stage A: a new element takes the active construction colour, if one is set. */
+function withActiveColour<E extends Entity>(doc: Doc, entity: E): E {
+  const colour = doc.toolPrefs?.constructionColour;
+  if (colour && !entity.colour) entity.colour = colour;
+  return entity;
+}
+
 export function addEntity(doc: Doc, build: (id: EntityId) => Entity): Entity {
-  const entity = build(genId('en'));
+  const entity = withActiveColour(doc, build(genId('en')));
   const others = doc.entities.slice();
   withSegmentMigration(doc, [...others.map((e) => e.id), entity.id], () => {
     doc.entities.push(entity);
@@ -778,7 +785,7 @@ export function addArc(doc: Doc, centreId: PointId, radius: number, startAngle: 
   const span = Math.min(Math.abs(sweep), Math.PI * 2);
   if (span >= Math.PI * 2 - 1e-3) return addCircleEntity(doc, centreId, addRadiusHandle(doc, c, radius, startAngle)).id;
   const from = sweep >= 0 ? startAngle : startAngle + sweep; // counter-clockwise start
-  const circle: Entity = { id: genId('en'), kind: 'circle', centre: centreId, through: addRadiusHandle(doc, c, radius, from) };
+  const circle: Entity = withActiveColour(doc, { id: genId('en'), kind: 'circle', centre: centreId, through: addRadiusHandle(doc, c, radius, from) });
   const others = doc.entities.slice();
   withSegmentMigration(doc, [...others.map((e) => e.id), circle.id], () => {
     doc.entities.push(circle);

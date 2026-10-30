@@ -2318,3 +2318,16 @@ canvas.stage {
   opacity: 0.4;
   cursor: default;
 }
+
+/* Stage A: the construction colour swatch beside the menu (Construct). Ringed in the selection blue
+   while it would recolour the selected construction rather than set the drawing colour. */
+.cc-btn .cc-dot {
+  width: 20px;
+  height: 20px;
+  border-radius: 50%;
+  border: 1.5px solid rgba(30, 42, 54, 0.28);
+  box-sizing: border-box;
+}
+.cc-btn.recolour .cc-dot {
+  box-shadow: 0 0 0 2px var(--paper), 0 0 0 4px var(--signal);
+}

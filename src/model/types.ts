@@ -337,7 +337,9 @@ export interface Doc {
   /** Phase 5.2 items 17/19: Circle's and Arc's own modes, and the radius they share — the last
    * radius Circle set or Arc measured, reused by either tool's "Same radius". A document
    * preference like `dividePrefs`: not undo-tracked, persisted by autosave. */
-  toolPrefs: { circleMode: 'set' | 'same'; arcMode: 'measure' | 'same'; lastRadius: number | null };
+  /** constructionColour (Stage A): the colour new lines, circles and arcs are drawn in — a drawing
+   * preference (absent / null = the default grey). Changing it never touches existing geometry. */
+  toolPrefs: { circleMode: 'set' | 'same'; arcMode: 'measure' | 'same'; lastRadius: number | null; constructionColour?: string | null };
   /** Phase 5 item 12: Repeat's own pan/zoom — separate from `view` so navigating the tessellation
    * never moves the participant's Construct viewport (and vice versa). Not undo-tracked, exactly
    * like `view` (Phase 3.6 item 2's fix applies here too — see AppController.undo/redo). Which
