@@ -19,7 +19,7 @@ Keep this short and current. It is a starting point, not a substitute for readin
 | UI-1 | Working draft vs saved artworks; Recover last session; Menu simplified | done — see `git log` "UI-1" |
 | UI-2 | Contextual Appearance panel (top right): construction / Fair / Fill preferences | done — "UI-2" |
 | UI-3 | Intersect: Reference into Menu; eye keeps the sliders | done — "UI-3" |
-| UI-4 | Repeat: rules row, Construct/Intersect source, Motif/Space Fill, master guide toggle | next |
+| UI-4 | Repeat: rules row, Construct/Intersect source, Motif/Space Fill, master guide toggle | done — "UI-4" |
 
 ## Protected — never modify, merge into, push or deploy
 
@@ -55,6 +55,8 @@ Keep this short and current. It is a starting point, not a substitute for readin
   geometry; legacy artworks keep identical output; empty-state card; one Primary stroke style; no snapping to
   Developed Primary yet.
 
+- UI-4 supersedes the Fill interface below: scopes shown are Motif | Space (Pattern hidden, its data and drawing
+  kept); Fill colour/opacity live in the top-right contextual panel while filling.
 - Fill (2026-10-31): Repeat's Fill is one entry point with scopes Space | Motif | Pattern; colour and opacity
   live in Appearance → Fill (shared by all scopes). Space = an enclosed space between copies (and every one like
   it); Motif = a region of the motif in every copy; Pattern = a region in the second group (every other copy, row
@@ -268,13 +270,39 @@ Keep this short and current. It is a starting point, not a substitute for readin
   Intersect: bookmark panel opens; Fair tap develops the Primary (one Undo); save/reopen keeps it; PNG/SVG,
   Timelapse, Undo/Redo fine. Suite identical / 16/0 / all true / Guide baseline; no stored record changed.
 
+## UI-4: Repeat simplification
+
+- Rule row: Uniform | Alternate | Mirror only. Source row: Construct | Intersect (no "Source" word) and then
+  **Fill** as its own outlined action chip with the Fill icon (`.fill-action`). Source default stays Construct
+  (`repeatSourceOf`); switching keeps each source's lattice and never touches either design.
+- Fill row: Motif | Space · Done (`colourKindRow`). Pattern is hidden: no button; an old "last scope" of Pattern
+  opens Motif. Pattern fills / grouping stay in the data and draw exactly as before (no renderer change).
+- Top bar in Repeat: left = Menu only; right = master guides toggle · contextual control · Share. The old top-left
+  Appearance button is no longer shown: the contextual control (`ccBtn`) shows the Appearance icon (Stroke |
+  Background panel, `showRepeatAppearancePanel(..., 'look')`) — or, while filling, the Fill colour dot (Fill colour ·
+  next fills, Opacity, Clear for the current scope, Motif fills strength — `'fill'`). Fill colour/opacity appear
+  nowhere else (the bottom dot chip is gone). Background stays an appearance setting; changing it leaves Motif and
+  Space fills untouched (checked).
+- Master toggle (`.guides-master`, gridGuides icon): ON whenever any of grid / handles (rotation ring, A, B) /
+  motif boundary shows; OFF hides all three and remembers which were on (`rememberedGuides`, per artwork, this
+  session); ON brings exactly those back (default handles + boundary). A view setting, never Undo.
+- Canvas-row button (`handles-btn`, new `tune` icon, "Grid settings"): Grid · Handles · rotation, A, B · Motif
+  boundary (individually), Reset lattice, Close gap… The "All guides" row was removed (the master replaces it), so
+  master and individual settings cannot disagree. Close Gap unchanged; it works with every guide hidden.
+- Results (375 px): rows as above; contextual panel look/fill; new colour → Space fill `#C6402C99` and Motif fill,
+  one Undo each; Background change leaves fills identical; master off/on (remembers grid on + handles off);
+  Close gap with guides hidden → Apply moved A 201 → 200, Undo exact; source switch keeps the Construct lattice;
+  Intersect-source Motif fill. Suite identical / 16/0 / all true / Guide baseline; no stored record changed;
+  "Repeat pattern D" PNG/SVG, Timelapse (18 frames), Undo/Redo fine. `git diff cf5b038 -- src/render src/geometry
+  src/interaction src/model` is empty for the whole UI phase.
+- Harness: `scratchpad/ui4-app.js`.
+
 ## Exact next step
 
-UI phase (approved 2026-10-31, Option B — contextual Appearance panel): UI-1, UI-2, UI-3 done; next UI-4 (Repeat:
-rules row Uniform | Alternate | Mirror only, Fill separate; source labels Construct | Intersect; Fill = Motif |
-Space with Pattern hidden (data kept); Fill colour/opacity only in the top-right panel; Background stays an
-appearance setting; top-right master show/hide for handles + boundary + guides; Close Gap unchanged), then a fresh iPhone build and stop for the
-user's device review. Do not merge, push or deploy.
+UI phase (approved 2026-10-31, Option B) UI-1 to UI-4 done on `feature/ui-refinement`; a fresh iPhone build is on
+the phone-preview server. Stop for the user's physical-device review. Do not merge, push or deploy.
+Open questions for the review: Spread's "Reference" button shares the word with the reference image; on launch an
+unsaved session shows the Start screen with Recover (one tap) rather than reopening by itself.
 
 ## Commands
 

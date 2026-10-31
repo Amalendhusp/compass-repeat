@@ -567,7 +567,7 @@ function designStroke(doc: Doc): { colour: string; width: number } {
 }
 
 /** Which part of Repeat's Appearance panel was last open (session). */
-let appearanceTab: 'fill' | 'stroke' | 'background' = 'stroke';
+let appearanceTab: 'stroke' | 'background' = 'stroke';
 /** Repeat Fill's scopes: a space between motifs, a region in every copy, or in the second group. */
 type FillScope = 'space' | 'motif' | 'pattern';
 /** The scope Fill returns to (session). */
@@ -581,7 +581,10 @@ let strokeSwatchesOpen: number | null = null;
  * canvas — "Colour regions") and how strongly fills are drawn. Stroke: the outlines. Background:
  * the colour behind the pattern. Nothing here changes the construction or its own styling.
  */
-function showRepeatAppearancePanel(anchor: HTMLElement, controller: AppController, hooks: { startFill: () => void; scope: () => FillScope | null }): void {
+/** Repeat's Appearance, from the contextual control at the top right (UI-4): `look` — Stroke and
+ * Background; `fill` (while filling) — the Fill colour and opacity, Clear for the current scope, and
+ * how strongly motif fills are drawn. Fill's colour and opacity live only here. */
+function showRepeatAppearancePanel(anchor: HTMLElement, controller: AppController, hooks: { scope: () => FillScope | null }, mode: 'look' | 'fill'): void {
   const display = (): RepeatDisplay => controller.doc.repeatDisplay;
   const changed = () => controller.notifyView();
 
@@ -589,10 +592,9 @@ function showRepeatAppearancePanel(anchor: HTMLElement, controller: AppControlle
     anchor,
     (panel) => {
       panel.classList.add('appearance-panel');
-      panelSegmented(
+      if (mode === 'look') panelSegmented(
         panel,
         [
-          { id: 'fill' as const, label: 'Fill' },
           { id: 'stroke' as const, label: 'Stroke' },
           { id: 'background' as const, label: 'Background' },
         ],
@@ -608,9 +610,9 @@ function showRepeatAppearancePanel(anchor: HTMLElement, controller: AppControlle
       panel.appendChild(body);
       const build = () => {
         body.replaceChildren();
-        if (appearanceTab === 'stroke') buildStroke(body);
+        if (mode === 'fill') buildFill(body);
         else if (appearanceTab === 'background') buildBackground(body);
-        else buildFill(body);
+        else buildStroke(body);
       };
 
       const buildStroke = (menu: HTMLElement) => {
@@ -786,7 +788,7 @@ function showRepeatAppearancePanel(anchor: HTMLElement, controller: AppControlle
       // (the bottom row only picks the scope) — clearing what the current scope has filled, and how
       // strongly motif regions are drawn. Choosing a colour never changes what is already filled:
       // tap a filled region or space with the new colour to change it.
-      popoverSectionLabel(menu, 'Fill colour');
+      popoverSectionLabel(menu, 'Fill colour · next fills');
       colourSwatchRow(
         menu,
         repeatPaint(controller),
@@ -808,14 +810,7 @@ function showRepeatAppearancePanel(anchor: HTMLElement, controller: AppControlle
         },
       }).slider.title = 'Opacity of the next fill (each fill keeps its own)';
       const scope = hooks.scope();
-      if (!scope) {
-        const start = document.createElement('button');
-        start.className = 'popover-row appearance-regions';
-        start.textContent = 'Fill on the canvas…';
-        start.title = 'Choose Space, Motif or Pattern, then tap to fill';
-        onTap(start, () => hooks.startFill());
-        menu.appendChild(start);
-      } else {
+      if (scope) {
         // Clearing what this scope has filled: one Undo step.
         const doc = controller.doc;
         const colour = doc.repeatSetup?.colour;
@@ -1421,12 +1416,11 @@ function showRepeatGuidesPanel(anchor: HTMLElement, controller: AppController, o
         onChange();
         controller.notifyView();
       };
-      rows.push(popoverToggleRow(menu, 'All guides', allOn, (on) => set(() => keys.forEach((k) => (display()[k] = on)))));
-      const divider = document.createElement('div');
-      divider.className = 'popover-divider';
-      menu.appendChild(divider);
+      // UI-4: no "All guides" row — the top-right button is the master show / hide.
+      void allOn;
+      popoverSectionLabel(menu, 'Grid and guides');
       rows.push(popoverToggleRow(menu, 'Grid', () => display().grid, (on) => set(() => (display().grid = on))));
-      rows.push(popoverToggleRow(menu, 'Handles', () => display().handles, (on) => set(() => (display().handles = on))));
+      rows.push(popoverToggleRow(menu, 'Handles · rotation, A, B', () => display().handles, (on) => set(() => (display().handles = on))));
       rows.push(popoverToggleRow(menu, 'Motif boundary', () => display().motifBoundary, (on) => set(() => (display().motifBoundary = on))));
       // Reset lattice: back to the lattice Repeat first suggests for this artwork and source — the
       // frame's natural shape (square; 60° for a triangle or hexagon frame) at its comfortable
@@ -1466,6 +1460,9 @@ function showRepeatGuidesPanel(anchor: HTMLElement, controller: AppController, o
     { shieldCanvas: true, panel: true },
   );
 }
+
+/** UI-4: per artwork (this session), which guides were on when the master toggle hid them. */
+const rememberedGuides = new Map<string, { grid: boolean; handles: boolean; motifBoundary: boolean }>();
 
 /** Session-sticky share choices — construction/guides are re-read from what's visible each time. */
 const exportChoice: { format: 'png' | 'svg' | 'timelapse'; scale: ExportSettings['scale']; transparent: boolean } = { format: 'png', scale: 2, transparent: false };
@@ -1818,8 +1815,17 @@ export function buildShell(
   const ccDot = document.createElement('span');
   ccDot.className = 'cc-dot';
   ccBtn.appendChild(ccDot);
-  type AppearanceKind = 'construction' | 'fair' | 'fill';
-  const appearanceKind = (): AppearanceKind => (controller.tool === 'fair' ? 'fair' : controller.tool === 'fill' ? 'fill' : 'construction');
+  type AppearanceKind = 'construction' | 'fair' | 'fill' | 'repeat-look' | 'repeat-fill';
+  const appearanceKind = (): AppearanceKind =>
+    controller.doc.view.workspace === 'repeat'
+      ? fillScope()
+        ? 'repeat-fill'
+        : 'repeat-look'
+      : controller.tool === 'fair'
+        ? 'fair'
+        : controller.tool === 'fill'
+          ? 'fill'
+          : 'construction';
   /** The construction the panel can recolour: whole non-frame lines and circles under a non-Fair
    * selection (Select only), or none. */
   function ccTargets(): Entity[] {
@@ -1839,6 +1845,28 @@ export function buildShell(
     const doc = controller.doc;
     const kind = appearanceKind();
     const targets = kind === 'construction' ? ccTargets() : [];
+    // Repeat, not filling: the Appearance icon (Stroke, Background); filling: the Fill colour.
+    ccBtn.classList.toggle('as-icon', kind === 'repeat-look');
+    if (kind === 'repeat-look') {
+      if (!ccBtn.querySelector('svg')) ccBtn.insertAdjacentHTML('beforeend', iconSvg('appearance'));
+      ccBtn.setAttribute('aria-label', 'Appearance');
+      ccBtn.classList.remove('recolour');
+      ccBtn.dataset.kind = kind;
+      if (openPopoverAnchor === ccBtn && ccBtn.dataset.open !== kind) closeAnyPopover();
+      return;
+    }
+    ccBtn.querySelector('svg')?.remove();
+    if (kind === 'repeat-fill') {
+      const paint = repeatFill(controller);
+      ccDot.style.background = paint ?? '';
+      ccDot.classList.toggle('none', !paint);
+      ccBtn.dataset.kind = kind;
+      ccBtn.classList.remove('recolour');
+      ccBtn.setAttribute('aria-label', `Fill appearance · ${repeatPaint(controller) ?? 'no fill'}, ${Math.round(repeatPaintOpacity(controller) * 100)}%`);
+      if (openPopoverAnchor === ccBtn && ccBtn.dataset.open !== kind) closeAnyPopover();
+      return;
+    }
+    ccDot.classList.remove('none');
     const shown =
       kind === 'fair'
         ? doc.fairDefaults.colour
@@ -1868,6 +1896,10 @@ export function buildShell(
   function showConstructAppearance(): void {
     const kind = appearanceKind();
     ccBtn.dataset.open = kind;
+    if (kind === 'repeat-look' || kind === 'repeat-fill') {
+      showRepeatAppearancePanel(ccBtn, controller, { scope: () => fillScope() }, kind === 'repeat-fill' ? 'fill' : 'look');
+      return;
+    }
     mountPopover(ccBtn, (menu) => {
       menu.classList.add('appearance-panel');
       const doc = controller.doc;
@@ -1938,9 +1970,8 @@ export function buildShell(
   appearanceBtn.className = 'icon-btn';
   appearanceBtn.setAttribute('aria-label', 'Appearance');
   appearanceBtn.innerHTML = iconSvg('appearance');
-  const openAppearance = () => showRepeatAppearancePanel(appearanceBtn, controller, { startFill: () => setFillScope(lastFillScope), scope: () => fillScope() });
-  onTap(appearanceBtn, () => togglePanel(appearanceBtn, openAppearance));
-  leftSide.appendChild(appearanceBtn);
+  // UI-4: Repeat's Appearance moved into the contextual control at the top right (ccBtn); this
+  // button is no longer shown.
 
   // Intersection: in that slot, the Copies panel — its icon a little 2×2 of the constructions' own
   // analysis colours (the first four), so it says which copies there are without shouting.
@@ -1982,17 +2013,39 @@ export function buildShell(
   exportBtn.setAttribute('aria-label', 'Share');
   exportBtn.innerHTML = iconSvg('share');
   onTap(exportBtn, () => togglePanel(exportBtn, () => showExportPanel(exportBtn, controller, opts.getView, opts.timelapse)));
+  // UI-4: the master show / hide for Repeat's working aids — the three handles (rotation, vector A,
+  // vector B), the motif boundary and the grid — in one tap. It is ON whenever any of them shows, so
+  // it can never disagree with the individual settings (canvas row → Grid settings). OFF remembers
+  // which were on; ON brings exactly those back (the handles and boundary if nothing is remembered).
+  // A view setting: never an Undo step, never the lattice itself.
   const guidesBtn = document.createElement('button');
-  guidesBtn.className = 'icon-btn';
-  guidesBtn.setAttribute('aria-label', 'Grid and guides');
+  guidesBtn.className = 'icon-btn guides-master';
   guidesBtn.innerHTML = iconSvg('gridGuides');
-  // Like the Points eye: muted when every guide is off, so "why can't I see the handles?" has a visible answer.
-  function refreshGuidesBtn(): void {
+  const guidesOn = () => {
     const d = controller.doc.repeatDisplay;
-    guidesBtn.style.color = d.grid || d.handles || d.motifBoundary ? '' : 'var(--muted)';
+    return d.grid || d.handles || d.motifBoundary;
+  };
+  function refreshGuidesBtn(): void {
+    const on = guidesOn();
+    guidesBtn.classList.toggle('off', !on);
+    guidesBtn.setAttribute('aria-pressed', String(on));
+    guidesBtn.setAttribute('aria-label', on ? 'Hide handles and guides' : 'Show handles and guides');
+    guidesBtn.title = on ? 'Hide handles and guides' : 'Show handles and guides';
     refreshHandlesBtn();
   }
-  onTap(guidesBtn, () => togglePanel(guidesBtn, () => showRepeatGuidesPanel(guidesBtn, controller, refreshGuidesBtn)));
+  onTap(guidesBtn, () => {
+    const d = controller.doc.repeatDisplay;
+    if (openPopoverAnchor === handlesBtn) closeAnyPopover(); // its rows would be out of date
+    if (guidesOn()) {
+      rememberedGuides.set(controller.doc.id, { grid: d.grid, handles: d.handles, motifBoundary: d.motifBoundary });
+      d.grid = d.handles = d.motifBoundary = false;
+    } else {
+      const back = rememberedGuides.get(controller.doc.id) ?? { grid: false, handles: true, motifBoundary: true };
+      Object.assign(d, back);
+    }
+    refreshGuidesBtn();
+    controller.notifyView();
+  });
 
   // Intersection: in Grid / guides' slot, Snapshots — discoveries kept on purpose (not Undo history),
   // with how many there are.
@@ -2116,23 +2169,17 @@ export function buildShell(
   controller.subscribeView(refreshReferenceButtons); // a Show/Hide or a strength set elsewhere
   onTap(referencePanelBtn, () => togglePanel(referencePanelBtn, openReferencePanel));
 
-  // Repeat: the handles on or off in one tap (Grid and guides keeps every guide, handles included).
+  // UI-4: Repeat's detailed grid settings on the canvas row — Grid, Handles, Motif boundary one by one,
+  // Reset lattice and Close gap… (the top-right button is the master show / hide).
   const handlesBtn = document.createElement('button');
   handlesBtn.className = 'fit-btn handles-btn';
-  handlesBtn.setAttribute('aria-label', 'Handles');
-  handlesBtn.innerHTML = iconSvg('handles');
+  handlesBtn.setAttribute('aria-label', 'Grid settings');
+  handlesBtn.title = 'Grid settings · each guide, Reset lattice, Close gap';
+  handlesBtn.innerHTML = iconSvg('tune');
   function refreshHandlesBtn(): void {
-    const on = controller.doc.repeatDisplay.handles;
-    handlesBtn.setAttribute('aria-pressed', String(on));
-    handlesBtn.title = on ? 'Hide the handles' : 'Show the handles';
-    handlesBtn.classList.toggle('off', !on);
+    handlesBtn.classList.remove('off');
   }
-  onTap(handlesBtn, () => {
-    if (openPopoverAnchor === guidesBtn) closeAnyPopover(); // its rows would be out of date
-    controller.doc.repeatDisplay.handles = !controller.doc.repeatDisplay.handles;
-    refreshGuidesBtn();
-    controller.notifyView();
-  });
+  onTap(handlesBtn, () => togglePanel(handlesBtn, () => showRepeatGuidesPanel(handlesBtn, controller, refreshGuidesBtn)));
 
   // Reference Transform: an explicit mode with an obvious way out — a compact row at the canvas's
   // bottom right: [Move image | Anchors] says which of its two modes is on, Done locks the image.
@@ -2306,40 +2353,32 @@ export function buildShell(
   // Repeat Colouring (geometry/repeatColour.ts): beside the rule — how copies alternate in
   // orientation there, how they may differ in colour here. A toggle; while on, the lattice rows
   // step aside for its own few controls and a tap colours a region of the repeated design.
+  // UI-4: this row holds the repetition rules only; Fill is its own action on the Source row.
   const ruleLine = document.createElement('div');
   ruleLine.className = 'space-row';
   ruleLine.appendChild(ruleRow);
   const colouringBtn = document.createElement('button');
-  colouringBtn.className = 'space-chip';
-  colouringBtn.textContent = 'Fill';
-  colouringBtn.title = 'Fill spaces and regions of the pattern';
+  colouringBtn.className = 'space-chip fill-action';
+  colouringBtn.innerHTML = `${iconSvg('fill', 16)}<span>Fill</span>`;
+  colouringBtn.title = 'Fill regions of the motif, or spaces between motifs';
+  colouringBtn.setAttribute('aria-label', 'Fill');
   colouringBtn.setAttribute('aria-pressed', 'false');
-  onTap(colouringBtn, () => setFillScope(fillScope() ? null : lastFillScope));
-  ruleLine.appendChild(colouringBtn);
+  onTap(colouringBtn, () => setFillScope(fillScope() ? null : lastFillScope === 'pattern' ? 'motif' : lastFillScope));
   repeatPanel.appendChild(ruleLine);
 
   // While filling: ● [Space | Motif | Pattern] · Done. The dot is the Fill colour now; it opens
   // Appearance → Fill (upper left), where the colour and opacity are chosen — never duplicated here.
   const colourKindRow = document.createElement('div');
   colourKindRow.className = 'space-row fill-row';
-  const fillDotBtn = document.createElement('button');
-  fillDotBtn.className = 'space-chip fill-dot-btn';
-  const fillDot = document.createElement('span');
-  fillDot.className = 'stroke-chip-dot';
-  fillDotBtn.appendChild(fillDot);
-  onTap(fillDotBtn, () => {
-    appearanceTab = 'fill';
-    togglePanel(appearanceBtn, openAppearance);
-  });
   const colourKind = document.createElement('div');
   colourKind.className = 'segmented-mini';
   colourKind.setAttribute('role', 'group');
   colourKind.setAttribute('aria-label', 'Fill');
   const colourKindBtns = new Map<FillScope, HTMLButtonElement>();
+  // UI-4: Pattern (every other copy, row or column) is hidden for now — its fills are kept and drawn.
   for (const [id, label, title] of [
+    ['motif', 'Motif', 'A region of the motif composition — in every copy'],
     ['space', 'Space', 'A space enclosed between motifs — and every one like it'],
-    ['motif', 'Motif', 'A region of the motif — in every copy'],
-    ['pattern', 'Pattern', 'A region of the motif — in every other copy, row or column'],
   ] as const) {
     const b = document.createElement('button');
     b.textContent = label;
@@ -2353,7 +2392,6 @@ export function buildShell(
   colourDone.textContent = 'Done';
   colourDone.setAttribute('aria-label', 'Done filling');
   onTap(colourDone, () => setFillScope(null));
-  colourKindRow.appendChild(fillDotBtn);
   colourKindRow.appendChild(colourKind);
   colourKindRow.appendChild(colourDone);
   repeatPanel.appendChild(colourKindRow);
@@ -2481,10 +2519,6 @@ export function buildShell(
     for (const [id, b] of colourKindBtns) b.classList.toggle('active', scope === id);
     const by = controller.doc.repeatSetup?.colour?.pattern?.by;
     for (const [id, b] of patternBtns) b.classList.toggle('active', by === id);
-    const paint = repeatFill(controller);
-    fillDot.classList.toggle('none', !paint);
-    fillDot.style.background = paint ?? '';
-    fillDotBtn.setAttribute('aria-label', `Fill colour ${repeatPaint(controller) ?? 'no fill'}, ${Math.round(repeatPaintOpacity(controller) * 100)}% — change in Appearance`);
   }
 
   // The Source row (Fill's Space moved into Fill: Space | Motif | Pattern).
@@ -2521,10 +2555,12 @@ export function buildShell(
     sourceBtns.set(id, b);
     sourceSeg.appendChild(b);
   }
-  sourceGroup.appendChild(sourceLabel);
+  // UI-4: just Construct | Intersect (the word "Source" is gone), then Fill as its own action.
+  void sourceLabel;
   sourceGroup.appendChild(sourceSeg);
 
   spaceRow.appendChild(sourceGroup);
+  spaceRow.appendChild(colouringBtn);
   repeatPanel.appendChild(spaceRow);
 
   // Spread: centres in or out about the reference group's centre (100% = the reference); Reference
@@ -3476,7 +3512,7 @@ export function buildShell(
     refreshReferenceButtons();
 
     appearanceBtn.style.display = inRepeat ? '' : 'none';
-    ccBtn.style.display = controller.doc.view.workspace === 'construct' ? '' : 'none';
+    ccBtn.style.display = controller.doc.view.workspace === 'intersection' ? 'none' : '';
     refreshCcBtn();
     guidesBtn.style.display = inRepeat ? '' : 'none';
     handlesBtn.style.display = inRepeat ? '' : 'none';
