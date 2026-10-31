@@ -13,7 +13,7 @@ Keep this short and current. It is a starting point, not a substitute for readin
 | A | Colour-before-drawing (top-bar swatch) | done — see `git log` "Stage A" |
 | B | F0 shared geometry foundation | done — see `git log` "Stage B" |
 | C | Close Gap integration (from `feature/close-gap-poc` `f75482a`) | done — "Stage C 1/2" + "Stage C 2/2" |
-| D | Intersect Form Development (independent Primary) | D1–D5 done (model, display, segments, tap add/remove, Primary-copy) — next D6 |
+| D | Intersect Form Development (independent Primary) | done — D1–D7 (see `git log` "Stage D") |
 
 ## Protected — never modify, merge into, push or deploy
 
@@ -51,6 +51,14 @@ Keep this short and current. It is a starting point, not a substitute for readin
 ## Known limitations
 
 - At 375 px a long selection ribbon scrolls sideways (existing pattern).
+- Form Development V1 Fill is per member: regions formed jointly by the Developed Primary and Primary-copies
+  (or by the Developed Primary alone) cannot be filled yet, and Repeat draws no fills for the Developed Primary.
+  Combined-region Fill is a separate investigation (D7).
+- No snapping to the Developed Primary (D12). The Developed Primary is one style (ink); per-segment styling is not in V1.
+- A bookmark restores the arrangement and In Repeat states, never the Developed Primary (D8).
+- Copies moved after developing leave the Developed Primary where it was (by design); its segments can still
+  be removed by tapping them.
+- Not yet tested on a physical iPhone.
 - Undo does not revert Repeat background (display settings are outside history — existing behaviour).
 
 ## Shared services (Stage B)
@@ -131,13 +139,20 @@ Keep this short and current. It is a starting point, not a substitute for readin
 - Fair mode draws Primary-copies at alpha 0.62, reference copies at 0.3.
 - `withArrangement` (bookmark restore): a bookmark recording no `primaryCopy` flags keeps the current flags.
 
+## Repeat composition, Timelapse and export (Stages D6–D7)
+
+- `repeatUnit` now has `developed: Prim[]` (Developed Primary minus segments lying along a Primary-copy's Fair
+  run — no doubled strokes), extent and key include it; `drawDeveloped` in `repeatRenderer.ts` (ink, Fair default
+  width or Repeat's stroke layer, via `makePath` so SVG export works). Fit (`main.ts`) includes it.
+- Empty composition: `.empty-composition` card in Repeat ("Nothing to repeat yet", Back to Intersect → Fair,
+  Use Construct → `switchRepeatSource(motif)`).
+- History: `describeChange` tags Developed Primary edits `intersect-primary`; Timelapse framing (`drawnBox`)
+  includes developed segments. The whole `doc.intersection` (form included) is already in every recorded state.
+
 ## Exact next step
 
-Stage D, checkpoint D6 — Repeat composition: `repeatUnit` gains the Developed Primary (drawn per lattice copy in
-`drawUnit` in the Fair default style or Repeat's stroke override; developed segments lying on a promoted copy's
-Fair piece are skipped — no doubled strokes); extent includes the developed geometry; an empty Intersect
-composition (no developed segments, no Primary-copies) shows an explanation with "Back to Intersect" / "Use
-Construct". Per-member Fill only (document joint regions). Then D7 Timelapse/export/regression.
+All of Stages A–D are implemented on `feature/integration-a-d`. Stop for the user's final review: do not merge,
+push or deploy. After review: physical iPhone testing of the Stage D build, then whatever the review asks.
 
 ## Commands
 

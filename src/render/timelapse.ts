@@ -36,7 +36,7 @@ import { loadEvents, loadMeta, type ProcessEvent } from '../persist/processStore
 import { walkProcess } from '../persist/processReplay.ts';
 import { captureState, stateHash, stateToDoc, type ArtworkState } from '../persist/processState.ts';
 import { drawnShapes } from '../geometry/bounds.ts';
-import { intersectionCopies } from '../geometry/intersection.ts';
+import { developedSegments, intersectionCopies } from '../geometry/intersection.ts';
 import { transformPoint, type InstancePose } from '../geometry/lattice.ts';
 
 const MAX_SIDE = 1080; // px, the video's longest side
@@ -140,6 +140,13 @@ function drawnBox(mode: 'construct' | 'intersect', state: ArtworkState, liveDoc:
       box = grow(grow(box, q.x - d.r, q.y - d.r), q.x + d.r, q.y + d.r);
     }
   }
+  // Stage D: the Developed Primary stands where it was developed (copies may have moved since).
+  if (mode === 'intersect')
+    for (const s of developedSegments(doc)) {
+      const g = s.geom;
+      if (g.kind === 'line') box = grow(grow(box, g.a.x, g.a.y), g.b.x, g.b.y);
+      else box = grow(grow(box, g.c.x - g.r, g.c.y - g.r), g.c.x + g.r, g.c.y + g.r);
+    }
   return box;
 }
 const union = (a: Box | null, b: Box | null): Box | null => (!a ? b : !b ? a : grow(grow(a, b.minX, b.minY), b.maxX, b.maxY));

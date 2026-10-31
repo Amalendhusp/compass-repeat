@@ -416,11 +416,13 @@ export function describeChange(a: ArtworkState, b: ArtworkState, source: Process
     const ca = (a.intersect as { copies?: Record<string, unknown> } | undefined)?.copies ?? {};
     const cb = (b.intersect as { copies?: Record<string, unknown> } | undefined)?.copies ?? {};
     if (!same(ca, cb)) tags.push('intersect-style');
+    // Stage D: the Developed Primary — segments taken into it or out of it.
+    if (!same((a.intersect as { form?: unknown } | undefined)?.form, (b.intersect as { form?: unknown } | undefined)?.form)) tags.push('intersect-primary');
     if (!tags.some((t) => t.startsWith('intersect-'))) tags.push('intersect');
   }
 
   const unique = [...new Set(tags)];
   if (source === 'undo' || source === 'redo' || source === 'baseline' || source === 'resync') return { kind: source, tags: unique };
-  const priority = ['arc', 'circle', 'line', 'divide', 'delete', 'trim', 'fair', 'unfair', 'stroke', 'fill', 'edit-point', 'edit', 'intersect-copies', 'intersect-arrange', 'intersect-move', 'intersect-rotate', 'intersect-spread', 'intersect-style', 'intersect', 'repeat-setup', 'repeat-source', 'repeat-family', 'repeat-spacing', 'repeat-rotation', 'repeat-rule', 'repeat-space', 'repeat-colour', 'repeat-stroke', 'appearance', 'segment'];
+  const priority = ['arc', 'circle', 'line', 'divide', 'delete', 'trim', 'fair', 'unfair', 'stroke', 'fill', 'edit-point', 'edit', 'intersect-copies', 'intersect-arrange', 'intersect-move', 'intersect-rotate', 'intersect-spread', 'intersect-primary', 'intersect-style', 'intersect', 'repeat-setup', 'repeat-source', 'repeat-family', 'repeat-spacing', 'repeat-rotation', 'repeat-rule', 'repeat-space', 'repeat-colour', 'repeat-stroke', 'appearance', 'segment'];
   return { kind: priority.find((t) => unique.includes(t)) ?? 'other', tags: unique };
 }
