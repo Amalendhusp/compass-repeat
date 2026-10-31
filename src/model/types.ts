@@ -165,11 +165,28 @@ export interface UnderlayView {
   artworkOpacity: number;
 }
 
+/** Intersect Form Development (Stage D): a piece of the Developed Primary — geometry Intersect OWNS,
+ * fixed where it was taken (moving or removing the copy it came from never changes it). Exact: a
+ * line's two ends, or an arc's centre, radius, start angle and sweep (increasing angle). `origins`
+ * records which copy (and Construct line or circle) contributed it — provenance only, never used to
+ * place it; coincident pieces from several copies are one segment with several origins. */
+export interface DevelopedSegment {
+  id: string;
+  geom: { kind: 'line'; a: Vec2; b: Vec2 } | { kind: 'arc'; c: Vec2; r: number; a0: number; sw: number };
+  origins: { copy: string; entity: string }[];
+}
+/** The Developed Primary. Its presence marks an artwork that uses Intersect Form Development: Repeat's
+ * Intersect source is then the Original (unless demoted), the promoted Primary-copies and this —
+ * not every instance (geometry/intersection.ts — formMode). */
+export interface IntersectionForm {
+  developed: DevelopedSegment[];
+}
+
 export interface IntersectionSnapshot {
   id: string;
   at: number;
   layout: IntersectionLayout;
-  copies: Record<string, { colour?: string; extensions?: boolean; locked?: boolean }>;
+  copies: Record<string, { colour?: string; extensions?: boolean; locked?: boolean; primaryCopy?: boolean }>;
   /** A small picture of it (JPEG data URL), if one could be drawn. */
   thumb?: string;
 }
@@ -362,7 +379,7 @@ export interface Doc {
    * the copy's key; the primary is "0,0"), and the arrangement itself. Absent or partial = defaults
    * (see geometry/intersection.ts). Part of Undo; never part of the recorded artwork (it is a way of
    * exploring, not the design). */
-  intersection?: { copies: Record<string, { colour?: string; extensions?: boolean; locked?: boolean }>; layout?: IntersectionLayout };
+  intersection?: { copies: Record<string, { colour?: string; extensions?: boolean; locked?: boolean; primaryCopy?: boolean }>; layout?: IntersectionLayout; form?: IntersectionForm };
   /** Intersection Snapshots: discoveries kept on purpose while exploring — not history, so Undo /
    * Redo never adds or removes one (carried across them like the cameras). */
   intersectionSnapshots?: IntersectionSnapshot[];

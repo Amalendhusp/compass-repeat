@@ -149,6 +149,7 @@ export function withAddedCopy(doc: Doc): NonNullable<Doc['intersection']> | null
   const used = new Set(shown.map((c) => c.colour.toLowerCase()));
   const colour = PALETTE.find((c) => !used.has(c.toLowerCase())) ?? PALETTE[1]!;
   return {
+    ...baseOf(doc),
     copies: { ...(doc.intersection?.copies ?? {}), [key]: { colour } },
     layout: { ...layout, pieces: [...layout.pieces, { key, x: place.x, y: place.y, rotation: 0 }] },
   };
@@ -160,7 +161,7 @@ export function withoutCopy(doc: Doc, key: string): NonNullable<Doc['intersectio
   const layout = baked(layoutOf(doc));
   if (!layout.pieces.some((p) => p.key === key)) return null;
   const { [key]: _gone, ...copies } = doc.intersection?.copies ?? {};
-  return { copies, layout: { ...layout, pieces: layout.pieces.filter((p) => p.key !== key) } };
+  return { ...baseOf(doc), copies, layout: { ...layout, pieces: layout.pieces.filter((p) => p.key !== key) } };
 }
 
 export const SPREAD_MIN = 0.25;
@@ -212,7 +213,7 @@ export function withLock(doc: Doc, key: string, locked: boolean): NonNullable<Do
   if (locked) own.locked = true;
   else delete own.locked;
   copies[key] = own;
-  return { copies, layout: structuredClone(layoutOf(doc)) };
+  return { ...baseOf(doc), copies, layout: structuredClone(layoutOf(doc)) };
 }
 
 /** The world-space bounds of the constructions as shown — what Intersection's Fit frames. */
@@ -238,10 +239,74 @@ export function intersectionBounds(doc: Doc): { minX: number; minY: number; maxX
 export function withCopySetting(doc: Doc, key: string, patch: { colour?: string; extensions?: boolean }): NonNullable<Doc['intersection']> {
   const copies = { ...(doc.intersection?.copies ?? {}) };
   copies[key] = { ...copies[key], ...patch };
-  return { ...doc.intersection, copies };
+  return { ...baseOf(doc), copies };
 }
 
 /** The artwork's Intersection settings with a new arrangement. */
 export function withLayout(doc: Doc, layout: IntersectionLayout): NonNullable<Doc['intersection']> {
-  return { copies: { ...(doc.intersection?.copies ?? {}) }, layout };
+  return { ...baseOf(doc), copies: { ...(doc.intersection?.copies ?? {}) }, layout };
+}
+
+// ---- Intersect Form Development (Stage D) ----------------------------------------------------
+
+/**
+ * How Repeat's Intersect source reads this artwork:
+ * - 'form': it uses Form Development — the Original (unless demoted), promoted Primary-copies and the
+ *   Developed Primary;
+ * - 'legacy': an arrangement was stored, or the Intersect source used, before Form Development
+ *   existed — every instance, exactly as it always was;
+ * - 'new': never arranged, never repeated from Intersect — read as 'form' (the Original alone, to
+ *   start), and its first stored arrangement records `form` with it (baseOf), so it stays that way.
+ * Nothing is converted on loading: the recorded history of an artwork that never used Intersect keeps
+ * exactly its shape.
+ */
+export function formMode(doc: Doc): 'form' | 'legacy' | 'new' {
+  if (doc.intersection?.form) return 'form';
+  if (doc.intersection) return 'legacy';
+  const setup = doc.repeatSetup;
+  if (setup?.source === 'intersect' || setup?.saved?.intersect) return 'legacy';
+  return 'new';
+}
+
+/** Every write of the arrangement starts from this: whatever else it holds is kept (the Developed
+ * Primary above all — an arrangement change must never drop it), and a 'new' artwork's first stored
+ * arrangement records an empty Form with it. */
+function baseOf(doc: Doc): Partial<NonNullable<Doc['intersection']>> {
+  const kept = { ...doc.intersection };
+  if (formMode(doc) === 'new') kept.form = { developed: [] };
+  return kept;
+}
+
+/** The artwork's Intersection with a restored arrangement (a bookmark): positions, turns and copy
+ * settings replaced; the Developed Primary — and everything else — kept. */
+export function withArrangement(doc: Doc, copies: NonNullable<Doc['intersection']>['copies'], layout: IntersectionLayout): NonNullable<Doc['intersection']> {
+  return { ...baseOf(doc), copies, layout };
+}
+
+/** Whether instance `key` is part of the Intersect composition Repeat repeats. */
+export function inComposition(doc: Doc, key: string): boolean {
+  if (formMode(doc) === 'legacy') return true;
+  const flag = doc.intersection?.copies?.[key]?.primaryCopy;
+  return key === PRIMARY ? flag !== false : flag === true;
+}
+
+/** The Developed Primary's segments (none for a legacy or new artwork). */
+export function developedSegments(doc: Doc): import('../model/types.ts').DevelopedSegment[] {
+  return doc.intersection?.form?.developed ?? [];
+}
+
+/**
+ * The arrangement ready for a Form Development change: a 'legacy' artwork becomes 'form' with every
+ * current instance promoted — so its Repeat output stays exactly what it was — and a 'new' one with
+ * the Original alone. Returns a fresh copy to modify and store.
+ */
+export function asForm(doc: Doc): NonNullable<Doc['intersection']> & { form: import('../model/types.ts').IntersectionForm } {
+  const mode = formMode(doc);
+  const copies = structuredClone(doc.intersection?.copies ?? {});
+  if (mode === 'legacy') for (const c of intersectionCopies(doc)) copies[c.key] = { ...copies[c.key], primaryCopy: true };
+  return {
+    ...structuredClone(doc.intersection ?? {}),
+    copies,
+    form: structuredClone(doc.intersection?.form ?? { developed: [] }),
+  } as NonNullable<Doc['intersection']> & { form: import('../model/types.ts').IntersectionForm };
 }

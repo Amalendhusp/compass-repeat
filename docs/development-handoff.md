@@ -13,7 +13,7 @@ Keep this short and current. It is a starting point, not a substitute for readin
 | A | Colour-before-drawing (top-bar swatch) | done — see `git log` "Stage A" |
 | B | F0 shared geometry foundation | done — see `git log` "Stage B" |
 | C | Close Gap integration (from `feature/close-gap-poc` `f75482a`) | done — "Stage C 1/2" + "Stage C 2/2" |
-| D | Intersect Form Development (independent Primary) | next — D1 data model |
+| D | Intersect Form Development (independent Primary) | D1 data model done — next D2 |
 
 ## Protected — never modify, merge into, push or deploy
 
@@ -74,15 +74,34 @@ Keep this short and current. It is a starting point, not a substitute for readin
   held still: current dashed, proposed solid, brass meeting dot, arm label). Rotation ring hidden in the mode.
 - Handles stay completely free: in the mode a handle drag works as always and returns to picking.
 
+## Form Development data model (Stage D1)
+
+- `types.ts`: `doc.intersection.form?: { developed: DevelopedSegment[] }` (segment = exact `geom` line/arc +
+  `origins` provenance); `copies[key].primaryCopy?: boolean`.
+- `intersection.ts` `formMode(doc)`: `'form'` (form stored) · `'legacy'` (an arrangement stored, or Intersect
+  source used, without form — Repeat = every instance, exactly as before) · `'new'` (never arranged nor
+  repeated from Intersect — treated as form). Nothing is converted on load (history shape unchanged).
+- Every arrangement write goes through `baseOf` — keeps all fields (the Developed Primary above all) and records
+  an empty form for a 'new' artwork. Bookmark restore uses `withArrangement` (D8: Developed geometry kept).
+  `switchRepeatSource` to Intersect records the form for a 'new' artwork.
+- `inComposition(doc, key)`: legacy → all; else Original `'0,0'` unless `primaryCopy === false`, copies only when
+  `primaryCopy === true`. `asForm(doc)`: legacy → every current instance promoted (output unchanged).
+- `repeatComposition`: filters by `inComposition` and adds member `'developed'` (owner 'developed', identity pose)
+  when there are segments; `developedFeatures` gives exact features. `repeatUnit` lists construct members only
+  until D6 draws the Developed Primary.
+- Note: older test fixtures (e.g. "Regress P11 intersect") use keys `'primary'`/`'copy-1'`; they are legacy, so
+  every instance is included.
+- Regression: `scratchpad/suite.js` `start()` → poll `window.__reg` (fingerprints, interrupted-touch, smoke, Guide).
+  Guide baseline is `line:true circle:true divide:false buildOn:true fair:true fill:true repeat:true share:false`
+  (the two `false` are harness timing, identical at every baseline).
+
 ## Exact next step
 
-Stage D, checkpoint D1 — the independent Developed Primary data model, with legacy compatibility:
-`doc.intersection.form = { developed: DevelopedSegment[] }` (absent = legacy: Intersect Repeat = all instances,
-exactly as now), `copies[key].primaryCopy?: boolean`; `repeatComposition` returns, for a `form` artwork,
-'0,0' Original (promoted by default) + promoted copies + a 'developed' member (owner 'developed', identity pose)
-whose features come from the stored segments. No UI yet. Prove: legacy artworks' Repeat fingerprints unchanged.
-Then D2 Intersect Fair display mode, D3 segment splitting, D4 tap add/remove, D5 Primary-copy, D6 Repeat
-composition + empty state, D7 Timelapse/export/regression.
+Stage D, checkpoint D2 — Intersect Fair display mode: Fair tool in the Intersection workspace develops the
+Primary (owner cue: Line/Circle/Divide = "Editing Construct source"; Fair = "Developing the Primary"); the
+Intersection renderer draws the Developed Primary over the arrangement in one Primary stroke style (D11).
+Then D3 segment splitting at Fair intersections, D4 tap add/remove, D5 Primary-copy, D6 Repeat composition +
+empty state, D7 Timelapse/export/regression.
 
 ## Commands
 

@@ -35,7 +35,7 @@ import { onTap } from './tap.ts';
 import { color, fairPalette, stroke } from '../render/tokens.ts';
 import { suggestedFamily, type LatticeFamily } from '../geometry/lattice.ts';
 import { rotationFractionLabel } from '../render/repeatRenderer.ts';
-import { asReference, intersectionCopies, layoutOf, MAX_CONSTRUCTIONS, placedAt, PRIMARY, referenceCurrent, sliderToSpread, SPREAD_SLIDER_MAX, spreadToSlider, withAddedCopy, withCopySetting, withLayout, withLock, withoutCopy, withSpreadAround, isLocked } from '../geometry/intersection.ts';
+import { withArrangement, asReference, intersectionCopies, layoutOf, MAX_CONSTRUCTIONS, placedAt, PRIMARY, referenceCurrent, sliderToSpread, SPREAD_SLIDER_MAX, spreadToSlider, withAddedCopy, withCopySetting, withLayout, withLock, withoutCopy, withSpreadAround, isLocked } from '../geometry/intersection.ts';
 import { canMoveAgainst, convertPick, isPointPick, planMatchEdge, planSnap, resolvePick, type PickKind } from '../geometry/intersectionSnap.ts';
 import { PICK_REACH_PX } from '../interaction/tools/intersectionTool.ts';
 import { repeatSource, type RepeatSource } from '../geometry/repeatUnit.ts';
@@ -843,7 +843,9 @@ function showIntersectionSnapshotsPanel(anchor: HTMLElement, controller: AppCont
             e.stopPropagation();
             controller.intersectionSelected = null;
             controller.commit((d) => {
-              d.intersection = { copies: structuredClone(snap.copies), layout: structuredClone(snap.layout) };
+              // A bookmark restores the ARRANGEMENT — positions, turns, Primary-copy states — never the
+              // Developed Primary, which stays as it is (Stage D, decision D8).
+              d.intersection = withArrangement(d, structuredClone(snap.copies), structuredClone(snap.layout));
             });
             close();
           });

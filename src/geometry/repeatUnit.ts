@@ -41,7 +41,9 @@ export function repeatUnit(doc: Doc): RepeatUnit | null {
   let unit = cache.get(doc);
   if (!unit) {
     // Stage B: the members come from the one composition service (repeatComposition.ts).
-    const comp = repeatComposition(doc).members;
+    // (D1: the Developed Primary is drawn by Repeat from checkpoint D6; until then the unit lists the
+    // members that show the Construct motif.)
+    const comp = repeatComposition(doc).members.filter((m) => m.owner === 'construct');
     const members = comp.map((m) => m.pose);
     const reach = motifExtent(doc);
     unit = {

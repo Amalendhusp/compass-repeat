@@ -20,7 +20,7 @@ import { resolveEntityGeom } from './kernel.ts';
 import { deriveSegments } from './segments.ts';
 import { computeFairRegions } from './regions.ts';
 import { defaultLatticeVectors, instancePose, transformPoint, type InstancePose, type LatticeFamily } from './lattice.ts';
-import { intersectionCopies } from './intersection.ts';
+import { formMode, intersectionCopies, layoutOf, withLayout } from './intersection.ts';
 
 export type { RepeatSourceKind };
 
@@ -151,6 +151,10 @@ export function switchRepeatSource(controller: AppController, to: RepeatSourceKi
   const from = repeatSourceOf(controller.doc);
   if (from === to) return;
   controller.commit((d) => {
+    // An artwork that has never used Intersect starts Form Development the moment it first repeats
+    // from Intersect: its arrangement is recorded with an (empty) Developed Primary, so it is never
+    // mistaken for one repeated from Intersect before Form Development existed (formMode).
+    if (to === 'intersect' && formMode(d) === 'new') d.intersection = withLayout(d, layoutOf(d));
     const before: RepeatSetup = d.repeatSetup ?? { source: from };
     const saved = before.saved?.[to];
     const kept: RepeatSetup['saved'] = { ...before.saved, [from]: activeConfig(d) };
