@@ -1727,6 +1727,9 @@ export interface ShellHandles {
   overlay: HTMLElement;
 }
 
+/** UI-1: developer-only menu entries (Point targets, Show points) — `?dev` in the address. */
+const DEV_MENU = new URLSearchParams(location.search).has('dev');
+
 export function buildShell(
   root: HTMLElement,
   controller: AppController,
@@ -1736,6 +1739,8 @@ export function buildShell(
     onOpen: () => void;
     onSave: () => void;
     onSaveAs: () => void;
+    /** UI-1: whether the open artwork has changes not saved (named in the menu's heading). */
+    unsaved: () => boolean;
     onSwitchWorkspace: (ws: 'construct' | 'intersection' | 'repeat') => void;
     getView: () => ViewTransform;
     /** The view the single-finger tool works in (Intersect: the active instance's) — where tool-placed
@@ -1770,15 +1775,15 @@ export function buildShell(
         { label: 'Open…', onSelect: () => opts.onOpen() },
         { label: 'Save', onSelect: () => opts.onSave() },
         { label: 'Save As…', onSelect: () => opts.onSaveAs() },
-        // The point settings: kept, with their defaults, but out of the top bar — the usual
-        // targeting (Primary and Derived, nearest wins) needs no setting at all.
-        ...(controller.doc.view.workspace === 'repeat'
+        // UI-1: the point settings are kept (with their saved values) but not offered to ordinary
+        // users — only with ?dev in the address, for internal testing.
+        ...(controller.doc.view.workspace === 'repeat' || !DEV_MENU
           ? []
           : [
               { label: 'Point targets…', divided: true, onSelect: () => showPointTargetsPanel(menuBtn, controller) },
               { label: 'Show points…', onSelect: () => showPointsPanel(menuBtn, controller, remembered) },
             ]),
-      ], controller.doc.named ? controller.doc.name : 'Untitled artwork', 'file-menu'),
+      ], `${controller.doc.named ? controller.doc.name : 'Untitled artwork'}${opts.unsaved() ? ' · unsaved' : ''}`, 'file-menu'),
     ),
   );
   leftSide.appendChild(menuBtn);

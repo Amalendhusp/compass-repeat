@@ -6,12 +6,13 @@
 // do on every pinch sample — unlike the dock/context-bar DOM rebuild, which subscribe() alone
 // reaches. No IndexedDB write happens until 300ms after the gesture actually stops.
 //
-// Phase 5.5 item 4: writes always go to the CURRENT artwork's own record (its id) — autosave never
-// creates another artwork. It also keeps that artwork's thumbnail fresh, re-drawn a little after
-// each real edit (not on every pan/zoom), and exposes flush() for Save and artwork switching.
+// UI-1: autosave writes the WORKING DRAFT only (persist/draft.ts) — never a saved artwork. A saved
+// artwork changes only on an explicit Save or Save As (main.ts). The draft slot holds one session:
+// this one claims it at once, unless the slot holds another artwork's unsaved changes — then it
+// waits until this session has unsaved changes of its own (it is then the most recent).
 
 import type { AppController } from '../app/controller.ts';
-import { saveDocument, saveHistory, setMeta } from './db.ts';
+import { draftSlot, putDraft } from './draft.ts';
 import { makeThumbnail } from './thumbnail.ts';
 
 const DEBOUNCE_MS = 300;
@@ -21,31 +22,43 @@ export interface AutosaveHandle {
   detach: () => void;
   /** Writes now (and redraws the thumbnail first when asked). */
   flush: (opts?: { thumbnail?: boolean }) => void;
+  /** The thumbnail as last drawn (Save stores it with the artwork). */
+  thumbnail: () => string | undefined;
 }
 
-export function attachAutosave(controller: AppController): AutosaveHandle {
+export interface DraftState {
+  dirty: () => boolean;
+  baseHash: () => string;
+  savedBase: () => boolean;
+}
+
+export function attachAutosave(controller: AppController, state: DraftState): AutosaveHandle {
   let timer: ReturnType<typeof setTimeout> | null = null;
   let thumbTimer: ReturnType<typeof setTimeout> | null = null;
   let thumbnail = makeThumbnail(controller.doc);
 
   const writeNow = (): void => {
     const doc = controller.doc;
+    const dirty = state.dirty();
+    const s = draftSlot();
+    if (!dirty && s && s.dirty && s.docId !== doc.id) return; // never replace another artwork's unsaved work with nothing
     const { undo, redo } = controller.getHistorySnapshot();
     // IndexedDB's structured clone runs synchronously when put() is called, so
     // handing it the live doc/stacks here is safe even if they're replaced
     // (not mutated in place) by a later commit before the write settles.
-    void saveDocument({
-      id: doc.id,
+    void putDraft({
+      docId: doc.id,
       name: doc.name,
-      named: doc.named,
-      createdAt: doc.createdAt,
-      updatedAt: doc.updatedAt,
-      schemaVersion: doc.schemaVersion,
+      named: doc.named ?? false,
+      savedBase: state.savedBase(),
+      baseHash: state.baseHash(),
+      dirty,
+      updatedAt: Date.now(),
       thumbnail,
       snapshot: doc,
+      undo,
+      redo,
     });
-    void saveHistory({ docId: doc.id, undoStack: undo, redoStack: redo });
-    void setMeta('lastOpenDocId', doc.id);
   };
 
   const scheduleSave = (): void => {
@@ -92,6 +105,7 @@ export function attachAutosave(controller: AppController): AutosaveHandle {
 
   return {
     flush,
+    thumbnail: () => thumbnail,
     detach: () => {
       unsubscribeView();
       unsubscribe();

@@ -16,7 +16,15 @@ export function isInConfirmLayer(target: EventTarget | null): boolean {
   return !!current && target instanceof Node && current.contains(target);
 }
 
-export function openConfirmSheet(opts: { title: string; body: string; confirmLabel: string; onConfirm: () => void; onCancel?: () => void }): void {
+export function openConfirmSheet(opts: {
+  title: string;
+  body: string;
+  confirmLabel: string;
+  onConfirm: () => void;
+  onCancel?: () => void;
+  /** UI-1: a third choice between Cancel and the confirmation (e.g. Don't save). */
+  secondary?: { label: string; onSelect: () => void; danger?: boolean };
+}): void {
   if (current?.isConnected) return;
 
   const layer = document.createElement('div');
@@ -69,6 +77,18 @@ export function openConfirmSheet(opts: { title: string; body: string; confirmLab
     opts.onConfirm();
   });
   actions.appendChild(cancelBtn);
+  if (opts.secondary) {
+    const second = opts.secondary;
+    const btn = document.createElement('button');
+    btn.className = 'btn-secondary' + (second.danger ? ' danger' : '');
+    btn.textContent = second.label;
+    onTap(btn, () => {
+      close();
+      second.onSelect();
+    });
+    actions.appendChild(btn);
+    actions.classList.add('three');
+  }
   actions.appendChild(confirmBtn);
 
   card.appendChild(h2);

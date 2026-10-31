@@ -4,7 +4,8 @@ Keep this short and current. It is a starting point, not a substitute for readin
 
 ## Where things are
 
-- **Branch:** `feature/integration-a-d` (from C1 `6b8e300`). Latest commit: see `git log -1`.
+- **Branch:** `feature/ui-refinement` (UI phase, from `feature/integration-a-d` `cf5b038`). Latest commit: see
+  `git log -1`. A–D and Fill stay on `feature/integration-a-d` (unchanged).
 - **Accelerated cycle (approved 2026-10-31):** Stages A–D, one or more commits per stage, no merge/push/deploy.
 
 | Stage | Scope | Status |
@@ -15,6 +16,10 @@ Keep this short and current. It is a starting point, not a substitute for readin
 | C | Close Gap integration (from `feature/close-gap-poc` `f75482a`) | done — "Stage C 1/2" + "Stage C 2/2" |
 | D | Intersect Form Development (independent Primary) | done — D1–D7 (see `git log` "Stage D") |
 | Fill | Enclosed-space detection + Fill interface (after the user's device test, 2026-10-31) | done — F1, F2 (see `git log` "Fill F") |
+| UI-1 | Working draft vs saved artworks; Recover last session; Menu simplified | done — see `git log` "UI-1" |
+| UI-2 | Contextual Appearance panel (top right): construction / Fair / Fill preferences | next |
+| UI-3 | Intersect: Reference into Menu; eye keeps the sliders | pending |
+| UI-4 | Repeat: rules row, Construct/Intersect source, Motif/Space Fill, master guide toggle | pending |
 
 ## Protected — never modify, merge into, push or deploy
 
@@ -23,6 +28,7 @@ Keep this short and current. It is a starting point, not a substitute for readin
 - Free lattice: `feature/phase1-2-free-lattice` `f4f0c18`
 - C1: `feature/c1-construction-colouring` `6b8e300`
 - Close Gap PoC: `feature/close-gap-poc` `f75482a`
+- Accelerated A–D + Fill: `feature/integration-a-d` `cf5b038` (A–D `cb28659`; Fill `f927427`, `4434caf`)
 - `dist/phone-import.html`, `dist/plate113.json` (phone import fixtures; never delete)
 
 ## Decisions in force
@@ -190,10 +196,46 @@ Keep this short and current. It is a starting point, not a substitute for readin
 - Tests (git-ignored): `scratchpad/fill-app.js` — `starMotif`, `lattice`, `starArtwork(name, gap, rule)`,
   `tapWorld`; old detector kept as `scratchpad/spaces-old.ts` for comparisons.
 
+## UI-1: saved artworks and the working draft
+
+- Before UI-1 every artwork was autosaved into its own `documents` record from its first frame, so every
+  experiment appeared in My Artworks; `named` only recorded that a name was given. Save provenance of existing
+  records cannot be established, so EVERY existing record stays listed; the new rules apply from now on.
+- `persist/draft.ts`: one working draft in `meta.workingDraft` — doc, Undo/Redo, view, thumbnail, `savedBase`,
+  `baseHash` (artwork-state fingerprint of the saved version or of a new artwork's bare frame; `captureState`, so
+  view / tool preferences / name never count), `dirty`. Autosave (`autosave.ts`) writes only this slot, never a
+  `documents` record; it never replaces another artwork's unsaved draft with a clean one.
+- `main.ts`: `writeSaved` (Save / Save As) writes record + history + thumbnail + `processMeta` (process-history
+  summary at that save) and `lastOpenDocId`. `confirmLeave` asks "Save changes to …?" (Cancel · Don't save · Save)
+  before New / Open / another frame replace unsaved work; a leftover draft from an earlier session is asked about
+  ("Discard the unsaved session?"). Discard = clear the slot + `rollbackProcess` to `processMeta` (never-saved:
+  `deleteProcess`); legacy records without `processMeta` keep their process history (resync handles it).
+- Save As from a saved artwork: the work in hand becomes the new artwork (process copied, Undo kept); the original
+  record is untouched and its process rolls back. Save As on a never-saved artwork = Save with a name.
+- Launch: a dirty draft → Start screen at My Artworks with **Recover last session** (dashed brass card, Discard);
+  a clean draft that still matches its saved record → reopened as it was (view, Undo); else `lastOpenDocId`.
+- Beginner Guide: the work in hand is kept in the draft and reopened from it on exit (unsaved changes kept).
+- Gallery card of the open artwork says "Open now · unsaved changes"; Menu heading adds "· unsaved".
+- Menu: New · Open… · Save · Save As… (Reference joins in UI-3). Point targets / Show points are kept (with their
+  saved values) but only offered with `?dev` in the address (`DEV_MENU`, shell.ts).
+- Rename changes only the saved record's name (and the live name); Duplicate copies the saved version; Delete of
+  an artwork also clears its draft.
+- Harness: `scratchpad/start-app.js` `answerLeave()` and `divide-app.js` `open()` answer the new prompt with
+  "Don't save" (test edits are never kept). UI-1 tests: `scratchpad/ui1-app.js`; shared checks (exports, Undo/Redo,
+  Timelapse): `scratchpad/ui-checks.js`.
+- Results: new work not listed; refresh → one Recover entry; Recover restores work + Undo; Save adds one entry;
+  editing a saved artwork leaves its record unchanged; Discard keeps the original (process head back to the save);
+  Save As independent; Cancel / Don't save / Save; Guide round trip keeps unsaved work. Whole suite: Plate 113,
+  intersectSourceRepeat, colourC identical; cancel 16/0; smoke all true; Guide baseline; and NOT ONE of the 136
+  stored artwork records changed during the suite (previously autosave rewrote them). PNG/SVG export, Timelapse
+  (8 frames, playable), Undo/Redo fine; prompt checked at 375 px.
+
 ## Exact next step
 
-Fill F1–F2 implemented on `feature/integration-a-d`. Stop for the user's review and physical iPhone test of the
-Fill build: do not merge, push or deploy.
+UI phase (approved 2026-10-31, Option B — contextual Appearance panel): UI-1 done; next UI-2 (move the
+construction swatch top-right as the contextual Appearance control: Line/Circle/Arc colour, Fair colour + width
+(default 2.5), Fill colour + opacity (default 100 %); remove the lower Fair Colour/Width chips), then UI-3, UI-4,
+then a fresh iPhone build and stop for the user's device review. Do not merge, push or deploy.
 
 ## Commands
 

@@ -122,6 +122,18 @@ export function copyProcess(fromId: string, toId: string): Promise<void> {
   });
 }
 
+/** UI-1: Discard — the history goes back to how it stood when the artwork was last saved (`meta`,
+ * kept with the saved artwork): every moment recorded after it is removed. */
+export function rollbackProcess(docId: string, meta: ProcessMeta): Promise<void> {
+  return enqueue(async () => {
+    const db = await openProcessDb();
+    const t = db.transaction(['processes', 'events'], 'readwrite');
+    t.objectStore('events').delete(IDBKeyRange.bound([docId, meta.headSeq + 1], [docId, Number.MAX_SAFE_INTEGER]));
+    t.objectStore('processes').put({ ...meta, docId });
+    await done(t);
+  });
+}
+
 export function deleteProcess(docId: string): Promise<void> {
   return enqueue(async () => {
     const db = await openProcessDb();

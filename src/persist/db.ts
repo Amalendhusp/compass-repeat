@@ -10,7 +10,7 @@
 // survive reload either way; the op-log/compaction machinery is deferred.
 
 import type { Doc } from '../model/types.ts';
-import { deleteProcess } from './processStore.ts';
+import { deleteProcess, type ProcessMeta } from './processStore.ts';
 
 const DB_NAME = 'construct-and-repeat';
 const DB_VERSION = 1;
@@ -26,6 +26,8 @@ export interface DocumentRecord {
   /** Phase 5.5 item 3: a small PNG data URL of the artwork, for My Artworks. */
   thumbnail?: string;
   snapshot: Doc;
+  /** UI-1: the process history's summary as it stood at this Save — Discard rolls back to it. */
+  processMeta?: ProcessMeta;
 }
 
 export interface ArtworkSummary {

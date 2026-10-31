@@ -36,11 +36,12 @@ import { resolvePoint } from './geometry/kernel.ts';
 import { worldToScreen } from './app/controller.ts';
 import { attachAutosave, type AutosaveHandle } from './persist/autosave.ts';
 import { attachProcessRecorder, type ProcessHandle } from './persist/processRecorder.ts';
-import { copyProcess, enqueue, listProcesses, loadEvents, loadMeta } from './persist/processStore.ts';
+import { copyProcess, deleteProcess, enqueue, listProcesses, loadEvents, loadMeta, rollbackProcess } from './persist/processStore.ts';
+import { artworkHash, clearDraft, dirtyTracker, draftSlot, loadDraft, type WorkingDraft } from './persist/draft.ts';
 import { replayProcess, stateAt } from './persist/processReplay.ts';
 import { captureState, stateHash, stateToDoc } from './persist/processState.ts';
 import { makeThumbnail } from './persist/thumbnail.ts';
-import { deleteArtwork, getMeta, listArtworks, loadDocument, loadHistory, saveDocument, setMeta, type ArtworkSummary } from './persist/db.ts';
+import { deleteArtwork, getMeta, listArtworks, loadDocument, loadHistory, saveDocument, saveHistory, setMeta, type ArtworkSummary } from './persist/db.ts';
 import { openNameSheet } from './ui/artworks.ts';
 import { openConfirmSheet } from './ui/confirmsheet.ts';
 import { showToast } from './ui/toast.ts';
@@ -63,7 +64,21 @@ const tools = { select: selectTool, circle: circleTool, line: lineTool, arc: arc
 
 /** Phase 5.5: the artwork currently open. Tearing it down stops its render loop, resize observer
  * and autosave, so switching artworks never leaves an old one drawing or saving in the background. */
-let session: { controller: AppController; autosave: AutosaveHandle; process: ProcessHandle | null; getView: () => ViewTransform; fit: () => void; teardown: () => void } | null = null;
+let session: {
+  controller: AppController;
+  autosave: AutosaveHandle;
+  process: ProcessHandle | null;
+  getView: () => ViewTransform;
+  fit: () => void;
+  teardown: () => void;
+  /** UI-1: a saved artwork with this id exists (it is listed in My Artworks). */
+  savedBase: boolean;
+  /** UI-1: whether the artwork differs from its saved version (a new one: from its bare frame). */
+  tracker: ReturnType<typeof dirtyTracker>;
+} | null = null;
+
+/** UI-1: the open artwork has changes not saved (never for the Beginner Guide's practice). */
+const isDirty = (s = session): boolean => !!s && !guideReturn && s.tracker.dirty(s.controller.doc);
 
 /** Phase 5.7: the draw-frame gesture's own listeners and render loop, while it's armed. */
 let detachFrameDrawing: (() => void) | null = null;
@@ -79,7 +94,7 @@ function endSession(): void {
  * practice artwork — never autosaved, never listed, never the "last open" artwork. What was open
  * before is saved as it stands on entry and reopened, untouched, when the guide closes. */
 let guideReturn: { artworkId: string | null } | null = null;
-const inertAutosave: AutosaveHandle = { detach: () => {}, flush: () => {} };
+const inertAutosave: AutosaveHandle = { detach: () => {}, flush: () => {}, thumbnail: () => undefined };
 
 const FIT_PADDING = 0.86; // consistent margin around the fitted geometry, both axes
 
@@ -191,9 +206,13 @@ function fitIntersectionView(controller: AppController, canvas: HTMLCanvasElemen
 /** Boots the app on a document. `fitToScreen: false` preserves a drawn/restored viewport. */
 const KEY_ZOOM_STEP = 1.25;
 
-function boot(doc: Doc, opts: { fitToScreen: boolean; history?: { undo: Doc[]; redo: Doc[] }; fresh?: boolean }): void {
+function boot(doc: Doc, opts: { fitToScreen: boolean; history?: { undo: Doc[]; redo: Doc[] }; fresh?: boolean; savedBase?: boolean; baseHash?: string }): void {
   endSession();
   const controller = new AppController(doc);
+  // UI-1: what this session started from — the saved version, or a new artwork's bare frame (a
+  // recovered draft brings its own).
+  const tracker = dirtyTracker(opts.baseHash ?? artworkHash(doc));
+  const savedBase = opts.savedBase ?? false;
   // §9 restore: "the tool reset to Select" — AppController already defaults tool to 'select'.
   if (opts.history) controller.restoreHistory(opts.history.undo, opts.history.redo);
   // The reference: a workspace showing it for the first time takes its own placement from the most
@@ -220,6 +239,7 @@ function boot(doc: Doc, opts: { fitToScreen: boolean; history?: { undo: Doc[]; r
     onOpen: () => showStart('artworks'),
     onSave: () => saveArtwork(),
     onSaveAs: () => saveAsNewArtwork(),
+    unsaved: () => isDirty(),
     getView: () => getView(),
     getToolView: () => getToolView(),
     // vNext Phase 4B: Timelapse reads the history after every change so far is recorded.
@@ -382,7 +402,9 @@ function boot(doc: Doc, opts: { fitToScreen: boolean; history?: { undo: Doc[]; r
   // While the reference's Transform mode is on, a touch moves the reference, not a tool or the camera.
   pointer.getTakeover = () => referenceTakeover(controller, getView);
   pointer.onWheelTransform = (at, factor, turn) => referenceWheel(controller, getView, at, factor, turn);
-  const autosave = guideReturn ? inertAutosave : attachAutosave(controller);
+  const autosave = guideReturn
+    ? inertAutosave
+    : attachAutosave(controller, { dirty: () => tracker.dirty(controller.doc), baseHash: () => tracker.base(), savedBase: () => (session?.controller === controller ? session.savedBase : savedBase) });
   // vNext Phase 4A: the artwork's process history — never for the Beginner Guide's practice artwork.
   // A brand-new artwork's history starts at its frame; an existing one at its first real change.
   const process = guideReturn ? null : attachProcessRecorder(controller, { fresh: opts.fresh === true });
@@ -494,6 +516,8 @@ function boot(doc: Doc, opts: { fitToScreen: boolean; history?: { undo: Doc[]; r
     process,
     getView,
     fit,
+    savedBase,
+    tracker,
     teardown: () => {
       running = false;
       setContextProvider(null);
@@ -508,21 +532,54 @@ function boot(doc: Doc, opts: { fitToScreen: boolean; history?: { undo: Doc[]; r
   };
 }
 
-// ---- Phase 5.5 items 3–9: saved artworks ----
+// ---- Phase 5.5 items 3–9: saved artworks · UI-1: saved artworks vs the working draft ----
+//
+// My Artworks lists saved artworks only. A saved artwork's record (and its Undo history) is written
+// only here — on Save or Save As; autosave keeps the working draft instead (persist/draft.ts).
 
-/** Save: the first time, the artwork gets a name; after that it simply writes (autosave keeps
- * writing to the same artwork in between). */
-function saveArtwork(): void {
+/** Writes the open artwork as its saved version — record, Undo history, thumbnail — and records
+ * where its process history stood (Discard rolls back to that). The draft is then clean. */
+async function writeSaved(s: NonNullable<typeof session>): Promise<void> {
+  const doc = s.controller.doc;
+  s.autosave.flush({ thumbnail: true });
+  s.process?.flush();
+  const processMeta = await enqueue(() => loadMeta(doc.id));
+  const { undo, redo } = s.controller.getHistorySnapshot();
+  const now = Date.now();
+  doc.updatedAt = now;
+  await saveDocument({
+    id: doc.id,
+    name: doc.name,
+    named: doc.named,
+    createdAt: doc.createdAt,
+    updatedAt: now,
+    schemaVersion: doc.schemaVersion,
+    thumbnail: s.autosave.thumbnail(),
+    snapshot: doc,
+    ...(processMeta ? { processMeta } : {}),
+  });
+  await saveHistory({ docId: doc.id, undoStack: undo, redoStack: redo });
+  await setMeta('lastOpenDocId', doc.id);
+  s.savedBase = true;
+  s.tracker.rebase(s.tracker.hash(doc));
+  s.autosave.flush(); // the draft now matches the saved artwork
+  s.controller.notify();
+}
+
+/** Save: the first time, the artwork gets a name; after that it simply writes. `then` runs once
+ * it is saved (never if the naming is cancelled). */
+function saveArtwork(then?: () => void): void {
   const s = session;
   if (!s) return;
-  const done = () => {
-    s.autosave.flush({ thumbnail: true });
-    showToast(`Saved “${s.controller.doc.name}”`);
-  };
-  if (s.controller.doc.named) return done();
+  const done = () =>
+    void writeSaved(s).then(() => {
+      showToast(`Saved “${s.controller.doc.name}”`);
+      then?.();
+    });
+  if (s.controller.doc.named && s.savedBase) return done();
   openNameSheet(root!, {
     title: 'Name this artwork',
-    initial: '',
+    initial: s.controller.doc.named ? s.controller.doc.name : '',
     confirmLabel: 'Save',
     onConfirm: (name) => {
       s.controller.doc.name = name;
@@ -546,8 +603,9 @@ function asNewArtwork(doc: Doc, name: string): Doc {
   return copy;
 }
 
-/** Save as new: the current artwork (saved as it stands) is copied into a new artwork with its own
- * id and name, and that copy is what's open afterwards — the original is left exactly as it was. */
+/** Save as new: the work in hand (unsaved changes included) becomes a new saved artwork with its
+ * own id and name, and that copy is what's open afterwards — the original's saved version is left
+ * exactly as it was saved. An artwork never saved has no original: Save As simply saves it. */
 function saveAsNewArtwork(): void {
   const s = session;
   if (!s) return;
@@ -556,38 +614,144 @@ function saveAsNewArtwork(): void {
     initial: s.controller.doc.named ? `${s.controller.doc.name} variant` : '',
     confirmLabel: 'Save',
     onConfirm: (name) => {
+      if (!s.savedBase) {
+        s.controller.doc.name = name;
+        s.controller.doc.named = true;
+        void writeSaved(s).then(() => showToast(`Saved “${name}”`));
+        return;
+      }
       s.autosave.flush({ thumbnail: true });
-      const copy = asNewArtwork(s.controller.doc, name);
-      // vNext Phase 4A: the copy carries the process so far, then continues on its own.
+      const original = s.controller.doc;
+      const copy = asNewArtwork(original, name);
+      const { undo, redo } = s.controller.getHistorySnapshot();
+      // vNext Phase 4A: the copy carries the process so far, then continues on its own; the
+      // original's history goes back to where it was saved (its later moments are the copy's).
       s.process?.flush();
-      void copyProcess(s.controller.doc.id, copy.id);
-      boot(copy, { fitToScreen: false });
-      showToast(`Saved as “${name}”`);
+      void copyProcess(original.id, copy.id);
+      endSession();
+      // The changes in hand are the copy's now: the original's draft goes (the slot is free at once).
+      void clearDraft();
+      void restoreSavedProcess(original.id);
+      boot(copy, { fitToScreen: false, history: { undo, redo } });
+      void writeSaved(session!).then(() => showToast(`Saved as “${name}”`));
     },
   });
 }
 
+/** The process history of a saved artwork goes back to its last Save (a never-saved artwork's is
+ * removed). An artwork saved before UI-1 has no record of that: its history is left as it is. */
+async function restoreSavedProcess(id: string): Promise<void> {
+  const record = await loadDocument(id);
+  if (!record) await deleteProcess(id);
+  else if (record.processMeta) await rollbackProcess(id, record.processMeta);
+}
+
+/** Discards the working draft: the slot is emptied and the process history goes back to the saved
+ * version. The saved artwork itself is never touched. */
+async function discardDraft(docId: string): Promise<void> {
+  await clearDraft();
+  await restoreSavedProcess(docId);
+}
+
+/** UI-1: before the open artwork is replaced (New, Open, recovering the last session) — if it has
+ * unsaved changes, ask: Save, Don't save, or Cancel. If not, go straight on. A draft left by an
+ * earlier session (shown as Recover last session) is asked about too, since going on replaces it. */
+function confirmLeave(proceed: () => void, opts: { recovering?: boolean } = {}): void {
+  const s = session;
+  if (s && isDirty(s)) {
+    const name = s.controller.doc.named ? s.controller.doc.name : 'Untitled artwork';
+    openConfirmSheet({
+      title: `Save changes to “${name}”?`,
+      body: s.savedBase ? 'Your changes since the last save will be lost if you don’t save them.' : 'This artwork has never been saved. It will be lost if you don’t save it.',
+      confirmLabel: 'Save',
+      onConfirm: () => saveArtwork(proceed),
+      secondary: {
+        label: 'Don’t save',
+        danger: true,
+        onSelect: () => {
+          const id = s.controller.doc.id;
+          closeAnyPopover();
+          endSession();
+          void discardDraft(id).then(proceed);
+        },
+      },
+    });
+    return;
+  }
+  const slot = draftSlot();
+  if (!opts.recovering && slot?.dirty && slot.docId !== s?.controller.doc.id) {
+    openConfirmSheet({
+      title: 'Discard the unsaved session?',
+      body: 'Your last session has changes that were never saved. Going on discards them — choose Recover last session to keep them.',
+      confirmLabel: 'Discard',
+      onConfirm: () => void discardDraft(slot.docId).then(proceed),
+    });
+    return;
+  }
+  proceed();
+}
+
+/** Reopens the working draft left by the last session, exactly as it was — unsaved changes, view
+ * and Undo/Redo included. */
+async function recoverDraft(): Promise<void> {
+  const d = await loadDraft();
+  if (!d) {
+    showToast('There is no unsaved session to recover', 2600, 'error');
+    return;
+  }
+  bootDraft(d);
+  showToast(d.savedBase ? 'Recovered · unsaved changes — Save to keep them' : 'Recovered · not saved yet — Save to keep it', 3200);
+}
+
+function bootDraft(d: WorkingDraft): void {
+  upgradeSnapshot(d.snapshot, d.named);
+  d.undo.forEach(migrateLegacyFillKeys);
+  d.redo.forEach(migrateLegacyFillKeys);
+  boot(d.snapshot, { fitToScreen: false, history: { undo: d.undo, redo: d.redo }, savedBase: d.savedBase, baseHash: d.baseHash });
+}
+
 // ---- vNext Phase 2: the Start screen (Choose a frame · Beginner Guide · My Artworks) ----
 
-/** New opens the Start screen at its frames, Open… at My Artworks. The artwork that was open is
- * saved as it stands first — so its card is up to date, and nothing chosen next can overwrite it —
- * and stays open underneath until something else is actually chosen. */
+/** New opens the Start screen at its frames, Open… at My Artworks. The artwork that was open stays
+ * open underneath, untouched, until something else is actually chosen — and if it has unsaved
+ * changes, choosing something else asks first (confirmLeave). */
 function showStart(focus: 'frames' | 'artworks'): void {
   closeAnyPopover();
   session?.autosave.flush({ thumbnail: true });
+  const currentId = session?.controller.doc.id ?? null;
   openStartScreen(root!, {
     focus,
     dismissible: session !== null,
-    currentId: session?.controller.doc.id ?? null,
+    currentId,
+    currentUnsaved: isDirty(),
     loadArtworks: () =>
       listArtworks().catch((err) => {
         console.warn('Listing artworks failed:', err);
         return [];
       }),
+    loadRecovery: async () => {
+      const d = await loadDraft().catch(() => null);
+      // The open artwork's own draft is the work on screen, not something to recover.
+      if (!d || !d.dirty || d.docId === currentId) return null;
+      return {
+        name: d.named ? d.name : 'Untitled',
+        thumbnail: d.thumbnail,
+        updatedAt: d.updatedAt,
+        savedBase: d.savedBase,
+        recover: () => confirmLeave(() => void recoverDraft(), { recovering: true }),
+        discard: (done: () => void) =>
+          openConfirmSheet({
+            title: 'Discard the unsaved session?',
+            body: d.savedBase ? 'The saved artwork stays exactly as it was last saved.' : 'This work was never saved. It cannot be recovered afterwards.',
+            confirmLabel: 'Discard',
+            onConfirm: () => void discardDraft(d.docId).then(done),
+          }),
+      };
+    },
     actions: cardActions,
     guide: { onStart: () => startGuide() },
-    onChooseFrame: (k) => armDrawFrame(k),
-    onOpenArtwork: (id) => void openFromStart(id),
+    onChooseFrame: (k) => confirmLeave(() => armDrawFrame(k)),
+    onOpenArtwork: (id) => confirmLeave(() => void openFromStart(id)),
   });
 }
 
@@ -626,11 +790,11 @@ async function renameArtwork(id: string, name: string): Promise<void> {
   const s = session;
   if (s && s.controller.doc.id === id) {
     // The open artwork: rename the live document, or its own autosave would write the old name back.
+    // UI-1: only the name changes in the saved record — unsaved changes stay unsaved.
     s.controller.doc.name = name;
     s.controller.doc.named = true;
     s.controller.notify();
     s.autosave.flush();
-    return;
   }
   const record = await loadDocument(id);
   if (!record?.snapshot) return;
@@ -641,12 +805,8 @@ async function renameArtwork(id: string, name: string): Promise<void> {
  * the copy is listed rather than opened (Save As opens its copy because it's saving the work in
  * hand). Like Save As, the copy starts with no Undo/Redo of its own. Returns the copy's name. */
 async function duplicateArtwork(a: ArtworkSummary): Promise<string | null> {
-  const s = session;
-  if (s && s.controller.doc.id === a.id) {
-    // The open artwork: copy it as it stands right now, thumbnail and process included.
-    s.autosave.flush({ thumbnail: true });
-    s.process?.flush();
-  }
+  // UI-1: the saved version is what's duplicated (unsaved changes in hand are not saved by it).
+  session?.process?.flush();
   const record = await loadDocument(a.id);
   if (!record?.snapshot) return null;
   const taken = new Set((await listArtworks()).map(displayName));
@@ -669,6 +829,8 @@ async function deleteFromStart(id: string): Promise<void> {
     endSession();
   }
   await deleteArtwork(id);
+  // Its unsaved draft goes with it (the artwork is gone, so there is nothing to recover it into).
+  if (draftSlot()?.docId === id) await clearDraft();
   await enqueue(async () => {}); // its process history is removed through the same queue
   if ((await getMeta<string>('lastOpenDocId')) === id) await setMeta('lastOpenDocId', null);
   if (wasOpen) {
@@ -695,7 +857,9 @@ async function openArtwork(id: string): Promise<boolean> {
   boot(docRecord.snapshot, {
     fitToScreen: false,
     history: historyRecord ? { undo: historyRecord.undoStack, redo: historyRecord.redoStack } : undefined,
+    savedBase: true,
   });
+  void setMeta('lastOpenDocId', id);
   return true;
 }
 
@@ -733,6 +897,8 @@ function bootPractice(doc: Doc, history?: { undo: Doc[]; redo: Doc[] }, tool?: T
 const guideHost: CoachHost = {
   begin(doc) {
     closeAnyPopover();
+    // UI-1: the work in hand is kept as the working draft (unsaved changes included) and reopened
+    // from it, exactly as it was, when the guide closes.
     session?.autosave.flush({ thumbnail: true });
     guideReturn = { artworkId: session?.controller.doc.id ?? null };
     bootPractice(doc);
@@ -754,7 +920,14 @@ const guideHost: CoachHost = {
     closeAnyPopover();
     endSession();
     root!.innerHTML = '';
-    const reopened = back?.artworkId ? await openArtwork(back.artworkId) : false;
+    let reopened = false;
+    if (back?.artworkId) {
+      const d = await loadDraft().catch(() => null);
+      if (d && d.docId === back.artworkId) {
+        bootDraft(d);
+        reopened = true;
+      } else reopened = await openArtwork(back.artworkId);
+    }
     if (!reopened) showStart('frames');
   },
   controller: () => session?.controller ?? null,
@@ -836,6 +1009,21 @@ if (import.meta.env.DEV) {
 
 async function launch(): Promise<void> {
   try {
+    // UI-1: an unsaved last session is offered for recovery (above My Artworks), never reopened or
+    // listed as an artwork by itself. A session with nothing unsaved simply reopens as it was.
+    const draft = await loadDraft();
+    if (draft?.dirty) {
+      showStart('artworks');
+      return;
+    }
+    if (draft) {
+      const record = draft.savedBase ? await loadDocument(draft.docId) : null;
+      // Reopen the session (view and Undo included) only while it still matches the saved artwork.
+      if (!draft.savedBase || (record?.snapshot && artworkHash(upgraded(record)) === draft.baseHash)) {
+        bootDraft(draft);
+        return;
+      }
+    }
     const lastId = await getMeta<string>('lastOpenDocId');
     if (lastId && (await openArtwork(lastId))) return;
   } catch (err) {
@@ -844,6 +1032,11 @@ async function launch(): Promise<void> {
     console.warn('Restore failed, starting fresh:', err);
   }
   showStart('frames');
+}
+
+function upgraded(record: { snapshot: Doc; named?: boolean }): Doc {
+  upgradeSnapshot(record.snapshot, record.named);
+  return record.snapshot;
 }
 
 void launch();
