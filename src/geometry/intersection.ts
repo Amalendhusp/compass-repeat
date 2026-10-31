@@ -89,7 +89,8 @@ export function intersectionCopies(doc: Doc, live?: { drag?: { key: string; x: n
     const [i, j] = piece.key.split(',').map(Number) as [number, number];
     return {
       key: piece.key,
-      label: n === 0 ? 'Primary' : `Copy ${n}`,
+      // The first is the Original (Stage D: 'Primary' now names the Developed Primary).
+      label: n === 0 ? 'Original' : `Copy ${n}`,
       colour: saved[piece.key]?.colour ?? LEGACY_COLOURS[piece.key] ?? PALETTE[n % PALETTE.length]!,
       extensions: saved[piece.key]?.extensions ?? true,
       pose: { i, j, translate: at, rotation: drag ? drag.rotation : piece.rotation, mirror: false },

@@ -20,12 +20,12 @@ import { clusterByLocation } from './snap.ts';
 
 /** Candidates within this screen distance of EACH OTHER can't be told apart by a fingertip. */
 const CLUSTER_SCREEN_GAP = 26;
-const LOUPE_R = 62;
+export const LOUPE_R = 62;
 const LOUPE_OFFSET = 96; // loupe centre above (or below) the finger
 const LOUPE_MARGIN = 8;
 export const MARKER_R = 10;
-const MARKER_GAP = 28; // spread markers at least this far apart — a comfortable finger step
-const SWITCH_PX = 5; // hysteresis: another marker must be this much nearer before the choice moves
+export const MARKER_GAP = 28; // spread markers at least this far apart — a comfortable finger step
+export const SWITCH_PX = 5; // hysteresis: another marker must be this much nearer before the choice moves
 const MAX_CANDIDATES = 7;
 
 /** Select's cluster test — explicit points only, merged by location. Null when the press is clear. */
@@ -94,7 +94,7 @@ export function spreadMarkers(points: Vec2[], centre: Vec2, minGap: number, boun
   return pos;
 }
 
-function loupeCentre(anchor: Vec2, view: ViewTransform): Vec2 {
+export function loupeCentre(anchor: Vec2, view: ViewTransform): Vec2 {
   // Above the finger as the screen shows it (and on it), however the camera is turned.
   const a = paperToScreen(view, anchor);
   let y = a.y - LOUPE_OFFSET;

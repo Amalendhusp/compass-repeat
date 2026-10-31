@@ -641,7 +641,7 @@ function drawNodeInset(ctx: CanvasRenderingContext2D, controller: AppController,
 }
 
 /** A small rounded label, centred on `at` and kept on screen. First line Signal, the rest muted. */
-function drawLabelPill(ctx: CanvasRenderingContext2D, at: Vec2, lines: string[], view: ViewTransform, alpha = 1): void {
+export function drawLabelPill(ctx: CanvasRenderingContext2D, at: Vec2, lines: string[], view: ViewTransform, alpha = 1): void {
   // Upright, and kept on the canvas itself, however the camera is turned.
   if (view.screen) {
     const screenAt = paperToScreen(view, at);
@@ -700,10 +700,10 @@ function drawSnapFeedback(ctx: CanvasRenderingContext2D, controller: AppControll
 
 // ---- Phase 5.8/5.9: magnified local views, spread markers ----
 
-const CHOICE_MARKER_R = 11;
+export const CHOICE_MARKER_R = 11;
 
 /** Circled-number markers placed beside each candidate, pushed apart until none overlap. */
-function fanMarkers(points: Vec2[], centre: Vec2, spread: number, bound: { c: Vec2; r: number } | null): Vec2[] {
+export function fanMarkers(points: Vec2[], centre: Vec2, spread: number, bound: { c: Vec2; r: number } | null): Vec2[] {
   const n = points.length;
   const pos = points.map((p, i) => {
     let dx = p.x - centre.x;
@@ -755,7 +755,7 @@ function fanMarkers(points: Vec2[], centre: Vec2, spread: number, bound: { c: Ve
   return pos;
 }
 
-function drawNumberBadge(ctx: CanvasRenderingContext2D, at: Vec2, n: number, fill: string, strong: boolean, alpha: number): void {
+export function drawNumberBadge(ctx: CanvasRenderingContext2D, at: Vec2, n: number, fill: string, strong: boolean, alpha: number): void {
   ctx.save();
   ctx.globalAlpha = alpha;
   ctx.beginPath();
@@ -843,8 +843,8 @@ function drawNoPoint(ctx: CanvasRenderingContext2D, controller: AppController, v
 
 // ---- Phase 5.8: Fair Preview → Confirm, and "Which line?" ----
 
-const RUN_COLOURS = [color.signal, color.brass, '#2E8B57', '#8A4FD1'];
-const RUN_DASHES: number[][] = [[], [10, 5], [2, 5], [12, 4, 2, 4]];
+export const RUN_COLOURS = [color.signal, color.brass, '#2E8B57', '#8A4FD1'];
+export const RUN_DASHES: number[][] = [[], [10, 5], [2, 5], [12, 4, 2, 4]];
 
 function keyPiece(doc: Doc, key: SegmentKey): { entity: Entity; seg: DerivedSegment } | null {
   const entity = doc.entities.find((e) => key.startsWith(`${e.id}:`));

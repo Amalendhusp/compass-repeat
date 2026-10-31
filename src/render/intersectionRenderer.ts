@@ -24,7 +24,9 @@
 import { drawArtworkLayer, type ScreenLayers } from './underlay.ts';
 import type { Doc, Entity, Vec2 } from '../model/types.ts';
 import type { AppController, ViewTransform } from '../app/controller.ts';
-import { worldToScreen } from '../app/controller.ts';
+import { screenToWorld, worldToScreen } from '../app/controller.ts';
+import type { Prim } from '../geometry/fairGeometry.ts';
+import { CHOICE_MARKER_R, drawLabelPill, drawNumberBadge, fanMarkers, RUN_COLOURS, RUN_DASHES } from './renderer.ts';
 import { resolveEntityGeom } from '../geometry/kernel.ts';
 import { defaultSegmentKind, deriveSegments } from '../geometry/segments.ts';
 import { motifRadius, poseArcAngle, transformPoint, type InstancePose } from '../geometry/lattice.ts';
@@ -135,6 +137,8 @@ export function renderIntersection(ctx: CanvasRenderingContext2D, controller: Ap
     else drawCopies(ctx, doc, view, sc, copies);
     drawDevelopedPrimary(ctx, doc, view);
   });
+  // What a finger on Fair would add or remove, the loupe it is choosing in, and "Which line?".
+  if (developing) drawFormFeedback(ctx, controller, view, sc, copies);
   ctx.globalAlpha = 1;
   ctx.setLineDash([]);
   // Match Edge's preview: the moving construction, faint, where Match Edge would put it.
@@ -252,6 +256,155 @@ function drawDevelopedPrimary(ctx: CanvasRenderingContext2D, doc: Doc, view: Vie
   ctx.lineWidth = PRIMARY_WIDTH;
   ctx.stroke(path);
   ctx.restore();
+}
+
+/** A primitive's path, in screen space. */
+function primPath(view: ViewTransform, p: Prim): Path2D {
+  const path = new Path2D();
+  if (p.k === 'seg') {
+    const a = worldToScreen(view, p.a);
+    const b = worldToScreen(view, p.b);
+    path.moveTo(a.x, a.y);
+    path.lineTo(b.x, b.y);
+  } else {
+    const c = worldToScreen(view, p.c);
+    const r = p.r * view.zoom;
+    path.moveTo(c.x + r * Math.cos(p.a0), c.y + r * Math.sin(p.a0));
+    path.arc(c.x, c.y, r, p.a0, p.a0 + p.sw);
+  }
+  return path;
+}
+
+/** A candidate as a press shows it: joining (Signal, solid) or leaving the Primary (amber, dashed). */
+function drawCandidate(ctx: CanvasRenderingContext2D, view: ViewTransform, p: Prim, adding: boolean, strong: boolean): void {
+  const path = primPath(view, p);
+  ctx.save();
+  ctx.lineCap = 'round';
+  ctx.strokeStyle = adding ? color.signal : color.alert;
+  ctx.globalAlpha = strong ? 0.28 : 0.14;
+  ctx.lineWidth = 12;
+  ctx.stroke(path);
+  ctx.globalAlpha = strong ? 1 : 0.5;
+  ctx.lineWidth = strong ? 4 : 2.5;
+  if (!adding) ctx.setLineDash([6, 5]);
+  ctx.stroke(path);
+  ctx.restore();
+}
+
+function drawFormFeedback(ctx: CanvasRenderingContext2D, controller: AppController, view: ViewTransform, sc: Scaffold, copies: IntersectionCopy[]): void {
+  const doc = controller.doc;
+  const press = controller.formPress;
+  if (press && !press.loupe) press.picks.forEach((p, i) => drawCandidate(ctx, view, p.prim, p.action === 'add', press.picks.length === 1 || i === press.active));
+  if (press?.loupe) {
+    const l = press.loupe;
+    // The loupe: the Fair view around the crowded spot, magnified, away from the fingertip.
+    ctx.save();
+    ctx.strokeStyle = color.hairline;
+    ctx.lineWidth = 1;
+    ctx.setLineDash([2, 3]);
+    ctx.beginPath();
+    ctx.moveTo(l.centreScreen.x, l.centreScreen.y);
+    ctx.lineTo(l.x, l.y);
+    ctx.stroke();
+    ctx.setLineDash([]);
+    ctx.shadowColor = 'rgba(30,42,54,0.28)';
+    ctx.shadowBlur = 18;
+    ctx.shadowOffsetY = 5;
+    ctx.beginPath();
+    ctx.arc(l.x, l.y, l.r, 0, Math.PI * 2);
+    ctx.fillStyle = color.paper;
+    ctx.fill();
+    ctx.shadowColor = 'transparent';
+    ctx.save();
+    ctx.beginPath();
+    ctx.arc(l.x, l.y, l.r - 2, 0, Math.PI * 2);
+    ctx.clip();
+    const centreWorld = screenToWorld(view, l.centreScreen);
+    const zoom = view.zoom * l.mag;
+    const mv: ViewTransform = { ...view, zoom, pan: { x: (l.x - view.w / 2) / zoom - centreWorld.x, y: (l.y - view.h / 2) / zoom - centreWorld.y } };
+    drawFairOnly(ctx, doc, mv, sc, copies);
+    drawDevelopedPrimary(ctx, doc, mv);
+    press.picks.forEach((p, i) => {
+      drawCandidate(ctx, mv, p.prim, p.action === 'add', i === press.active);
+      const truePos = worldToScreen(mv, p.marker);
+      const m = l.markers[i]!;
+      const active = i === press.active;
+      const tone = p.action === 'add' ? color.signal : color.alert;
+      if (Math.hypot(truePos.x - m.x, truePos.y - m.y) > 2) {
+        ctx.strokeStyle = active ? tone : color.muted;
+        ctx.globalAlpha = active ? 1 : 0.6;
+        ctx.lineWidth = 1.2;
+        ctx.beginPath();
+        ctx.moveTo(truePos.x, truePos.y);
+        ctx.lineTo(m.x, m.y);
+        ctx.stroke();
+        ctx.globalAlpha = 1;
+      }
+      ctx.beginPath();
+      ctx.arc(m.x, m.y, active ? 11 : 8, 0, Math.PI * 2);
+      ctx.fillStyle = active ? tone : color.paper;
+      ctx.fill();
+      ctx.lineWidth = 2;
+      ctx.strokeStyle = tone;
+      ctx.stroke();
+    });
+    ctx.strokeStyle = color.ink;
+    ctx.lineWidth = 1.4;
+    ctx.beginPath();
+    ctx.arc(l.cursor.x, l.cursor.y, 4, 0, Math.PI * 2);
+    ctx.stroke();
+    ctx.restore(); // clip
+    ctx.beginPath();
+    ctx.arc(l.x, l.y, l.r, 0, Math.PI * 2);
+    ctx.lineWidth = 1.5;
+    ctx.strokeStyle = color.ink;
+    ctx.stroke();
+    // On the drawing itself: what release would do.
+    const act = press.picks[press.active];
+    if (act) {
+      drawCandidate(ctx, view, act.prim, act.action === 'add', true);
+      const below = l.y < press.anchorScreen.y;
+      drawLabelPill(ctx, { x: l.x, y: below ? l.y - l.r - 14 : l.y + l.r + 14 }, [act.action === 'add' ? 'Add to Primary' : 'Remove from Primary', 'Slide · release to choose'], view);
+    }
+    ctx.restore();
+  }
+  // "Which line?": every candidate in its own colour and dash, numbered (the chooser lists them).
+  const choice = controller.lineChoice;
+  if (choice && choice.candidates.every((c) => c.shape)) {
+    ctx.save();
+    ctx.lineCap = 'round';
+    choice.candidates.forEach((run, i) => {
+      if (choice.focus !== null && choice.focus !== i) return;
+      const path = primPath(view, run.shape!);
+      ctx.strokeStyle = color.paper;
+      ctx.setLineDash([]);
+      ctx.lineWidth = choice.focus === i ? 11 : 9;
+      ctx.globalAlpha = 0.9;
+      ctx.stroke(path);
+      ctx.strokeStyle = RUN_COLOURS[i % RUN_COLOURS.length]!;
+      ctx.setLineDash(RUN_DASHES[i % RUN_DASHES.length]!);
+      ctx.lineWidth = choice.focus === i ? 6 : 5;
+      ctx.globalAlpha = 1;
+      ctx.stroke(path);
+    });
+    ctx.setLineDash([]);
+    const anchors = choice.candidates.map((r) => worldToScreen(view, r.badgeAt));
+    const badges = fanMarkers(anchors, choice.anchorScreen, CHOICE_MARKER_R + 6, null);
+    choice.candidates.forEach((_r, i) => {
+      const colour = RUN_COLOURS[i % RUN_COLOURS.length]!;
+      const on = choice.focus === null || choice.focus === i;
+      ctx.globalAlpha = on ? 1 : 0.3;
+      ctx.strokeStyle = colour;
+      ctx.lineWidth = 1.2;
+      ctx.beginPath();
+      ctx.moveTo(anchors[i]!.x, anchors[i]!.y);
+      ctx.lineTo(badges[i]!.x, badges[i]!.y);
+      ctx.stroke();
+      ctx.globalAlpha = 1;
+      drawNumberBadge(ctx, badges[i]!, i + 1, colour, choice.focus === i, on ? 1 : 0.3);
+    });
+    ctx.restore();
+  }
 }
 
 function drawCopies(ctx: CanvasRenderingContext2D, doc: Doc, view: ViewTransform, sc: Scaffold, copies: IntersectionCopy[], quiet: { construction: number; extension: number } | null = null, fade = 1): void {

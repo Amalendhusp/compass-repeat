@@ -13,7 +13,7 @@ Keep this short and current. It is a starting point, not a substitute for readin
 | A | Colour-before-drawing (top-bar swatch) | done — see `git log` "Stage A" |
 | B | F0 shared geometry foundation | done — see `git log` "Stage B" |
 | C | Close Gap integration (from `feature/close-gap-poc` `f75482a`) | done — "Stage C 1/2" + "Stage C 2/2" |
-| D | Intersect Form Development (independent Primary) | D1 data model, D2 display mode done — next D3 |
+| D | Intersect Form Development (independent Primary) | D1–D4 done (model, display, segments, tap add/remove) — next D5 |
 
 ## Protected — never modify, merge into, push or deploy
 
@@ -109,12 +109,26 @@ Keep this short and current. It is a starting point, not a substitute for readin
   (those style Construct's Fair).
 - Test helper: `scratchpad/staged-app.js` (`starDoc` two squares at 45°, `save`, `intersectFair`, `tapWorld`, `ownerTag`).
 
+## Segments and tap add/remove (Stages D3–D4)
+
+- `geometry/formSegments.ts` `formSegments(doc)`: every copy's Fair RUNS placed, split where Fair meets Fair
+  (crossings, touches, T-junctions, overlap ends), coincident pieces merged with all origins; `developedAlong`,
+  `geomOf`, `developedPrim`, `samePiece` (tolerance `formEps` = motif scale × 1e-6, ×10 for identity).
+- `interaction/formPick.ts`: `formPicksAt` (developed segments → remove; segments not yet in the Primary → add;
+  reach 16 px), `commitPick` (one Undo step through `asForm`; a legacy artwork starts Form Development with every
+  copy promoted and a toast "Developing the Primary · every copy stays in Repeat"). `controller.formPress`.
+- `tools/intersectFair.ts`: tap = add/remove the one candidate; crowded (next candidate within 7 px) → tap opens
+  the "Which line?" chooser (`lineChoice` with `shape`), hold 380 ms → loupe (precision.ts helpers exported:
+  `loupeCentre`, `spreadMarkers`, `LOUPE_R`, `MARKER_GAP`, `SWITCH_PX`); moving >10 px or a cancelled touch does
+  nothing. Renderer exports reused: `fanMarkers`, `drawNumberBadge`, `drawLabelPill`, `RUN_COLOURS/DASHES`.
+- Copies panel: the first construction is now labelled "Original" ('Primary' names the Developed Primary).
+
 ## Exact next step
 
-Stage D, checkpoint D3 — segment splitting (`geometry/formSegments.ts`): every copy's Fair runs placed as it stands,
-split where Fair geometry meets (crossings, T-junctions, ends of overlapping strokes); coincident pieces merged
-into one candidate with all origins (D5); cached per Doc. Then D4 tap add/remove (loupe + chooser, Undo),
-D5 Primary-copy, D6 Repeat composition + empty state, D7 Timelapse/export/regression.
+Stage D, checkpoint D5 — Primary-copy promotion/demotion: a "Repeat" switch per copy in the Intersect Copies
+panel (`withPrimaryCopy` through `asForm`, one Undo step; legacy shows all on); promoted copies drawn stronger in
+Fair mode; bookmarks without flags keep the current flags. Then D6 Repeat composition (draw the Developed
+Primary in Repeat, no doubled strokes with promoted copies, empty state), D7 Timelapse/export/regression.
 
 ## Commands
 

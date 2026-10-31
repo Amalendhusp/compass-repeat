@@ -235,6 +235,8 @@ export interface FairRun {
   ends: Vec2[];
   /** A world point on the run, near the tap, where its number badge is anchored. */
   badgeAt: Vec2;
+  /** Fair in Intersect (Stage D4): the candidate's own exact geometry — it is not a Construct run. */
+  shape?: import('../geometry/fairGeometry.ts').Prim;
 }
 
 export interface LineChoice {
@@ -308,6 +310,9 @@ export class AppController {
   /** Phase 5.10: the segment under a finger that is still down (Select) — emphasised before release. */
   pressHighlight: SegmentKey[] | null = null;
   lineChoice: LineChoice | null = null;
+  /** Fair in Intersect (Stage D4): what a finger still down would add to or remove from the Developed
+   * Primary — and, held in a crowded spot, the loupe it is choosing in. Never history. */
+  formPress: import('../interaction/formPick.ts').FormPress | null = null;
   cue: { at: Vec2; text: string; until: number } | null = null;
   /** Phase 3.4 item 2: Line's own creation mode — every new line commits as either a finite
    * Construction line or a through-both-points Extension line (spec's extension-line logic,
@@ -606,6 +611,7 @@ export class AppController {
     this.dividePreview = null;
     this.divideTurn = null;
     this.lineChoice = null;
+    this.formPress = null;
     // An unfinished Parallel / Perpendicular ends with an Undo or Redo: its reference may not exist
     // in the other snapshot, and the Line tool goes back to Connect.
     this.lineGuide = 'free';
@@ -643,6 +649,7 @@ export class AppController {
   setTool(tool: ToolId): void {
     if (!LIVE_TOOLS.has(tool)) return;
     this.lineChoice = null;
+    this.formPress = null;
     this.incircle = null;
     this.copyRadius = null;
     this.noPoint = null;
