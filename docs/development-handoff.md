@@ -14,6 +14,7 @@ Keep this short and current. It is a starting point, not a substitute for readin
 | B | F0 shared geometry foundation | done — see `git log` "Stage B" |
 | C | Close Gap integration (from `feature/close-gap-poc` `f75482a`) | done — "Stage C 1/2" + "Stage C 2/2" |
 | D | Intersect Form Development (independent Primary) | done — D1–D7 (see `git log` "Stage D") |
+| Fill | Enclosed-space detection + Fill interface (after the user's device test, 2026-10-31) | done — F1, F2 (see `git log` "Fill F") |
 
 ## Protected — never modify, merge into, push or deploy
 
@@ -48,6 +49,12 @@ Keep this short and current. It is a starting point, not a substitute for readin
   geometry; legacy artworks keep identical output; empty-state card; one Primary stroke style; no snapping to
   Developed Primary yet.
 
+- Fill (2026-10-31): Repeat's Fill is one entry point with scopes Space | Motif | Pattern; colour and opacity
+  live in Appearance → Fill (shared by all scopes). Space = an enclosed space between copies (and every one like
+  it); Motif = a region of the motif in every copy; Pattern = a region in the second group (every other copy, row
+  or column) — kept as its own scope because it is the only one that makes two-colour patterns. Hair-line gaps
+  between copies narrower than 2 % of the motif radius count as closed for Space (region-finding only).
+
 ## Known limitations
 
 - At 375 px a long selection ribbon scrolls sideways (existing pattern).
@@ -58,7 +65,10 @@ Keep this short and current. It is a starting point, not a substitute for readin
 - A bookmark restores the arrangement and In Repeat states, never the Developed Primary (D8).
 - Copies moved after developing leave the Developed Primary where it was (by design); its segments can still
   be removed by tapping them.
-- Not yet tested on a physical iPhone.
+- Not yet tested on a physical iPhone (Stage D was tested by the user on their device; the Fill build not yet).
+- Space: gaps wider than 2 % of the motif radius are open (Close Gap closes them); Motif fill of regions formed by
+  the Developed Primary is still per member (above). Pattern applies to motif regions, not to spaces.
+- Space fills keep their own opacity; Appearance's "Motif fills" strength applies to motif regions only (as before).
 - Undo does not revert Repeat background (display settings are outside history — existing behaviour).
 
 ## Shared services (Stage B)
@@ -149,10 +159,41 @@ Keep this short and current. It is a starting point, not a substitute for readin
 - History: `describeChange` tags Developed Primary edits `intersect-primary`; Timelapse framing (`drawnBox`)
   includes developed segments. The whole `doc.intersection` (form included) is already in every recorded state.
 
+## Fill: enclosed spaces and the Fill interface (F1–F2)
+
+- Cause of "No enclosed spaces yet": `spaces.ts` joined copies only where they met within 0.3 % of the motif
+  radius. With free lattice handles, copies that look touching miss by a fraction of a unit, so each space leaked
+  through the gaps into the next and none was bounded (reproduced: star motif tip to tip — exact or overlapping →
+  found; 0.5 units short → none).
+- F1 (`spaces.ts`): after crossings and T-junctions are split, `findBridges` adds BRIDGE pieces between different
+  lattice copies across gaps ≤ `GAP_FRACTION` (2 %) × motif radius: vertex → nearest vertex or point on the other
+  copy's piece; skipped where the two copies already meet within 2·gap, and where it would cross another piece.
+  Bridged slivers narrower than the gap are dropped. Bridges never enter `signature`, so a Space's key is the same
+  closed exactly or across a gap (Close Gap keeps its fill). `SpaceClass.gap` = widest bridge.
+- F1: strokes come from the Repeat composition — Construct: `motifStrokes`/`computeFairRegions` exactly as before;
+  Intersect: `compositionFeatures(doc, 'pieces')`, members split where they cross, unit faces (`unitFaces`) as its
+  own regions, keys prefixed `unit|`. `repeatRenderer` draws Space fills for both sources.
+- Compatibility: on all 131 saved artworks every existing Space class and Space fill is unchanged (only the
+  deliberate hair-line-gap fixture "CG teeth alternate" gains one space). ~20 % slower to compute (cached).
+- F2 (`shell.ts`, `repeatTool.ts`): Fill chip → `● [Space | Motif | Pattern] · Done` (`setFillScope`, session
+  `lastFillScope`; Space = `controller.spaceMode`, Motif/Pattern = `repeatColourMode`). Bottom-row Colour / Opacity /
+  As designed / Space chips removed. Appearance → Fill: colour swatches (No fill), Opacity (next fill), Clear (current
+  scope), Motif fills (old global Fill opacity), "Fill on the canvas…". `doc.repeatPaint` gains `opacity`;
+  `repeatFill()` = colour with alpha (100 % → exactly the old stored colour). `spaceDefaults` is no longer used by
+  the UI (kept in data).
+- Taps: Space now recolours with a different colour and clears with the same colour or No fill (like Motif). A Motif
+  tap in a space / a Space tap in a motif names the right scope; a gap-closed space says so once when filled.
+- Identity (point 4 of the request): Motif regions are keyed by the construction's face signature (entities), so
+  lattice spacing never moves them; Spaces by which copies' which curves bound them (lattice offsets relative to
+  the space), so spacing that keeps the arrangement keeps the fill, and a changed arrangement hides it (never moves
+  it); each Repeat source keeps its own fills. Developed Primary segments have stable ids (`developed|dN`).
+- Tests (git-ignored): `scratchpad/fill-app.js` — `starMotif`, `lattice`, `starArtwork(name, gap, rule)`,
+  `tapWorld`; old detector kept as `scratchpad/spaces-old.ts` for comparisons.
+
 ## Exact next step
 
-All of Stages A–D are implemented on `feature/integration-a-d`. Stop for the user's final review: do not merge,
-push or deploy. After review: physical iPhone testing of the Stage D build, then whatever the review asks.
+Fill F1–F2 implemented on `feature/integration-a-d`. Stop for the user's review and physical iPhone test of the
+Fill build: do not merge, push or deploy.
 
 ## Commands
 
