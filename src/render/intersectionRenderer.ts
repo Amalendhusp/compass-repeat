@@ -11,6 +11,11 @@
 // thin, dashed and light; Construction thin and light; Fair solid, heavy and at full strength.
 // (Weight and strength never mark the active instance — that is the ring's job.)
 //
+// Fair in Intersect develops the Primary (Stage D): while it is the tool, only Fair geometry shows —
+// every copy's Fair strokes translucent in its own colour (no construction, no extensions) — and the
+// Developed Primary opaque over them. The Developed Primary is drawn whatever the tool, in one Primary
+// stroke style (ink on a paper casing), over the copies; an artwork without one draws exactly as before.
+//
 // Picks for Snap (geometry/intersectionSnap.ts), kept quiet in a dense drawing: a picked line is
 // redrawn a little heavier over everything, the reference on a soft ink halo (or as an ink ring about
 // its point) — fixed; the moving one on a halo of its own construction's colour, with that
@@ -23,7 +28,7 @@ import { worldToScreen } from '../app/controller.ts';
 import { resolveEntityGeom } from '../geometry/kernel.ts';
 import { defaultSegmentKind, deriveSegments } from '../geometry/segments.ts';
 import { motifRadius, poseArcAngle, transformPoint, type InstancePose } from '../geometry/lattice.ts';
-import { intersectionBounds, intersectionCopies, type IntersectionCopy } from '../geometry/intersection.ts';
+import { developedSegments, intersectionBounds, intersectionCopies, type IntersectionCopy } from '../geometry/intersection.ts';
 import { pickedEdge, planMatchEdge, resolvePick, type IntersectionPick, type ResolvedPick, type ShownLine } from '../geometry/intersectionSnap.ts';
 import { color, stroke } from './tokens.ts';
 
@@ -122,11 +127,14 @@ export function renderIntersection(ctx: CanvasRenderingContext2D, controller: Ap
   });
   for (const e of edges) if (e) drawLineHalo(ctx, view, e, colourOf(e.copyKey), 0.24, 11);
   // The constructions at their viewing strength over the reference; the picks' marks and the
-  // rotation ring, drawn after, stay full.
-  // While Fair is the tool, the scaffold steps back so the Fair strokes read clearly (as Construct).
-  const fairing = controller.tool === 'fair';
-  const quiet = fairing ? (controller.fairTrace || controller.lineChoice ? QUIET_TRACING : QUIET) : null;
-  drawArtworkLayer(ctx, layers, (ctx) => drawCopies(ctx, doc, view, sc, copies, quiet));
+  // rotation ring, drawn after, stay full. Fair develops the Primary: Fair geometry only, the copies
+  // translucent and the Developed Primary opaque.
+  const developing = controller.tool === 'fair';
+  drawArtworkLayer(ctx, layers, (ctx) => {
+    if (developing) drawFairOnly(ctx, doc, view, sc, copies);
+    else drawCopies(ctx, doc, view, sc, copies);
+    drawDevelopedPrimary(ctx, doc, view);
+  });
   ctx.globalAlpha = 1;
   ctx.setLineDash([]);
   // Match Edge's preview: the moving construction, faint, where Match Edge would put it.
@@ -143,10 +151,10 @@ export function renderIntersection(ctx: CanvasRenderingContext2D, controller: Ap
 
   // Select arranges: the selected construction shows its rotation ring. A construction tool builds
   // on the ACTIVE instance (the selected one — the Primary until another is): only a quiet ring.
-  const building = !!controller.tool && controller.tool !== 'select';
+  const building = !!controller.tool && controller.tool !== 'select' && !developing;
   const selected = copies.find((c) => c.key === controller.intersectionSelected) ?? (building ? copies[0] : undefined);
   // A locked construction has nothing to grab: its ring, without a handle.
-  if (selected) drawRotationRing(ctx, doc, view, selected, controller.intersectionDrag?.key === selected.key && controller.intersectionDrag.mode === 'turn', !building && !selected.locked);
+  if (selected && !developing) drawRotationRing(ctx, doc, view, selected, controller.intersectionDrag?.key === selected.key && controller.intersectionDrag.mode === 'turn', !building && !selected.locked);
   // Locked constructions: a small padlock at the centre, in their own colour (screen only).
   for (const c of copies) if (c.locked) drawLockMark(ctx, doc, view, c);
   ctx.restore();
@@ -178,9 +186,11 @@ function drawLockMark(ctx: CanvasRenderingContext2D, doc: Doc, view: ViewTransfo
 const EXTENSION_ALPHA = 0.36;
 const CONSTRUCTION_ALPHA = 0.45;
 const FAIR_WIDTH = 2.8;
-/** Construction and Extension while Fair is the tool — and fainter still while a trace is live. */
-const QUIET = { construction: 0.2, extension: 0.14 };
-const QUIET_TRACING = { construction: 0.12, extension: 0.08 };
+/** Fair in Intersect: the copies' Fair strokes, translucent (the Developed Primary is opaque). */
+const REFERENCE_FAIR_ALPHA = 0.3;
+/** The Developed Primary's one stroke style (screen px, ink, opaque). */
+const PRIMARY_WIDTH = 3.2;
+const PRIMARY_CASING = 1.6;
 
 /** Every construction, each in its own colour (the artwork part of the frame). */
 /** A Match Edge pick's edge as shown now (world) — the segment itself, not its whole line. */
@@ -193,6 +203,55 @@ function edgeShown(doc: Doc, copies: IntersectionCopy[], pick: IntersectionPick)
   const len = Math.hypot(b.x - a.x, b.y - a.y);
   if (len < 1e-12) return null;
   return { copyKey: copy.key, entityId: pick.entity, p: a, u: { x: (b.x - a.x) / len, y: (b.y - a.y) / len }, extent: [0, len] };
+}
+
+/** Fair in Intersect: each copy's Fair strokes only, translucent, in its own colour. */
+function drawFairOnly(ctx: CanvasRenderingContext2D, doc: Doc, view: ViewTransform, sc: Scaffold, copies: IntersectionCopy[]): void {
+  ctx.lineCap = 'round';
+  ctx.lineJoin = 'round';
+  for (const copy of copies) {
+    const fair = new Path2D();
+    for (const piece of sc.pieces) if (piece.kind === 'fair') appendPiece(fair, doc, view, copy.pose, piece);
+    ctx.strokeStyle = copy.colour;
+    ctx.globalAlpha = REFERENCE_FAIR_ALPHA;
+    ctx.lineWidth = FAIR_WIDTH;
+    ctx.stroke(fair);
+  }
+  ctx.globalAlpha = 1;
+}
+
+/** The Developed Primary — exact lines and arcs where they were developed — in the Primary style. */
+function drawDevelopedPrimary(ctx: CanvasRenderingContext2D, doc: Doc, view: ViewTransform): void {
+  const segs = developedSegments(doc);
+  if (!segs.length) return;
+  const path = new Path2D();
+  for (const s of segs) {
+    const g = s.geom;
+    if (g.kind === 'line') {
+      const a = worldToScreen(view, g.a);
+      const b = worldToScreen(view, g.b);
+      path.moveTo(a.x, a.y);
+      path.lineTo(b.x, b.y);
+    } else {
+      const c = worldToScreen(view, g.c);
+      const r = g.r * view.zoom;
+      path.moveTo(c.x + r * Math.cos(g.a0), c.y + r * Math.sin(g.a0));
+      path.arc(c.x, c.y, r, g.a0, g.a0 + g.sw);
+    }
+  }
+  ctx.save();
+  ctx.lineCap = 'round';
+  ctx.lineJoin = 'round';
+  ctx.globalAlpha = 1;
+  ctx.setLineDash([]);
+  // Cased: a paper casing under an ink core — apart from every copy colour, the ink Original's too.
+  ctx.strokeStyle = color.paper;
+  ctx.lineWidth = PRIMARY_WIDTH + PRIMARY_CASING * 2;
+  ctx.stroke(path);
+  ctx.strokeStyle = color.ink;
+  ctx.lineWidth = PRIMARY_WIDTH;
+  ctx.stroke(path);
+  ctx.restore();
 }
 
 function drawCopies(ctx: CanvasRenderingContext2D, doc: Doc, view: ViewTransform, sc: Scaffold, copies: IntersectionCopy[], quiet: { construction: number; extension: number } | null = null, fade = 1): void {

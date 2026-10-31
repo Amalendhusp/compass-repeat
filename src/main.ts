@@ -11,6 +11,7 @@ import { fairTool } from './interaction/tools/fair.ts';
 import { fillTool } from './interaction/tools/fill.ts';
 import { repeatTool } from './interaction/tools/repeatTool.ts';
 import { intersectionTool } from './interaction/tools/intersectionTool.ts';
+import { intersectFairTool } from './interaction/tools/intersectFair.ts';
 import { drawInteraction, render } from './render/renderer.ts';
 import { renderRepeat } from './render/repeatRenderer.ts';
 import { renderIntersection } from './render/intersectionRenderer.ts';
@@ -283,7 +284,8 @@ function boot(doc: Doc, opts: { fitToScreen: boolean; history?: { undo: Doc[]; r
   // Select arranges the instances, as before. A construction tool works on the ACTIVE instance —
   // the one selected (the Primary until another is) — through that instance's own view, so the
   // tool itself is Construct's, unchanged, and what it commits is an edit of the one construction.
-  const LINKED_TOOLS: ToolId[] = ['circle', 'line', 'arc', 'divide', 'fair'];
+  // (Fair is not one of them: in Intersect it develops the Primary — intersectFair.ts.)
+  const LINKED_TOOLS: ToolId[] = ['circle', 'line', 'arc', 'divide'];
   function linkedTool(): ToolModule | null {
     if (controller.doc.view.workspace !== 'intersection' || !LINKED_TOOLS.includes(controller.tool)) return null;
     return tools[controller.tool] ?? null;
@@ -364,7 +366,8 @@ function boot(doc: Doc, opts: { fitToScreen: boolean; history?: { undo: Doc[]; r
       if (ws === 'repeat') return repeatTool;
       if (ws === 'intersection') {
         const linked = linkedTool();
-        return linked ? onActiveInstance(linked) : intersectionTool;
+        if (linked) return onActiveInstance(linked);
+        return controller.tool === 'fair' ? intersectFairTool : intersectionTool;
       }
       return tools[controller.tool] ?? null;
     },

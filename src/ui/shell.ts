@@ -2832,6 +2832,24 @@ export function buildShell(
   overlay.appendChild(contextSlot);
   overlay.appendChild(dock);
   canvasWrap.appendChild(overlay);
+  // Stage D — who a tool in Intersect edits: Line, Circle, Arc and Divide edit the Construct source
+  // (every copy follows); Fair develops the Primary, Intersect's own geometry. A quiet tag at the top
+  // of the canvas, only while a tool is in hand there.
+  const ownerTag = document.createElement('div');
+  ownerTag.className = 'owner-tag';
+  ownerTag.setAttribute('role', 'status');
+  const ownerMark = document.createElement('span');
+  ownerMark.className = 'owner-mark';
+  const ownerText = document.createElement('span');
+  ownerTag.append(ownerMark, ownerText);
+  canvasWrap.appendChild(ownerTag);
+  function refreshOwnerTag(building: boolean): void {
+    ownerTag.style.display = building ? '' : 'none';
+    if (!building) return;
+    const primary = controller.tool === 'fair';
+    ownerTag.dataset.owner = primary ? 'primary' : 'construct';
+    ownerText.textContent = primary ? 'Developed Primary · Intersect’s own geometry' : 'Construct source · every copy follows';
+  }
 
   // While two fingers turn the view: a quiet readout of the camera's angle, gone after the gesture.
   const turnReadout = document.createElement('div');
@@ -3303,6 +3321,9 @@ export function buildShell(
       else if (pending?.kind === 'arc' && pending.capturedAt && Date.now() - pending.capturedAt < CAPTURED_CUE_MS) cue('Radius captured');
     } else if (tool === 'divide') {
       renderDivideRibbon();
+    } else if (tool === 'fair' && doc.view.workspace === 'intersection') {
+      // Fair in Intersect develops the Primary, in its one Primary style: Construct's Fair colour and
+      // width are not its to change (the owner tag says what it edits).
     } else if (tool === 'fair') {
       const stroke = doc.fairDefaults;
       const setStrokeColour = (c: string | null) => {
@@ -3378,6 +3399,7 @@ export function buildShell(
     // Intersect is also a linked editing workspace: the construction tools (not Fill) work on the
     // active instance; Select arranges the instances. Repeat has no tools.
     const building = inIntersection && controller.tool !== 'select';
+    refreshOwnerTag(building);
     // Phase 5.3 item 1: a panel never outlives the workspace it belongs to.
     if (controller.doc.view.workspace !== shownWorkspace) {
       shownWorkspace = controller.doc.view.workspace;

@@ -13,7 +13,7 @@ Keep this short and current. It is a starting point, not a substitute for readin
 | A | Colour-before-drawing (top-bar swatch) | done — see `git log` "Stage A" |
 | B | F0 shared geometry foundation | done — see `git log` "Stage B" |
 | C | Close Gap integration (from `feature/close-gap-poc` `f75482a`) | done — "Stage C 1/2" + "Stage C 2/2" |
-| D | Intersect Form Development (independent Primary) | D1 data model done — next D2 |
+| D | Intersect Form Development (independent Primary) | D1 data model, D2 display mode done — next D3 |
 
 ## Protected — never modify, merge into, push or deploy
 
@@ -95,13 +95,26 @@ Keep this short and current. It is a starting point, not a substitute for readin
   Guide baseline is `line:true circle:true divide:false buildOn:true fair:true fill:true repeat:true share:false`
   (the two `false` are harness timing, identical at every baseline).
 
+## Intersect Fair display mode (Stage D2)
+
+- Fair is no longer a linked tool in Intersect (`main.ts` LINKED_TOOLS); Intersect + Fair → `intersectFairTool`
+  (`interaction/tools/intersectFair.ts`; D2: taps do nothing, never touch the Construct source or history).
+- `intersectionRenderer.ts`: with Fair as the tool, `drawFairOnly` (each copy's Fair strokes, alpha 0.3, own colour;
+  no construction, no extensions, no rotation ring). `drawDevelopedPrimary` always, over the copies: ink 3.2 px on
+  a 1.6 px paper casing (the Original's copy colour is ink itself, so the casing keeps the Primary apart). Nothing
+  drawn when there are no developed segments → legacy output identical.
+- Ownership tag (`shell.ts` `refreshOwnerTag`, `.owner-tag`): top-centre of the canvas while a tool is in hand in
+  Intersect — "Construct source · every copy follows" (Line/Circle/Arc/Divide; thin light mark) or "Developed
+  Primary · Intersect's own geometry" (Fair; heavy ink mark). Fair's ribbon in Intersect has no Colour/Width
+  (those style Construct's Fair).
+- Test helper: `scratchpad/staged-app.js` (`starDoc` two squares at 45°, `save`, `intersectFair`, `tapWorld`, `ownerTag`).
+
 ## Exact next step
 
-Stage D, checkpoint D2 — Intersect Fair display mode: Fair tool in the Intersection workspace develops the
-Primary (owner cue: Line/Circle/Divide = "Editing Construct source"; Fair = "Developing the Primary"); the
-Intersection renderer draws the Developed Primary over the arrangement in one Primary stroke style (D11).
-Then D3 segment splitting at Fair intersections, D4 tap add/remove, D5 Primary-copy, D6 Repeat composition +
-empty state, D7 Timelapse/export/regression.
+Stage D, checkpoint D3 — segment splitting (`geometry/formSegments.ts`): every copy's Fair runs placed as it stands,
+split where Fair geometry meets (crossings, T-junctions, ends of overlapping strokes); coincident pieces merged
+into one candidate with all origins (D5); cached per Doc. Then D4 tap add/remove (loupe + chooser, Undo),
+D5 Primary-copy, D6 Repeat composition + empty state, D7 Timelapse/export/regression.
 
 ## Commands
 

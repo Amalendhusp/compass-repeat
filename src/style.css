@@ -2342,3 +2342,48 @@ canvas.stage {
   padding: 0 4px;
   white-space: nowrap;
 }
+
+/* Stage D: who a tool in Intersect edits — Construct source (every copy follows) or the Developed
+ * Primary. Top centre of the canvas, quiet, never in the way of a touch. */
+.owner-tag {
+  position: absolute;
+  top: 10px;
+  left: 50%;
+  transform: translateX(-50%);
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  max-width: calc(100% - 24px);
+  padding: 5px 11px 5px 9px;
+  border-radius: 999px;
+  background: rgba(255, 255, 255, 0.86);
+  box-shadow: 0 2px 8px rgba(30, 42, 54, 0.12);
+  color: var(--ink);
+  font-size: 12px;
+  font-weight: 600;
+  white-space: nowrap;
+  pointer-events: none;
+  z-index: 3;
+}
+.owner-tag > span:last-child {
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.owner-mark {
+  flex: none;
+  width: 14px;
+  height: 0;
+  border-radius: 2px;
+}
+/* Construct source: the thin, light construction line. */
+.owner-tag[data-owner='construct'] .owner-mark {
+  border-top: 1.5px solid rgba(30, 42, 54, 0.45);
+}
+.owner-tag[data-owner='construct'] {
+  color: rgba(30, 42, 54, 0.78);
+  font-weight: 500;
+}
+/* Developed Primary: the Primary stroke itself — ink, heavy, opaque. */
+.owner-tag[data-owner='primary'] .owner-mark {
+  border-top: 3.2px solid var(--ink);
+}
