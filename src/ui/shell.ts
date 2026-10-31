@@ -29,6 +29,7 @@ import { settleReferenceWheel } from '../interaction/referenceTransform.ts';
 import { removeSelectedAnchor } from '../interaction/tools/anchorTool.ts';
 import { iconSvg, type IconName } from './icons.ts';
 import { showToast } from './toast.ts';
+import { describeGap } from '../interaction/closeGapMode.ts';
 import { isInConfirmLayer, openConfirmSheet } from './confirmsheet.ts';
 import { onTap } from './tap.ts';
 import { color, fairPalette, stroke } from '../render/tokens.ts';
@@ -1358,6 +1359,20 @@ function showRepeatGuidesPanel(anchor: HTMLElement, controller: AppController, o
         showToast('Lattice reset');
       });
       menu.appendChild(reset);
+      // Stage C: Close Gap — an explicit action: tap near a gap, preview, Apply or Cancel.
+      const closeGapRow = document.createElement('button');
+      closeGapRow.className = 'popover-row guides-reset';
+      closeGapRow.textContent = 'Close gap…';
+      closeGapRow.title = 'Close a small, accidental gap between repeated shapes — tap near it to preview';
+      onTap(closeGapRow, () => {
+        closeAnyPopover();
+        controller.spaceMode = false;
+        controller.repeatColourMode = null;
+        controller.closeGap = { phase: 'pick' };
+        showToast('Tap near a gap between repeated shapes', 2600);
+        controller.notify();
+      });
+      menu.appendChild(closeGapRow);
     },
     { shieldCanvas: true, panel: true },
   );
@@ -2166,6 +2181,58 @@ export function buildShell(
   colourKindRow.appendChild(colourDone);
   repeatPanel.appendChild(colourKindRow);
 
+  // Close Gap (Stage C): picking — "Tap near a gap" · Cancel; previewing — up to three nearby gaps,
+  // which arm moves and by how much, Apply · Cancel. Nothing changes until Apply (one Undo step).
+  const closeGapRow = document.createElement('div');
+  closeGapRow.className = 'space-row close-gap-row';
+  function closeGapCancel(): void {
+    controller.closeGap = null;
+    controller.notify();
+  }
+  function refreshCloseGapRow(): void {
+    closeGapRow.innerHTML = '';
+    const st = controller.closeGap;
+    if (!st) return;
+    const add = (label: string, cls: string, act: () => void, aria?: string) => {
+      const b = document.createElement('button');
+      b.className = `space-chip ${cls}`;
+      b.textContent = label;
+      if (aria) b.setAttribute('aria-label', aria);
+      onTap(b, act);
+      closeGapRow.appendChild(b);
+      return b;
+    };
+    if (st.phase === 'pick') {
+      const cue = document.createElement('span');
+      cue.className = 'close-gap-cue';
+      cue.textContent = 'Tap near a gap';
+      closeGapRow.appendChild(cue);
+      add('Cancel', '', closeGapCancel);
+      return;
+    }
+    if (st.local.length > 1)
+      st.local.forEach((g, k) =>
+        add(`${k + 1}·${g.cand.arm.toUpperCase()} ${g.cand.distance.toFixed(1)}`, k === st.index ? 'active' : '', () => {
+          controller.closeGap = { ...st, index: k };
+          controller.notify();
+        }, `Gap ${k + 1}: arm ${g.cand.arm.toUpperCase()}, ${g.cand.distance.toFixed(2)} apart`),
+      );
+    const g = st.local[st.index]!;
+    const what = document.createElement('span');
+    what.className = 'close-gap-cue';
+    what.textContent = describeGap(g);
+    closeGapRow.appendChild(what);
+    add('Apply', 'active', () => {
+      controller.closeGap = null;
+      controller.commit((d) => {
+        d.repeat[g.cand.arm] = { ...g.repeat[g.cand.arm] };
+      });
+      showToast(`Gap closed · ${g.cand.arm.toUpperCase()} adjusted`);
+    });
+    add('Cancel', '', closeGapCancel);
+  }
+  repeatPanel.appendChild(closeGapRow);
+
   // Pattern Colouring: which copies form the second group — by their place in the lattice.
   const patternRow = document.createElement('div');
   patternRow.className = 'space-row';
@@ -2258,7 +2325,10 @@ export function buildShell(
     closeAnyPopover();
     if (mode === controller.repeatColourMode) return;
     controller.repeatColourMode = mode;
-    if (mode) controller.spaceMode = false;
+    if (mode) {
+      controller.spaceMode = false;
+      controller.closeGap = null;
+    }
     if (mode === 'motif') showToast('Tap a region to colour it in every copy');
     if (mode === 'pattern') {
       // Copies alternating is where a pattern starts; rows or columns are one tap away.
@@ -2294,7 +2364,10 @@ export function buildShell(
   onTap(spaceBtn, () => {
     closeAnyPopover();
     controller.spaceMode = !controller.spaceMode;
-    if (controller.spaceMode) controller.repeatColourMode = null;
+    if (controller.spaceMode) {
+      controller.repeatColourMode = null;
+      controller.closeGap = null;
+    }
     controller.notify();
   });
   const spaceColourBtn = document.createElement('button');
@@ -3309,6 +3382,7 @@ export function buildShell(
       closeAnyPopover();
       controller.spaceMode = false; // Space belongs to one visit to Repeat, not the next
       controller.repeatColourMode = null; // nor does Colouring
+      controller.closeGap = null; // nor does Close Gap
       controller.intersectionPicks = []; // nor do Intersection's picks outlive a visit
       controller.intersectionPickKind = 'instance';
       setReferenceTransform(false); // Transform is locked again on leaving a workspace
@@ -3343,8 +3417,11 @@ export function buildShell(
     // Repeat's lattice controls belong to Repeat; Intersection has its own rows.
     // While colouring, the lattice rows step aside for the colouring controls.
     const colouring = inRepeat && !!controller.repeatColourMode;
-    ruleLine.style.display = inRepeat && !colouring ? '' : 'none';
-    spaceRow.style.display = inRepeat && !colouring ? '' : 'none';
+    const closingGap = inRepeat && !!controller.closeGap;
+    ruleLine.style.display = inRepeat && !colouring && !closingGap ? '' : 'none';
+    spaceRow.style.display = inRepeat && !colouring && !closingGap ? '' : 'none';
+    closeGapRow.style.display = closingGap ? '' : 'none';
+    if (closingGap) refreshCloseGapRow();
     colourKindRow.style.display = colouring ? '' : 'none';
     colourToolRow.style.display = colouring ? '' : 'none';
     patternRow.style.display = colouring && controller.repeatColourMode === 'pattern' ? '' : 'none';

@@ -2331,3 +2331,14 @@ canvas.stage {
 .cc-btn.recolour .cc-dot {
   box-shadow: 0 0 0 2px var(--paper), 0 0 0 4px var(--signal);
 }
+
+/* Stage C: Close Gap's row in the Repeat panel. */
+.close-gap-row {
+  flex-wrap: wrap;
+}
+.close-gap-cue {
+  font-size: 13px;
+  color: var(--ink);
+  padding: 0 4px;
+  white-space: nowrap;
+}

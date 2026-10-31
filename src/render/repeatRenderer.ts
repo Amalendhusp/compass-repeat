@@ -35,6 +35,10 @@ import { repeatUnit, type RepeatUnit } from '../geometry/repeatUnit.ts';
 import { colouringInUse, patternGroup, regionColour, regionKey } from '../geometry/repeatColour.ts';
 import { drawnLayers, type DrawnLayer } from '../geometry/repeatStroke.ts';
 import { latticeShape } from '../geometry/latticeSnap.ts';
+import { compositionFeatures } from '../geometry/repeatComposition.ts';
+import { copyFeatures } from '../geometry/closeGap.ts';
+import type { Feature } from '../geometry/fairGeometry.ts';
+import { copyShift, type LocalGap } from '../interaction/closeGapMode.ts';
 import type { FaceSig, RepeatColouring } from '../model/types.ts';
 import { color, stroke } from './tokens.ts';
 import { makePath } from './svgContext.ts';
@@ -556,12 +560,15 @@ export function renderRepeat(ctx: CanvasRenderingContext2D, controller: AppContr
   // preview the shown (un-committed) value so the field — and the grid — follow the finger.
   const drag = exp ? null : controller.repeatDrag;
   const rotating = exp ? null : controller.repeatRotateDrag;
+  // Close Gap's preview (Stage C): the corrected arm, drawn but never stored.
+  const gap = !exp && controller.closeGap?.phase === 'preview' ? controller.closeGap.local[controller.closeGap.index] ?? null : null;
   const repeat: RepeatSystem = {
     ...doc.repeat,
+    ...(gap ? { [gap.cand.arm]: gap.repeat[gap.cand.arm] } : null),
     ...(drag ? { [drag.dir]: drag.translate } : null),
     motif: rotating ? { ...doc.repeat.motif, rotation: rotating.rawRotation } : doc.repeat.motif,
   };
-  const draftDoc = drag || rotating ? { ...doc, repeat } : doc;
+  const draftDoc = drag || rotating || gap ? { ...doc, repeat } : doc;
 
   const pivot = doc.frame.origin;
   // What stands at each lattice position: the motif, or the Intersect arrangement as one unit.
@@ -655,11 +662,111 @@ export function renderRepeat(ctx: CanvasRenderingContext2D, controller: AppContr
   }
   if (!exp && display.handles && !controller.spaceMode && !controller.repeatColourMode) {
     drawLatticeHandles(ctx, controller, repeat, view);
-    drawRotationRing(ctx, controller, view);
+    if (!controller.closeGap) drawRotationRing(ctx, controller, view);
   }
+  if (gap) drawCloseGapInset(ctx, doc, view, gap);
 
   ctx.restore();
   return instances.length;
+}
+
+const gapFeatureCache = new WeakMap<Doc, Feature[]>();
+
+/**
+ * Close Gap's magnified view: the tapped gap, held where the tapped copy is, so its neighbour is seen
+ * closing it — the current arrangement dashed grey, the proposed one solid; a brass dot where the two
+ * features will meet; above it, which arm moves and by how much. Screen only (never exported).
+ */
+function drawCloseGapInset(ctx: CanvasRenderingContext2D, doc: Doc, view: ViewTransform, gap: LocalGap): void {
+  let feats = gapFeatureCache.get(doc);
+  if (!feats) gapFeatureCache.set(doc, (feats = compositionFeatures(doc, 'runs')));
+  const shift = copyShift(gap);
+  // Where the gap is now on screen in the corrected field (the tapped copy moves with its arm).
+  const gs = worldToScreen(view, { x: gap.at.x + shift.x, y: gap.at.y + shift.y });
+  const R = Math.min(88, view.w * 0.24);
+  const above = gs.y - R - 46 > R + 8;
+  const c = { x: Math.min(Math.max(gs.x, R + 8), view.w - R - 8), y: above ? gs.y - R - 46 : Math.min(gs.y + R + 46, view.h - R - 8) };
+  const tol = Math.max(gap.cand.distance * 5, 1e-6);
+  const s = R / Math.max(tol, gap.cand.distance * 5);
+  const toInset = (p: Vec2): Vec2 => ({ x: c.x + (p.x - gap.at.x) * s, y: c.y + (p.y - gap.at.y) * s });
+
+  ctx.save();
+  // a light thread from the inset to the gap in the field
+  ctx.strokeStyle = color.brass;
+  ctx.globalAlpha = 0.7;
+  ctx.lineWidth = 1.2;
+  ctx.beginPath();
+  ctx.moveTo(c.x, c.y + (above ? R : -R));
+  ctx.lineTo(gs.x, gs.y);
+  ctx.stroke();
+  ctx.globalAlpha = 1;
+  ctx.beginPath();
+  ctx.arc(gs.x, gs.y, 9, 0, Math.PI * 2);
+  ctx.stroke();
+
+  ctx.beginPath();
+  ctx.arc(c.x, c.y, R, 0, Math.PI * 2);
+  ctx.fillStyle = color.paper;
+  ctx.shadowColor = 'rgba(0,0,0,0.18)';
+  ctx.shadowBlur = 10;
+  ctx.fill();
+  ctx.shadowBlur = 0;
+  ctx.clip();
+  const [ci, cj] = gap.copy;
+  const draw = (repeat: RepeatSystem, offset: Vec2) => {
+    for (let i = ci - 1; i <= ci + 2; i++)
+      for (let j = cj - 1; j <= cj + 2; j++)
+        for (const f of copyFeatures(doc, i, j, repeat, feats)) {
+          const p = f.prim;
+          ctx.beginPath();
+          if (p.k === 'seg') {
+            const a = toInset({ x: p.a.x - offset.x, y: p.a.y - offset.y });
+            const b = toInset({ x: p.b.x - offset.x, y: p.b.y - offset.y });
+            ctx.moveTo(a.x, a.y);
+            ctx.lineTo(b.x, b.y);
+          } else {
+            const cc = toInset({ x: p.c.x - offset.x, y: p.c.y - offset.y });
+            ctx.arc(cc.x, cc.y, p.r * s, p.a0, p.a0 + p.sw, false);
+          }
+          ctx.stroke();
+        }
+  };
+  ctx.lineCap = 'round';
+  ctx.strokeStyle = '#9aa0a6';
+  ctx.lineWidth = 1.4;
+  ctx.setLineDash([5, 4]);
+  draw(doc.repeat, { x: 0, y: 0 });
+  ctx.setLineDash([]);
+  ctx.strokeStyle = color.ink;
+  ctx.lineWidth = 1.8;
+  draw(gap.repeat, shift);
+  const meet = toInset(gap.p);
+  ctx.beginPath();
+  ctx.arc(meet.x, meet.y, 4.5, 0, Math.PI * 2);
+  ctx.fillStyle = color.brass;
+  ctx.fill();
+  ctx.restore();
+  ctx.beginPath();
+  ctx.arc(c.x, c.y, R, 0, Math.PI * 2);
+  ctx.strokeStyle = color.brass;
+  ctx.lineWidth = 2;
+  ctx.stroke();
+
+  // which arm moves, and how far
+  const label = `${gap.cand.arm.toUpperCase()} moves ${Math.hypot(gap.cand.delta.x, gap.cand.delta.y).toFixed(2)}`;
+  ctx.save();
+  ctx.font = '600 12.5px system-ui, -apple-system, sans-serif';
+  const w = ctx.measureText(label).width + 16;
+  const ly = above ? c.y - R - 16 : c.y + R + 16;
+  ctx.fillStyle = color.ink;
+  ctx.beginPath();
+  ctx.roundRect(c.x - w / 2, ly - 11, w, 22, 11);
+  ctx.fill();
+  ctx.fillStyle = color.paper;
+  ctx.textAlign = 'center';
+  ctx.textBaseline = 'middle';
+  ctx.fillText(label, c.x, ly + 0.5);
+  ctx.restore();
 }
 
 export { motifRadius };

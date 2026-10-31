@@ -12,8 +12,8 @@ Keep this short and current. It is a starting point, not a substitute for readin
 | C1 | Individual construction colouring | done — `6b8e300` (branch `feature/c1-construction-colouring`) |
 | A | Colour-before-drawing (top-bar swatch) | done — see `git log` "Stage A" |
 | B | F0 shared geometry foundation | done — see `git log` "Stage B" |
-| C | Close Gap integration (from `feature/close-gap-poc` `f75482a`) | in progress — geometry module done ("Stage C 1/2"); Repeat UI next |
-| D | Intersect Form Development (independent Primary) | to do |
+| C | Close Gap integration (from `feature/close-gap-poc` `f75482a`) | done — "Stage C 1/2" + "Stage C 2/2" |
+| D | Intersect Form Development (independent Primary) | next — D1 data model |
 
 ## Protected — never modify, merge into, push or deploy
 
@@ -64,22 +64,25 @@ Keep this short and current. It is a starting point, not a substitute for readin
 - Proof: `scratchpad/f0-equivalence.mjs` (Node) — identical to the PoC on all fixtures and 20 000 random
   line/arc pairs; Intersect-source Repeat fingerprint identical with old and new `repeatUnit`.
 
+## Close Gap in the app (Stage C)
+
+- Grid and guides → "Close gap…" → `controller.closeGap = { phase: 'pick' }`; Repeat panel row shows
+  "Tap near a gap" · Cancel. A tap (`repeatTool.ts` `closeGapTapGesture`) → `interaction/closeGapMode.ts`
+  `gapsAtTap` (cached per Doc: `findGaps` + `validate`; valid only; reach 28 px) → preview phase with ≤3 local
+  gaps (chips "1·A 3.0"), `describeGap` ("A moves 3.00"), Apply (one commit setting the arm) · Cancel.
+- `repeatRenderer.ts` draws the corrected arm while previewing (never stored) and `drawCloseGapInset` (tapped copy
+  held still: current dashed, proposed solid, brass meeting dot, arm label). Rotation ring hidden in the mode.
+- Handles stay completely free: in the mode a handle drag works as always and returns to picking.
+
 ## Exact next step
 
-Stage C 2/2 — the Repeat interaction for `src/geometry/closeGap.ts` (already on the shared services; all
-PoC fixtures identical — run `node scratchpad/closegap-run.mjs`):
-1. Grid and guides panel (`showRepeatGuidesPanel` in `src/ui/shell.ts`, beside Reset lattice): a "Close gap" row
-   that enters a mode `controller.closeGap = { phase: 'pick' }`.
-2. `src/interaction/tools/repeatTool.ts` `repeatTool` routes like `spaceMode` / `repeatColourMode` (line ~176): in
-   the mode, a tap → cached `findGaps` + `validate` (valid only) → `gapsNear(doc, valid, tapWorld, ~28px/zoom, 3)`.
-   None → status "No gap to close here" (+ count of rejected). Handle drags stay completely free (and cancel a
-   preview).
-3. Preview without changing the doc: a transient `controller.closeGapPreview` (corrected `repeat`, chosen local
-   candidate, site p/q); `repeatRenderer.ts` uses it like `repeatDrag` (line ~565) and draws a magnified inset
-   (current dashed / proposed solid, from `copyFeatures`).
-4. A row in the Repeat panel (like `colourKindRow`): chips for ≤3 local candidates ("1·A 2.0"), the arm and
-   distance, Apply (one `controller.commit` setting the arm) and Cancel (nothing changes).
-5. Test: fixtures, Intersect source, Plate 113, Undo/Redo, save/reopen, 375 px; commit "Stage C 2/2"; then Stage D.
+Stage D, checkpoint D1 — the independent Developed Primary data model, with legacy compatibility:
+`doc.intersection.form = { developed: DevelopedSegment[] }` (absent = legacy: Intersect Repeat = all instances,
+exactly as now), `copies[key].primaryCopy?: boolean`; `repeatComposition` returns, for a `form` artwork,
+'0,0' Original (promoted by default) + promoted copies + a 'developed' member (owner 'developed', identity pose)
+whose features come from the stored segments. No UI yet. Prove: legacy artworks' Repeat fingerprints unchanged.
+Then D2 Intersect Fair display mode, D3 segment splitting, D4 tap add/remove, D5 Primary-copy, D6 Repeat
+composition + empty state, D7 Timelapse/export/regression.
 
 ## Commands
 

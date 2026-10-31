@@ -289,9 +289,11 @@ export function gapsNear(doc: Doc, candidates: GapCandidate[], at: Vec2, radius:
   const { a, b } = doc.repeat;
   const det = cross(a, b);
   const uniform = doc.repeat.rule.kind === 'same' || doc.repeat.rule.kind === 'around';
-  const out: { cand: GapCandidate; at: Vec2; distance: number; p: Vec2; q: Vec2 }[] = [];
+  // `copy`: the copy the gap's base side belongs to there (its lattice indices) — its neighbour is one
+  // step along the candidate's arm.
+  const out: { cand: GapCandidate; at: Vec2; distance: number; p: Vec2; q: Vec2; copy: [number, number] }[] = [];
   for (const cand of candidates) {
-    let best: { at: Vec2; distance: number; p: Vec2; q: Vec2 } | null = null;
+    let best: { at: Vec2; distance: number; p: Vec2; q: Vec2; copy: [number, number] } | null = null;
     for (const site of cand.sites) {
       const m = { x: (site.p.x + site.q.x) / 2, y: (site.p.y + site.q.y) / 2 };
       // The tap in lattice coordinates relative to this site; try the nearby whole steps.
@@ -304,7 +306,7 @@ export function gapsNear(doc: Doc, candidates: GapCandidate[], at: Vec2, radius:
           const t = { x: a.x * i + b.x * j, y: a.y * i + b.y * j };
           const here = add(m, t);
           const dist = len(sub(at, here));
-          if (dist <= radius && (!best || dist < best.distance)) best = { at: here, distance: dist, p: add(site.p, t), q: add(site.q, t) };
+          if (dist <= radius && (!best || dist < best.distance)) best = { at: here, distance: dist, p: add(site.p, t), q: add(site.q, t), copy: [site.base[0] + i, site.base[1] + j] };
         }
     }
     if (best) out.push({ cand, ...best });

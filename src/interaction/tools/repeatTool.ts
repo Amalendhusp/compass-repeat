@@ -14,6 +14,7 @@ import { withAlpha } from '../../model/colour.ts';
 import { patternGroup, regionAtInRepeat, toggleRegion } from '../../geometry/repeatColour.ts';
 import { repeatSourceOf } from '../../geometry/repeatSetup.ts';
 import { showToast } from '../../ui/toast.ts';
+import { gapsAtTap } from '../closeGapMode.ts';
 import type { Gesture, ToolModule } from './types.ts';
 
 const HANDLE_HIT_RADIUS = 26; // px — generous, these are the only two draggable points
@@ -22,6 +23,8 @@ const RING_HIT_BAND = 22; // px either side of the ring's own radius
 // vNext Phase 1: a press that stays within this of where it went down moves nothing — so a tap or
 // a resting finger never nudges the lattice — and beyond it, whatever is shown is what is kept.
 const DRAG_SLOP_PX = 6;
+/** Close Gap: how near a tap must be to a gap (px) — a fingertip. */
+const CLOSE_GAP_REACH_PX = 28;
 
 /**
  * Phase 1.2: dragging a lattice handle moves its arm exactly with the finger — no snapping, no
@@ -167,12 +170,47 @@ function colourTapGesture(controller: AppController, view: ViewTransform): Gestu
   };
 }
 
+/** Close Gap's tap (interaction/closeGapMode.ts): the valid gaps near the tap — the nearest previewed
+ * at once, up to two more offered — or, if none, a plain word on why. Never changes the artwork. */
+function closeGapTapGesture(controller: AppController, view: ViewTransform): Gesture {
+  return {
+    onMove() {},
+    onUp(sp, wasDrag) {
+      if (wasDrag) return;
+      const { local, rejected } = gapsAtTap(controller.doc, screenToWorld(view, sp), CLOSE_GAP_REACH_PX / view.zoom);
+      if (local.length > 0) {
+        controller.closeGap = { phase: 'preview', local, index: 0 };
+      } else {
+        controller.closeGap = { phase: 'pick' };
+        if (rejected.length > 0) showToast(`Can't close this gap · ${rejected[0]}`, 3400, 'warning');
+        else showToast('No small gap here · tap right beside one', 2400);
+      }
+      controller.notify();
+    },
+    onCancel() {},
+  };
+}
+
 export const repeatTool: ToolModule = {
   id: 'select', // never looked up by id — main.ts routes to this tool directly for the Repeat workspace
   hint() {
     return 'Drag a neighbour to set spacing, or the ring to rotate';
   },
   beginGesture(controller, view, screenPos): Gesture | null {
+    if (controller.closeGap) {
+      // The lattice handles stay completely free: dragging one leaves any preview and goes on picking.
+      if (controller.doc.repeatDisplay.handles) {
+        const pivot = controller.doc.frame.origin;
+        for (const dir of ['a', 'b'] as const) {
+          const vec = controller.doc.repeat[dir];
+          if (dist(screenPos, worldToScreen(view, { x: pivot.x + vec.x, y: pivot.y + vec.y })) <= HANDLE_HIT_RADIUS) {
+            controller.closeGap = { phase: 'pick' };
+            return dragHandleGesture(controller, view, dir, screenPos);
+          }
+        }
+      }
+      return closeGapTapGesture(controller, view);
+    }
     if (controller.spaceMode) return spaceTapGesture(controller, view);
     if (controller.repeatColourMode) return colourTapGesture(controller, view);
     if (!controller.doc.repeatDisplay.handles) return null; // hidden handles are not interactive

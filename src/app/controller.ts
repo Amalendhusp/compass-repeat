@@ -325,6 +325,9 @@ export class AppController {
   /** Repeat Colouring (geometry/repeatColour.ts): while on, a tap in Repeat colours a region —
    * of every copy ('motif'), or of the second group of copies ('pattern'). Session state. */
   repeatColourMode: 'motif' | 'pattern' | null = null;
+  /** Close Gap (Stage C, interaction/closeGapMode.ts): picking a gap, or previewing one. Session state —
+   * nothing reaches the artwork before Apply. */
+  closeGap: import('../interaction/closeGapMode.ts').CloseGapState | null = null;
   /** Repeat's outline style while a width slider is being dragged — shown live, committed (one Undo
    * step) on release. Session state. */
   repeatStrokeDraft: import('../model/types.ts').RepeatStroke | null = null;
