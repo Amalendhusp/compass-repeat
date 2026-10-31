@@ -22,8 +22,8 @@ Keep this short and current. It is a starting point, not a substitute for readin
 | UI-3 | Intersect: Reference into Menu; eye keeps the sliders | done — "UI-3" |
 | UI-4 | Repeat: rules row, Construct/Intersect source, Motif/Space Fill, master guide toggle | done — "UI-4" |
 | S1 | One Fill: Intersect-unit regions, no Motif/Space choice, gap marks | done — "Sprint S1" |
-| S2 | Top-left Appearance (Fill · Stroke · Background), Fill toggle, preferences in the draft | next |
-| S3 | Interlaced strokes (Single · Banded · Interlaced, over-under, crossing reversal) | — |
+| S2 | Top-left Appearance (Fill · Stroke · Background), Fill toggle, preferences in the draft | done — "Sprint S2" |
+| S3 | Interlaced strokes (Single · Banded · Interlaced, over-under, crossing reversal) | next |
 | S4 | Integration, regression, iPhone release candidate | — |
 
 ## Protected — never modify, merge into, push or deploy
@@ -247,9 +247,8 @@ Keep this short and current. It is a starting point, not a substitute for readin
   (recolour = one Undo step, `setEntityColour`), above the drawing section; the drawing colour never changes from it.
 - The Fair tool's and Construct Fill tool's ribbon Colour / Width / Opacity chips are gone (the ribbon hides when
   empty). The Select ribbon's chips for a selected Fair stroke / region (recolour that selection) are unchanged.
-- Preferences (`toolPrefs.constructionColour`, `fairDefaults`, `fillDefaults`, `repeatPaint`) are never Undo steps
-  and never count as unsaved changes; `main.ts` `persistPrefs` writes just those fields into the saved record at
-  once (`onPrefs`), so reopening a saved artwork remembers them without saving its edits.
+- Preferences (`toolPrefs.constructionColour`, `fairDefaults`, `fillDefaults`, `repeatPaint`) are never Undo steps.
+  (Superseded by Sprint S2: they no longer go into the saved record at once — see S2.)
 - Results (375 px): independent kinds; no Undo steps for preferences; new line / circle take the construction colour;
   Fair stroke #C98A2C @ 4 px; Fill `#C98A2C80` at 50 %; selection recolour one Undo (Undo/Redo exact) and the
   drawing colour untouched; prefs survive Don't-save + reopen; rows fit at 375 px. Suite: fingerprints identical,
@@ -345,12 +344,38 @@ Keep this short and current. It is a starting point, not a substitute for readin
   an old whole-member fill under a newly split region stays (clear it with Clear in the Fill panel); hair-line
   bridging applies between lattice copies only (not inside one unit), as before.
 
+## Sprint S2: Appearance and UI finalisation
+
+- **Top-left Appearance in Repeat again** (`appearanceBtn` in `leftSide`, Repeat only): `showRepeatAppearancePanel
+  (anchor, controller, tab?)` with **Fill | Stroke | Background** (session `appearanceTab`, default Fill). Fill = the
+  colour (No fill + palette + custom) and Opacity a Fill tap applies next (`repeatPaint`), **Clear Repeat fills**
+  (regions + spaces, one Undo; Pattern's hidden fills and the construction's own fills kept); "Region fills" (the old
+  global `repeatDisplay.fillOpacity`) only shows for an artwork where it is not 100 %. Stroke and Background as before
+  (Background never touches fills).
+- The top-right contextual control (`ccBtn`) is Construct only now (Line/Circle/Arc construction colour, Fair colour
+  and width, Fill colour and opacity, selection recolour) — Intersect and Repeat hide it; no duplicate Fill colour.
+- Fill toggle: the Fill chip (Source row) turns Fill on; while on, the row is `[■ Fill]` (dark, tap = finish) ·
+  colour swatch (40 px target; shows the colour and opacity applied next; tap = Appearance → Fill) · "Tap any enclosed
+  region" (paper pill). No Done, no scopes.
+- **Save / draft persistence (2.4)**: `persistPrefs` no longer writes preferences into the saved record; it flushes
+  the working draft. `draft.ts` `prefsHash(doc)` (construction colour, Fair default, Fill default, Repeat paint);
+  `dirtyTracker(base, prefsBase)` counts a preference change as unsaved for a SAVED artwork (`prefsBase` null for a
+  never-saved one); the draft stores `prefsBase`; `writeSaved` rebases both; `bootDraft` takes the draft's
+  `prefsBase` (an older draft without it: its own preferences, which the old code had already saved). Repeat
+  background / stroke / fill strength were already artwork state (dirty, saved only by Save).
+- Tests (`scratchpad/s2-app.js`, 375 px): top bar left Menu · Appearance, right guides · Share, nothing clipped;
+  panel 8–338 px, tabs Fill/Stroke/Background; swatch opens Fill tab. Persistence: open saved artwork → Fill colour +
+  Background changed → saved record unchanged, Menu "· unsaved", draft dirty → reload → Recover card → recovered
+  with both changes; record still original → leave with Don't save → reopened original (no fill colour, original
+  background, clean). Preference only (Fair colour in Construct): no Undo step, "· unsaved", record unchanged,
+  "Save changes?" on leaving, Don't save → original colour; Save → record has it, draft clean. Suite: fingerprints
+  identical, cancel 16/0, smoke all true, Guide baseline; digest of all 142 stored records identical before/after.
+
 ## Exact next step
 
-Final sprint: S1 done. Next S2 (Appearance and UI finalisation): restore the top-left Appearance button in Repeat
-with Fill | Stroke | Background tabs (Fill colour/opacity there; remove the duplicate from the top-right control in
-Repeat); keep the Fill chip as the only Fill toggle; move appearance preferences (`persistPrefs` in `main.ts`) into
-the working draft only — committed to the saved record on Save / Save As. Then S3 interlacing, S4 release candidate.
+Final sprint: S1, S2 done. Next S3 (interlaced strokes): Repeat Stroke gains Single · Banded (existing Double/Triple
+layers) · Interlaced (render-level over-under at exact Fair crossings, cached crossing network with stable ids,
+automatic alternation + per-crossing reversal stored in `repeatSetup`, conflicts reported). Then S4.
 
 ## Commands
 

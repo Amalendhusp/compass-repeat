@@ -567,7 +567,7 @@ function designStroke(doc: Doc): { colour: string; width: number } {
 }
 
 /** Which part of Repeat's Appearance panel was last open (session). */
-let appearanceTab: 'stroke' | 'background' = 'stroke';
+let appearanceTab: 'fill' | 'stroke' | 'background' = 'fill';
 /** Repeat Fill's scopes: a space between motifs, a region in every copy, or in the second group. */
 type FillScope = 'space' | 'motif' | 'pattern';
 /** Which stroke layer's colours are showing in the panel (session). */
@@ -579,20 +579,22 @@ let strokeSwatchesOpen: number | null = null;
  * canvas — "Colour regions") and how strongly fills are drawn. Stroke: the outlines. Background:
  * the colour behind the pattern. Nothing here changes the construction or its own styling.
  */
-/** Repeat's Appearance, from the contextual control at the top right (UI-4): `look` — Stroke and
- * Background; `fill` (while filling) — the Fill colour and opacity, Clear for the current scope, and
- * how strongly motif fills are drawn. Fill's colour and opacity live only here. */
-function showRepeatAppearancePanel(anchor: HTMLElement, controller: AppController, hooks: { scope: () => FillScope | null }, mode: 'look' | 'fill'): void {
+/** Sprint S2: Repeat's Appearance, at the top left again — the one place for how the repeated design
+ * looks: Fill (the colour and opacity Fill applies next, Clear), Stroke (the lines), Background (behind
+ * the pattern — not a region, never filled). `tab` opens a given part (the Fill row's swatch opens Fill). */
+function showRepeatAppearancePanel(anchor: HTMLElement, controller: AppController, tab?: 'fill' | 'stroke' | 'background'): void {
   const display = (): RepeatDisplay => controller.doc.repeatDisplay;
   const changed = () => controller.notifyView();
+  if (tab) appearanceTab = tab;
 
   mountPopover(
     anchor,
     (panel) => {
       panel.classList.add('appearance-panel');
-      if (mode === 'look') panelSegmented(
+      panelSegmented(
         panel,
         [
+          { id: 'fill' as const, label: 'Fill' },
           { id: 'stroke' as const, label: 'Stroke' },
           { id: 'background' as const, label: 'Background' },
         ],
@@ -608,7 +610,7 @@ function showRepeatAppearancePanel(anchor: HTMLElement, controller: AppControlle
       panel.appendChild(body);
       const build = () => {
         body.replaceChildren();
-        if (mode === 'fill') buildFill(body);
+        if (appearanceTab === 'fill') buildFill(body);
         else if (appearanceTab === 'background') buildBackground(body);
         else buildStroke(body);
       };
@@ -782,10 +784,9 @@ function showRepeatAppearancePanel(anchor: HTMLElement, controller: AppControlle
       };
 
       const buildFill = (menu: HTMLElement) => {
-      // Fill: the colour and opacity Fill applies next — one choice for Space, Motif and Pattern
-      // (the bottom row only picks the scope) — clearing what the current scope has filled, and how
-      // strongly motif regions are drawn. Choosing a colour never changes what is already filled:
-      // tap a filled region or space with the new colour to change it.
+      // Fill: the colour and opacity a Fill tap applies next — to any enclosed region, of the design or
+      // between copies. Choosing never changes what is already filled: tap a filled region with the new
+      // colour to change it, or with the same colour to clear it. Drawing preferences: no Undo step.
       popoverSectionLabel(menu, 'Fill colour · next fills');
       colourSwatchRow(
         menu,
@@ -807,43 +808,43 @@ function showRepeatAppearancePanel(anchor: HTMLElement, controller: AppControlle
           controller.notify();
         },
       }).slider.title = 'Opacity of the next fill (each fill keeps its own)';
-      const scope = hooks.scope();
-      if (scope) {
-        // Clearing what this scope has filled: one Undo step.
-        const doc = controller.doc;
-        const colour = doc.repeatSetup?.colour;
-        const has = scope === 'space' ? doc.repeat.gapFills.size > 0 : scope === 'pattern' ? !!colour?.pattern && Object.keys(colour.pattern.regions).length > 0 : !!colour?.regions && Object.keys(colour.regions).length > 0;
-        const clear = document.createElement('button');
-        clear.className = 'popover-row appearance-regions';
-        clear.textContent = scope === 'space' ? 'Clear Space fills' : scope === 'pattern' ? 'Pattern as designed' : 'Motif as designed';
-        clear.title = scope === 'space' ? 'Every space unfilled again' : 'Every region shows the design’s own colours again';
-        clear.disabled = !has;
-        onTap(clear, () => {
-          if (!has) return;
-          controller.commit((d) => {
-            if (scope === 'space') d.repeat.gapFills = new Map();
-            else {
-              const c = structuredClone(d.repeatSetup!.colour!);
-              if (scope === 'pattern') c.pattern = { ...c.pattern!, regions: {} };
-              else delete c.regions;
-              d.repeatSetup = { ...d.repeatSetup!, colour: c };
-            }
-          });
-          build();
+      // Clear: every fill Repeat has made (regions and spaces) — one Undo step. Pattern's hidden fills
+      // and the construction's own fills are kept.
+      const doc = controller.doc;
+      const has = doc.repeat.gapFills.size > 0 || Object.keys(doc.repeatSetup?.colour?.regions ?? {}).length > 0;
+      const clear = document.createElement('button');
+      clear.className = 'popover-row appearance-regions';
+      clear.textContent = 'Clear Repeat fills';
+      clear.title = 'Every region and space returns to as designed';
+      clear.disabled = !has;
+      onTap(clear, () => {
+        if (!has) return;
+        controller.commit((d) => {
+          d.repeat.gapFills = new Map();
+          if (d.repeatSetup?.colour?.regions) {
+            const c = structuredClone(d.repeatSetup.colour);
+            delete c.regions;
+            d.repeatSetup = { ...d.repeatSetup, colour: c };
+          }
         });
-        menu.appendChild(clear);
+        build();
+      });
+      menu.appendChild(clear);
+      // An older artwork may draw its region fills at less than full strength (the old global Fill
+      // opacity): only then is that setting offered, so it can be returned to 100 %.
+      if (display().fillOpacity !== 1) {
+        panelSliderRow(menu, 'Region fills', {
+          min: 0,
+          max: 100,
+          step: 5,
+          value: Math.round(display().fillOpacity * 100),
+          format: (v) => `${v}%`,
+          onInput: (v) => {
+            display().fillOpacity = v / 100;
+            changed();
+          },
+        }).slider.title = 'How strongly region fills are drawn in this artwork (from an earlier version)';
       }
-      panelSliderRow(menu, 'Motif fills', {
-        min: 0,
-        max: 100,
-        step: 5,
-        value: Math.round(display().fillOpacity * 100),
-        format: (v) => `${v}%`,
-        onInput: (v) => {
-          display().fillOpacity = v / 100;
-          changed();
-        },
-      }).slider.title = 'How strongly every motif region is drawn (spaces keep their own opacity)';
       };
       build();
     },
@@ -1813,17 +1814,9 @@ export function buildShell(
   const ccDot = document.createElement('span');
   ccDot.className = 'cc-dot';
   ccBtn.appendChild(ccDot);
-  type AppearanceKind = 'construction' | 'fair' | 'fill' | 'repeat-look' | 'repeat-fill';
-  const appearanceKind = (): AppearanceKind =>
-    controller.doc.view.workspace === 'repeat'
-      ? fillScope()
-        ? 'repeat-fill'
-        : 'repeat-look'
-      : controller.tool === 'fair'
-        ? 'fair'
-        : controller.tool === 'fill'
-          ? 'fill'
-          : 'construction';
+  // Sprint S2: Construct only — Repeat's appearance is its own Appearance panel at the top left.
+  type AppearanceKind = 'construction' | 'fair' | 'fill';
+  const appearanceKind = (): AppearanceKind => (controller.tool === 'fair' ? 'fair' : controller.tool === 'fill' ? 'fill' : 'construction');
   /** The construction the panel can recolour: whole non-frame lines and circles under a non-Fair
    * selection (Select only), or none. */
   function ccTargets(): Entity[] {
@@ -1843,27 +1836,6 @@ export function buildShell(
     const doc = controller.doc;
     const kind = appearanceKind();
     const targets = kind === 'construction' ? ccTargets() : [];
-    // Repeat, not filling: the Appearance icon (Stroke, Background); filling: the Fill colour.
-    ccBtn.classList.toggle('as-icon', kind === 'repeat-look');
-    if (kind === 'repeat-look') {
-      if (!ccBtn.querySelector('svg')) ccBtn.insertAdjacentHTML('beforeend', iconSvg('appearance'));
-      ccBtn.setAttribute('aria-label', 'Appearance');
-      ccBtn.classList.remove('recolour');
-      ccBtn.dataset.kind = kind;
-      if (openPopoverAnchor === ccBtn && ccBtn.dataset.open !== kind) closeAnyPopover();
-      return;
-    }
-    ccBtn.querySelector('svg')?.remove();
-    if (kind === 'repeat-fill') {
-      const paint = repeatFill(controller);
-      ccDot.style.background = paint ?? '';
-      ccDot.classList.toggle('none', !paint);
-      ccBtn.dataset.kind = kind;
-      ccBtn.classList.remove('recolour');
-      ccBtn.setAttribute('aria-label', `Fill appearance · ${repeatPaint(controller) ?? 'no fill'}, ${Math.round(repeatPaintOpacity(controller) * 100)}%`);
-      if (openPopoverAnchor === ccBtn && ccBtn.dataset.open !== kind) closeAnyPopover();
-      return;
-    }
     ccDot.classList.remove('none');
     const shown =
       kind === 'fair'
@@ -1884,8 +1856,8 @@ export function buildShell(
     );
     if (openPopoverAnchor === ccBtn && ccBtn.dataset.open !== kind) closeAnyPopover(); // the tool changed under it
   }
-  /** A drawing preference changed: no Undo step; the artwork remembers it (and so does its saved
-   * version — preferences are not artwork, so this never counts as an unsaved change). */
+  /** A drawing preference changed: no Undo step; the artwork remembers it in the working draft — and in
+   * its saved version only through Save or Save As (Sprint S2). */
   const prefChanged = () => {
     refreshCcBtn();
     controller.notify();
@@ -1894,10 +1866,6 @@ export function buildShell(
   function showConstructAppearance(): void {
     const kind = appearanceKind();
     ccBtn.dataset.open = kind;
-    if (kind === 'repeat-look' || kind === 'repeat-fill') {
-      showRepeatAppearancePanel(ccBtn, controller, { scope: () => fillScope() }, kind === 'repeat-fill' ? 'fill' : 'look');
-      return;
-    }
     mountPopover(ccBtn, (menu) => {
       menu.classList.add('appearance-panel');
       const doc = controller.doc;
@@ -1968,8 +1936,10 @@ export function buildShell(
   appearanceBtn.className = 'icon-btn';
   appearanceBtn.setAttribute('aria-label', 'Appearance');
   appearanceBtn.innerHTML = iconSvg('appearance');
-  // UI-4: Repeat's Appearance moved into the contextual control at the top right (ccBtn); this
-  // button is no longer shown.
+  // Sprint S2: back at the top left in Repeat (UI-4 had moved it into the top-right control): Fill ·
+  // Stroke · Background.
+  onTap(appearanceBtn, () => togglePanel(appearanceBtn, () => showRepeatAppearancePanel(appearanceBtn, controller)));
+  leftSide.appendChild(appearanceBtn);
 
   // Intersection: in that slot, the Copies panel — its icon a little 2×2 of the constructions' own
   // analysis colours (the first four), so it says which copies there are without shouting.
@@ -2373,9 +2343,14 @@ export function buildShell(
   const fillOnBtn = document.createElement('button');
   fillOnBtn.className = 'space-chip fill-action active';
   fillOnBtn.innerHTML = `${iconSvg('fill', 16)}<span>Fill</span>`;
+  // The colour Fill applies, always in view while filling; a tap opens Appearance → Fill (the one
+  // place its colour and opacity are chosen).
+  const fillSwatchBtn = document.createElement('button');
+  fillSwatchBtn.className = 'fill-swatch-btn';
   const fillOnDot = document.createElement('span');
   fillOnDot.className = 'fill-on-dot';
-  fillOnBtn.appendChild(fillOnDot);
+  fillSwatchBtn.appendChild(fillOnDot);
+  onTap(fillSwatchBtn, () => togglePanel(appearanceBtn, () => showRepeatAppearancePanel(appearanceBtn, controller, 'fill')));
   fillOnBtn.title = 'Finish filling';
   fillOnBtn.setAttribute('aria-label', 'Fill — on; tap to finish');
   fillOnBtn.setAttribute('aria-pressed', 'true');
@@ -2384,6 +2359,7 @@ export function buildShell(
   fillCue.className = 'close-gap-cue fill-cue';
   fillCue.textContent = 'Tap any enclosed region';
   colourKindRow.appendChild(fillOnBtn);
+  colourKindRow.appendChild(fillSwatchBtn);
   colourKindRow.appendChild(fillCue);
   repeatPanel.appendChild(colourKindRow);
 
@@ -2509,6 +2485,7 @@ export function buildShell(
     const fill = repeatFill(controller);
     fillOnDot.style.background = fill ?? 'transparent';
     fillOnDot.classList.toggle('none', !fill);
+    fillSwatchBtn.setAttribute('aria-label', `Fill colour ${repeatPaint(controller) ?? 'none'}, ${Math.round(repeatPaintOpacity(controller) * 100)}% — choose in Appearance`);
     const by = controller.doc.repeatSetup?.colour?.pattern?.by;
     for (const [id, b] of patternBtns) b.classList.toggle('active', by === id);
   }
@@ -3505,7 +3482,7 @@ export function buildShell(
     refreshReferenceButtons();
 
     appearanceBtn.style.display = inRepeat ? '' : 'none';
-    ccBtn.style.display = controller.doc.view.workspace === 'intersection' ? 'none' : '';
+    ccBtn.style.display = controller.doc.view.workspace === 'construct' ? '' : 'none';
     refreshCcBtn();
     guidesBtn.style.display = inRepeat ? '' : 'none';
     handlesBtn.style.display = inRepeat ? '' : 'none';

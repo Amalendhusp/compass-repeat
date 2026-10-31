@@ -7,7 +7,8 @@
 //
 // `baseHash` is the artwork-state fingerprint (processState's captureState) of what the session
 // started from — the saved version, or a new artwork's bare frame. The draft has unsaved changes
-// exactly when its own state differs from that; view, tool preferences and names never count.
+// exactly when its own state differs from that, or (Sprint S2) a saved artwork's drawing preferences
+// differ from its saved ones (`prefsBase`); view and names never count.
 
 import type { Doc } from '../model/types.ts';
 import { capturedHash, captureState, inPlaceFingerprint } from './processState.ts';
@@ -22,6 +23,9 @@ export interface WorkingDraft {
   /** A saved artwork with this id exists — the draft is that artwork, edited. */
   savedBase: boolean;
   baseHash: string;
+  /** Sprint S2: the saved version's drawing preferences (`prefsHash`) — a change to them is an unsaved
+   * change too. Null for a never-saved artwork (its preferences never count); absent in older drafts. */
+  prefsBase?: string | null;
   /** Changes not in the saved version (or, for a never-saved artwork, any change since its frame). */
   dirty: boolean;
   updatedAt: number;
@@ -58,9 +62,20 @@ export function artworkHash(doc: Doc): string {
   return capturedHash(captureState(doc)).hash;
 }
 
+/** Sprint S2: the drawing preferences kept with an artwork — construction colour, Fair colour and width,
+ * Fill colour and opacity, Repeat's Fill colour and opacity. Not artwork state (never Undo, never in the
+ * process history), but part of what a Save keeps: a saved artwork's change to them is an unsaved change,
+ * kept in the working draft until Save or Save As. */
+export function prefsHash(doc: Doc): string {
+  return JSON.stringify([doc.toolPrefs?.constructionColour ?? null, doc.fairDefaults ?? null, doc.fillDefaults ?? null, doc.repeatPaint ?? null]);
+}
+
 /** Answers "does this document differ from `base`?" cheaply: the hash is recomputed only after the
  * document is replaced (a commit, Undo, Redo) or its in-place artwork fields change. */
-export function dirtyTracker(base: string): { dirty: (doc: Doc) => boolean; hash: (doc: Doc) => string; rebase: (hash: string) => void; base: () => string } {
+export function dirtyTracker(
+  base: string,
+  prefsBase: string | null = null,
+): { dirty: (doc: Doc) => boolean; hash: (doc: Doc) => string; rebase: (hash: string, prefs: string | null) => void; base: () => string; prefsBase: () => string | null } {
   let ref: Doc | null = null;
   let print = '';
   let last = '';
@@ -75,10 +90,12 @@ export function dirtyTracker(base: string): { dirty: (doc: Doc) => boolean; hash
   };
   return {
     hash,
-    dirty: (doc) => hash(doc) !== base,
-    rebase: (h) => {
+    dirty: (doc) => hash(doc) !== base || (prefsBase !== null && prefsHash(doc) !== prefsBase),
+    rebase: (h, prefs) => {
       base = h;
+      prefsBase = prefs;
     },
     base: () => base,
+    prefsBase: () => prefsBase,
   };
 }

@@ -37,7 +37,7 @@ import { worldToScreen } from './app/controller.ts';
 import { attachAutosave, type AutosaveHandle } from './persist/autosave.ts';
 import { attachProcessRecorder, type ProcessHandle } from './persist/processRecorder.ts';
 import { copyProcess, deleteProcess, enqueue, listProcesses, loadEvents, loadMeta, rollbackProcess } from './persist/processStore.ts';
-import { artworkHash, clearDraft, dirtyTracker, draftSlot, loadDraft, type WorkingDraft } from './persist/draft.ts';
+import { artworkHash, clearDraft, dirtyTracker, draftSlot, loadDraft, prefsHash, type WorkingDraft } from './persist/draft.ts';
 import { replayProcess, stateAt } from './persist/processReplay.ts';
 import { captureState, stateHash, stateToDoc } from './persist/processState.ts';
 import { makeThumbnail } from './persist/thumbnail.ts';
@@ -206,13 +206,13 @@ function fitIntersectionView(controller: AppController, canvas: HTMLCanvasElemen
 /** Boots the app on a document. `fitToScreen: false` preserves a drawn/restored viewport. */
 const KEY_ZOOM_STEP = 1.25;
 
-function boot(doc: Doc, opts: { fitToScreen: boolean; history?: { undo: Doc[]; redo: Doc[] }; fresh?: boolean; savedBase?: boolean; baseHash?: string }): void {
+function boot(doc: Doc, opts: { fitToScreen: boolean; history?: { undo: Doc[]; redo: Doc[] }; fresh?: boolean; savedBase?: boolean; baseHash?: string; prefsBase?: string | null }): void {
   endSession();
   const controller = new AppController(doc);
   // UI-1: what this session started from — the saved version, or a new artwork's bare frame (a
-  // recovered draft brings its own).
-  const tracker = dirtyTracker(opts.baseHash ?? artworkHash(doc));
+  // recovered draft brings its own). Sprint S2: and, for a saved artwork, its saved drawing preferences.
   const savedBase = opts.savedBase ?? false;
+  const tracker = dirtyTracker(opts.baseHash ?? artworkHash(doc), opts.prefsBase !== undefined ? opts.prefsBase : savedBase ? prefsHash(doc) : null);
   // §9 restore: "the tool reset to Select" — AppController already defaults tool to 'select'.
   if (opts.history) controller.restoreHistory(opts.history.undo, opts.history.redo);
   // The reference: a workspace showing it for the first time takes its own placement from the most
@@ -240,7 +240,7 @@ function boot(doc: Doc, opts: { fitToScreen: boolean; history?: { undo: Doc[]; r
     onSave: () => saveArtwork(),
     onSaveAs: () => saveAsNewArtwork(),
     unsaved: () => isDirty(),
-    onPrefs: () => void persistPrefs(),
+    onPrefs: () => persistPrefs(),
     getView: () => getView(),
     getToolView: () => getToolView(),
     // vNext Phase 4B: Timelapse reads the history after every change so far is recorded.
@@ -405,7 +405,7 @@ function boot(doc: Doc, opts: { fitToScreen: boolean; history?: { undo: Doc[]; r
   pointer.onWheelTransform = (at, factor, turn) => referenceWheel(controller, getView, at, factor, turn);
   const autosave = guideReturn
     ? inertAutosave
-    : attachAutosave(controller, { dirty: () => tracker.dirty(controller.doc), baseHash: () => tracker.base(), savedBase: () => (session?.controller === controller ? session.savedBase : savedBase) });
+    : attachAutosave(controller, { dirty: () => tracker.dirty(controller.doc), baseHash: () => tracker.base(), prefsBase: () => tracker.prefsBase(), savedBase: () => (session?.controller === controller ? session.savedBase : savedBase) });
   // vNext Phase 4A: the artwork's process history — never for the Beginner Guide's practice artwork.
   // A brand-new artwork's history starts at its frame; an existing one at its first real change.
   const process = guideReturn ? null : attachProcessRecorder(controller, { fresh: opts.fresh === true });
@@ -562,26 +562,17 @@ async function writeSaved(s: NonNullable<typeof session>): Promise<void> {
   await saveHistory({ docId: doc.id, undoStack: undo, redoStack: redo });
   await setMeta('lastOpenDocId', doc.id);
   s.savedBase = true;
-  s.tracker.rebase(s.tracker.hash(doc));
+  s.tracker.rebase(s.tracker.hash(doc), prefsHash(doc));
   s.autosave.flush(); // the draft now matches the saved artwork
   s.controller.notify();
 }
 
-/** UI-2: drawing preferences (construction, Fair and Fill colours, Fair width, Fill opacity, Repeat's
- * fill colour) belong to the artwork but are not artwork: a change is kept in the saved version
- * straight away — only those fields — so reopening it remembers them without saving its edits. */
-async function persistPrefs(): Promise<void> {
-  const s = session;
-  if (!s || !s.savedBase || guideReturn) return;
-  const doc = s.controller.doc;
-  const record = await loadDocument(doc.id);
-  if (!record?.snapshot) return;
-  const snap = record.snapshot;
-  snap.toolPrefs = { ...snap.toolPrefs, constructionColour: doc.toolPrefs?.constructionColour ?? null };
-  snap.fairDefaults = { ...doc.fairDefaults };
-  snap.fillDefaults = { ...doc.fillDefaults };
-  if (doc.repeatPaint) snap.repeatPaint = { ...doc.repeatPaint };
-  await saveDocument(record);
+/** UI-2 / Sprint S2: drawing preferences (construction, Fair and Fill colours, Fair width, Fill opacity,
+ * Repeat's Fill colour and opacity) are kept with the artwork, but — like everything else — reach its
+ * saved version only through Save or Save As. A change is written to the working draft at once (so a
+ * refresh or closure keeps it, and Recover brings it back); for a saved artwork it counts as unsaved. */
+function persistPrefs(): void {
+  session?.autosave.flush();
 }
 
 /** Save: the first time, the artwork gets a name; after that it simply writes. `then` runs once
@@ -725,7 +716,10 @@ function bootDraft(d: WorkingDraft): void {
   upgradeSnapshot(d.snapshot, d.named);
   d.undo.forEach(migrateLegacyFillKeys);
   d.redo.forEach(migrateLegacyFillKeys);
-  boot(d.snapshot, { fitToScreen: false, history: { undo: d.undo, redo: d.redo }, savedBase: d.savedBase, baseHash: d.baseHash });
+  // A draft from before Sprint S2 carries no `prefsBase`: its preferences were already in the saved
+  // version (written at once then), so they are its base.
+  const prefsBase = d.prefsBase !== undefined ? d.prefsBase : d.savedBase ? prefsHash(d.snapshot) : null;
+  boot(d.snapshot, { fitToScreen: false, history: { undo: d.undo, redo: d.redo }, savedBase: d.savedBase, baseHash: d.baseHash, prefsBase });
 }
 
 // ---- vNext Phase 2: the Start screen (Choose a frame · Beginner Guide · My Artworks) ----

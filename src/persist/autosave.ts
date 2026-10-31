@@ -29,6 +29,7 @@ export interface AutosaveHandle {
 export interface DraftState {
   dirty: () => boolean;
   baseHash: () => string;
+  prefsBase: () => string | null;
   savedBase: () => boolean;
 }
 
@@ -52,6 +53,7 @@ export function attachAutosave(controller: AppController, state: DraftState): Au
       named: doc.named ?? false,
       savedBase: state.savedBase(),
       baseHash: state.baseHash(),
+      prefsBase: state.prefsBase(),
       dirty,
       updatedAt: Date.now(),
       thumbnail,
