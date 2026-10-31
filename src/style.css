@@ -2387,3 +2387,18 @@ canvas.stage {
 .owner-tag[data-owner='primary'] .owner-mark {
   border-top: 3.2px solid var(--ink);
 }
+
+/* Stage D: the Copies panel's three columns — the copy, In Repeat (Primary-copy), Extensions. */
+.copies-header > .popover-section-label:first-child {
+  flex: 1;
+}
+.copies-header > .popover-section-label:not(:first-child) {
+  width: 64px;
+  text-align: center;
+}
+.copies-header > .popover-section-label:last-child {
+  margin-right: 32px; /* over the switch, clear of the remove button */
+}
+.copy-row .toggle-switch {
+  margin: 0 12px;
+}

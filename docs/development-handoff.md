@@ -13,7 +13,7 @@ Keep this short and current. It is a starting point, not a substitute for readin
 | A | Colour-before-drawing (top-bar swatch) | done — see `git log` "Stage A" |
 | B | F0 shared geometry foundation | done — see `git log` "Stage B" |
 | C | Close Gap integration (from `feature/close-gap-poc` `f75482a`) | done — "Stage C 1/2" + "Stage C 2/2" |
-| D | Intersect Form Development (independent Primary) | D1–D4 done (model, display, segments, tap add/remove) — next D5 |
+| D | Intersect Form Development (independent Primary) | D1–D5 done (model, display, segments, tap add/remove, Primary-copy) — next D6 |
 
 ## Protected — never modify, merge into, push or deploy
 
@@ -123,12 +123,21 @@ Keep this short and current. It is a starting point, not a substitute for readin
   nothing. Renderer exports reused: `fanMarkers`, `drawNumberBadge`, `drawLabelPill`, `RUN_COLOURS/DASHES`.
 - Copies panel: the first construction is now labelled "Original" ('Primary' names the Developed Primary).
 
+## Primary-copy (Stage D5)
+
+- Copies panel (Intersect): columns Copies · In Repeat · Extensions. "In Repeat" = `inComposition`; a tap commits
+  `withPrimaryCopy(d, key, on)` (through `asForm`: a legacy artwork starts Form Development with every other copy
+  kept). The source motif is never touched. The Original can be demoted.
+- Fair mode draws Primary-copies at alpha 0.62, reference copies at 0.3.
+- `withArrangement` (bookmark restore): a bookmark recording no `primaryCopy` flags keeps the current flags.
+
 ## Exact next step
 
-Stage D, checkpoint D5 — Primary-copy promotion/demotion: a "Repeat" switch per copy in the Intersect Copies
-panel (`withPrimaryCopy` through `asForm`, one Undo step; legacy shows all on); promoted copies drawn stronger in
-Fair mode; bookmarks without flags keep the current flags. Then D6 Repeat composition (draw the Developed
-Primary in Repeat, no doubled strokes with promoted copies, empty state), D7 Timelapse/export/regression.
+Stage D, checkpoint D6 — Repeat composition: `repeatUnit` gains the Developed Primary (drawn per lattice copy in
+`drawUnit` in the Fair default style or Repeat's stroke override; developed segments lying on a promoted copy's
+Fair piece are skipped — no doubled strokes); extent includes the developed geometry; an empty Intersect
+composition (no developed segments, no Primary-copies) shows an explanation with "Back to Intersect" / "Use
+Construct". Per-member Fill only (document joint regions). Then D7 Timelapse/export/regression.
 
 ## Commands
 

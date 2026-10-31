@@ -281,7 +281,24 @@ function baseOf(doc: Doc): Partial<NonNullable<Doc['intersection']>> {
 /** The artwork's Intersection with a restored arrangement (a bookmark): positions, turns and copy
  * settings replaced; the Developed Primary — and everything else — kept. */
 export function withArrangement(doc: Doc, copies: NonNullable<Doc['intersection']>['copies'], layout: IntersectionLayout): NonNullable<Doc['intersection']> {
+  // A bookmark saved before Primary-copies existed records none: the current ones are kept for the
+  // copies it restores (it never quietly takes a copy out of, or into, Repeat).
+  if (formMode(doc) === 'form' && !Object.values(copies).some((c) => c.primaryCopy !== undefined)) {
+    const now = doc.intersection?.copies ?? {};
+    copies = Object.fromEntries(
+      [...new Set([...Object.keys(copies), ...layout.pieces.map((p) => p.key)])].map((k) => [k, now[k]?.primaryCopy === undefined ? { ...copies[k] } : { ...copies[k], primaryCopy: now[k]!.primaryCopy }]),
+    );
+  }
   return { ...baseOf(doc), copies, layout };
+}
+
+/** The arrangement with copy `key` promoted to a Primary-copy (its whole Construct Fair motif joins the
+ * Intersect Repeat, where it stands) or demoted. A legacy artwork starts Form Development with every
+ * other copy kept in Repeat (asForm). The source motif is never touched. */
+export function withPrimaryCopy(doc: Doc, key: string, on: boolean): NonNullable<Doc['intersection']> {
+  const ix = asForm(doc);
+  ix.copies[key] = { ...ix.copies[key], primaryCopy: on };
+  return ix;
 }
 
 /** Whether instance `key` is part of the Intersect composition Repeat repeats. */

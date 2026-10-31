@@ -35,7 +35,7 @@ import { onTap } from './tap.ts';
 import { color, fairPalette, stroke } from '../render/tokens.ts';
 import { suggestedFamily, type LatticeFamily } from '../geometry/lattice.ts';
 import { rotationFractionLabel } from '../render/repeatRenderer.ts';
-import { withArrangement, asReference, intersectionCopies, layoutOf, MAX_CONSTRUCTIONS, placedAt, PRIMARY, referenceCurrent, sliderToSpread, SPREAD_SLIDER_MAX, spreadToSlider, withAddedCopy, withCopySetting, withLayout, withLock, withoutCopy, withSpreadAround, isLocked } from '../geometry/intersection.ts';
+import { inComposition, withPrimaryCopy, withArrangement, asReference, intersectionCopies, layoutOf, MAX_CONSTRUCTIONS, placedAt, PRIMARY, referenceCurrent, sliderToSpread, SPREAD_SLIDER_MAX, spreadToSlider, withAddedCopy, withCopySetting, withLayout, withLock, withoutCopy, withSpreadAround, isLocked } from '../geometry/intersection.ts';
 import { canMoveAgainst, convertPick, isPointPick, planMatchEdge, planSnap, resolvePick, type PickKind } from '../geometry/intersectionSnap.ts';
 import { PICK_REACH_PX } from '../interaction/tools/intersectionTool.ts';
 import { repeatSource, type RepeatSource } from '../geometry/repeatUnit.ts';
@@ -901,6 +901,9 @@ function showIntersectionCopiesPanel(anchor: HTMLElement, controller: AppControl
         const header = document.createElement('div');
         header.className = 'copies-header';
         popoverSectionLabel(header, 'Copies');
+        // Stage D: which constructions the Intersect Repeat repeats whole (Primary-copies), beside the
+        // Developed Primary.
+        popoverSectionLabel(header, 'In Repeat');
         popoverSectionLabel(header, 'Extensions');
         menu.appendChild(header);
         for (const copy of intersectionCopies(controller.doc)) {
@@ -928,8 +931,23 @@ function showIntersectionCopiesPanel(anchor: HTMLElement, controller: AppControl
             e.stopPropagation();
             set(copy.key, { extensions: !copy.extensions });
           });
+          const inRepeat = inComposition(controller.doc, copy.key);
+          const rep = document.createElement('button');
+          rep.className = 'toggle-switch copy-in-repeat' + (inRepeat ? ' on' : '');
+          rep.innerHTML = '<span class="toggle-knob"></span>';
+          rep.setAttribute('aria-label', `${copy.label} in Repeat ${inRepeat ? 'on' : 'off'}`);
+          rep.setAttribute('aria-pressed', String(inRepeat));
+          rep.title = 'Repeat this whole construction, where it stands, with the Developed Primary';
+          rep.addEventListener('click', (e) => {
+            e.stopPropagation();
+            controller.commit((d) => {
+              d.intersection = withPrimaryCopy(d, copy.key, !inRepeat);
+            });
+            build();
+          });
           row.appendChild(dot);
           row.appendChild(label);
+          row.appendChild(rep);
           row.appendChild(sw);
           // Any copy can be removed again (one Undo step); the Primary stays.
           const remove = document.createElement('button');

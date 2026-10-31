@@ -30,7 +30,7 @@ import { CHOICE_MARKER_R, drawLabelPill, drawNumberBadge, fanMarkers, RUN_COLOUR
 import { resolveEntityGeom } from '../geometry/kernel.ts';
 import { defaultSegmentKind, deriveSegments } from '../geometry/segments.ts';
 import { motifRadius, poseArcAngle, transformPoint, type InstancePose } from '../geometry/lattice.ts';
-import { developedSegments, intersectionBounds, intersectionCopies, type IntersectionCopy } from '../geometry/intersection.ts';
+import { developedSegments, inComposition, intersectionBounds, intersectionCopies, type IntersectionCopy } from '../geometry/intersection.ts';
 import { pickedEdge, planMatchEdge, resolvePick, type IntersectionPick, type ResolvedPick, type ShownLine } from '../geometry/intersectionSnap.ts';
 import { color, stroke } from './tokens.ts';
 
@@ -192,6 +192,8 @@ const CONSTRUCTION_ALPHA = 0.45;
 const FAIR_WIDTH = 2.8;
 /** Fair in Intersect: the copies' Fair strokes, translucent (the Developed Primary is opaque). */
 const REFERENCE_FAIR_ALPHA = 0.3;
+/** …and a Primary-copy's: in Repeat whole, so stronger — still under the opaque Developed Primary. */
+const PRIMARY_COPY_ALPHA = 0.62;
 /** The Developed Primary's one stroke style (screen px, ink, opaque). */
 const PRIMARY_WIDTH = 3.2;
 const PRIMARY_CASING = 1.6;
@@ -209,7 +211,8 @@ function edgeShown(doc: Doc, copies: IntersectionCopy[], pick: IntersectionPick)
   return { copyKey: copy.key, entityId: pick.entity, p: a, u: { x: (b.x - a.x) / len, y: (b.y - a.y) / len }, extent: [0, len] };
 }
 
-/** Fair in Intersect: each copy's Fair strokes only, translucent, in its own colour. */
+/** Fair in Intersect: each copy's Fair strokes only, in its own colour — translucent (a reference), or
+ * stronger for a Primary-copy (repeated whole with the Developed Primary). */
 function drawFairOnly(ctx: CanvasRenderingContext2D, doc: Doc, view: ViewTransform, sc: Scaffold, copies: IntersectionCopy[]): void {
   ctx.lineCap = 'round';
   ctx.lineJoin = 'round';
@@ -217,7 +220,7 @@ function drawFairOnly(ctx: CanvasRenderingContext2D, doc: Doc, view: ViewTransfo
     const fair = new Path2D();
     for (const piece of sc.pieces) if (piece.kind === 'fair') appendPiece(fair, doc, view, copy.pose, piece);
     ctx.strokeStyle = copy.colour;
-    ctx.globalAlpha = REFERENCE_FAIR_ALPHA;
+    ctx.globalAlpha = inComposition(doc, copy.key) ? PRIMARY_COPY_ALPHA : REFERENCE_FAIR_ALPHA;
     ctx.lineWidth = FAIR_WIDTH;
     ctx.stroke(fair);
   }
