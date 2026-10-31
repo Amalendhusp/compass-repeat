@@ -2402,3 +2402,34 @@ canvas.stage {
 .copy-row .toggle-switch {
   margin: 0 12px;
 }
+
+/* Stage D (D10): Repeat from an empty Intersect composition — what is missing, and the ways on. */
+.empty-composition {
+  position: absolute;
+  top: 38%;
+  left: 50%;
+  transform: translate(-50%, -50%);
+  width: min(320px, calc(100% - 32px));
+  padding: 16px 16px 14px;
+  border-radius: 16px;
+  background: var(--paper);
+  box-shadow: 0 6px 22px rgba(30, 42, 54, 0.16);
+  color: var(--ink);
+  z-index: 4;
+}
+.empty-composition-title {
+  font-size: 15px;
+  font-weight: 650;
+  margin-bottom: 6px;
+}
+.empty-composition p {
+  margin: 0 0 12px;
+  font-size: 13px;
+  line-height: 1.4;
+  color: var(--muted);
+}
+.empty-composition-actions {
+  display: flex;
+  gap: 8px;
+  flex-wrap: wrap;
+}

@@ -11,9 +11,12 @@
 // the arrangement defines the unit — never Intersect's contextual crossings, which are places to
 // build from, not geometry.
 
-import type { Doc } from '../model/types.ts';
+import type { Doc, Vec2 } from '../model/types.ts';
 import { motifExtent, type InstancePose } from './lattice.ts';
-import { repeatComposition } from './repeatComposition.ts';
+import { developedFeatures, repeatComposition, type CompositionMember } from './repeatComposition.ts';
+import { closestOn, endsOf, len, motifRuns, placePrim, sub, type Prim } from './fairGeometry.ts';
+import { developedSegments } from './intersection.ts';
+import { formEps, midOf } from './formSegments.ts';
 import { repeatSourceOf, type RepeatSourceKind } from './repeatSetup.ts';
 
 export type RepeatSource = RepeatSourceKind;
@@ -31,6 +34,10 @@ export interface RepeatUnit {
   extent: number;
   /** Changes whenever the placements do. */
   key: string;
+  /** Stage D: the Developed Primary as Repeat draws it — exact lines and arcs in the artwork's own
+   * coordinates (it stands where it was developed, about the lattice position), leaving out any that a
+   * Primary-copy already draws there (no doubled strokes, D6). Empty for a legacy artwork. */
+  developed: Prim[];
 }
 
 const cache = new WeakMap<Doc, RepeatUnit>();
@@ -40,19 +47,49 @@ export function repeatUnit(doc: Doc): RepeatUnit | null {
   if (repeatSource(doc) !== 'intersect') return null;
   let unit = cache.get(doc);
   if (!unit) {
-    // Stage B: the members come from the one composition service (repeatComposition.ts).
-    // (D1: the Developed Primary is drawn by Repeat from checkpoint D6; until then the unit lists the
-    // members that show the Construct motif.)
-    const comp = repeatComposition(doc).members.filter((m) => m.owner === 'construct');
+    // Stage B: the members come from the one composition service (repeatComposition.ts): the
+    // instances that show the Construct motif (every one, for a legacy artwork; the Original and the
+    // Primary-copies otherwise) — and, Stage D, the Developed Primary.
+    const all = repeatComposition(doc).members;
+    const comp = all.filter((m) => m.owner === 'construct');
     const members = comp.map((m) => m.pose);
-    const reach = motifExtent(doc);
+    const developed = all.some((m) => m.owner === 'developed') ? notDrawnBy(doc, developedFeatures(doc).map((f) => f.prim), comp) : [];
+    const reaches = [
+      ...members.map((m) => Math.hypot(m.translate.x, m.translate.y) + motifExtent(doc)),
+      ...developed.map((p) => reachOf(doc.frame.origin, p)),
+    ];
+    const devIds = developed.length ? `|dev:${developedSegments(doc).map((s) => s.id).join(',')}` : '';
     unit = {
       members,
       keys: comp.map((m) => m.key),
-      extent: Math.max(...members.map((m) => Math.hypot(m.translate.x, m.translate.y))) + reach,
-      key: members.map((m) => `${m.translate.x},${m.translate.y},${m.rotation}`).join(';'),
+      // Nothing to repeat (an empty composition): one motif's reach, so nothing downstream divides by zero.
+      extent: reaches.length ? Math.max(...reaches) : motifExtent(doc),
+      key: members.map((m) => `${m.translate.x},${m.translate.y},${m.rotation}`).join(';') + devIds,
+      developed,
     };
     cache.set(doc, unit);
   }
   return unit;
+}
+
+/** How far a primitive reaches from `pivot`. */
+function reachOf(pivot: Vec2, p: Prim): number {
+  if (p.k === 'seg') return Math.max(len(sub(p.a, pivot)), len(sub(p.b, pivot)));
+  return len(sub(p.c, pivot)) + p.r;
+}
+
+/** The developed segments a Primary-copy does not already draw: one lying along a member's own Fair
+ * run (ends and middle on it, same line or circle) is drawn by that member. */
+function notDrawnBy(doc: Doc, developed: Prim[], members: CompositionMember[]): Prim[] {
+  if (!members.length) return developed;
+  const pivot = doc.frame.origin;
+  const runs = motifRuns(doc);
+  const placed = members.flatMap((m) => runs.map((r) => placePrim(r.prim, pivot, m.pose)));
+  const tol = formEps(doc) * 10;
+  const along = (p: Prim, q: Prim): boolean => {
+    if (p.k !== q.k) return false;
+    if (p.k === 'arc' && q.k === 'arc' && (Math.abs(p.r - q.r) > tol || len(sub(p.c, q.c)) > tol)) return false;
+    return [...endsOf(p), midOf(p)].every((pt) => closestOn(pt, q).d <= tol);
+  };
+  return developed.filter((p) => !placed.some((q) => along(p, q)));
 }

@@ -149,13 +149,18 @@ function fitRepeatView(controller: AppController, canvas: HTMLCanvasElement, ove
   const pivot = doc.frame.origin;
   const r = motifRadius(doc);
   // From an Intersect arrangement, each lattice position holds the whole unit: every instance's frame.
-  const members = repeatUnit(doc)?.members ?? [null];
-  const discs = fitInstances(doc).flatMap((lattice) =>
-    members.map((member) => {
+  const unit = repeatUnit(doc);
+  const members = unit?.members ?? [null];
+  const discs = fitInstances(doc).flatMap((lattice) => [
+    ...members.map((member) => {
       const pose = member ? composePose(lattice, member) : lattice;
       return { x: pivot.x + pose.translate.x, y: pivot.y + pose.translate.y, r };
     }),
-  );
+    // Stage D: the Developed Primary stands about the lattice position, as far as it reaches.
+    ...(unit?.developed.length ? [{ x: pivot.x + lattice.translate.x, y: pivot.y + lattice.translate.y, r: unit.extent }] : []),
+  ]);
+  // An empty Intersect composition draws nothing: fit the lattice positions themselves.
+  if (discs.length === 0) for (const lattice of fitInstances(doc)) discs.push({ x: pivot.x + lattice.translate.x, y: pivot.y + lattice.translate.y, r });
   fitViewState(doc.repeatView, (turn) => discBounds(discs, turn), doc.frame.radius, doc.frame.origin, canvas, overlay);
   controller.notifyView();
 }

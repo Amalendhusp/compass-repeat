@@ -39,7 +39,8 @@ import { inComposition, withPrimaryCopy, withArrangement, asReference, intersect
 import { canMoveAgainst, convertPick, isPointPick, planMatchEdge, planSnap, resolvePick, type PickKind } from '../geometry/intersectionSnap.ts';
 import { PICK_REACH_PX } from '../interaction/tools/intersectionTool.ts';
 import { repeatSource, type RepeatSource } from '../geometry/repeatUnit.ts';
-import { suggestForFamily, switchRepeatSource } from '../geometry/repeatSetup.ts';
+import { repeatSourceOf, suggestForFamily, switchRepeatSource } from '../geometry/repeatSetup.ts';
+import { repeatComposition } from '../geometry/repeatComposition.ts';
 import { repeatPaint } from '../interaction/tools/repeatTool.ts';
 import { editableStroke, MAX_STROKE_PX, strokeKind, withColour, withKind, withWidth } from '../geometry/repeatStroke.ts';
 import type { PatternBy } from '../geometry/repeatColour.ts';
@@ -2861,6 +2862,32 @@ export function buildShell(
   const ownerText = document.createElement('span');
   ownerTag.append(ownerMark, ownerText);
   canvasWrap.appendChild(ownerTag);
+  // Stage D (D10): Repeat from Intersect with nothing in its composition — no Developed Primary and
+  // no construction In Repeat — says so, with the two ways on.
+  const emptyCard = document.createElement('div');
+  emptyCard.className = 'empty-composition';
+  emptyCard.setAttribute('role', 'status');
+  const emptyTitle = document.createElement('div');
+  emptyTitle.className = 'empty-composition-title';
+  emptyTitle.textContent = 'Nothing to repeat yet';
+  const emptyText = document.createElement('p');
+  emptyText.textContent = 'From Intersect, Repeat repeats the Developed Primary and any construction set In Repeat — and there is neither. Develop the Primary with Fair in Intersect, or repeat the Construct motif.';
+  const emptyActions = document.createElement('div');
+  emptyActions.className = 'empty-composition-actions';
+  const backBtn = document.createElement('button');
+  backBtn.className = 'btn-primary';
+  backBtn.textContent = 'Back to Intersect';
+  backBtn.addEventListener('click', () => {
+    opts.onSwitchWorkspace('intersection');
+    controller.setTool('fair');
+  });
+  const constructSrcBtn = document.createElement('button');
+  constructSrcBtn.className = 'btn-secondary';
+  constructSrcBtn.textContent = 'Use Construct';
+  constructSrcBtn.addEventListener('click', () => switchRepeatSource(controller, 'motif'));
+  emptyActions.append(backBtn, constructSrcBtn);
+  emptyCard.append(emptyTitle, emptyText, emptyActions);
+  canvasWrap.appendChild(emptyCard);
   function refreshOwnerTag(building: boolean): void {
     ownerTag.style.display = building ? '' : 'none';
     if (!building) return;
@@ -3418,6 +3445,7 @@ export function buildShell(
     // active instance; Select arranges the instances. Repeat has no tools.
     const building = inIntersection && controller.tool !== 'select';
     refreshOwnerTag(building);
+    emptyCard.style.display = inRepeat && repeatSourceOf(controller.doc) === 'intersect' && repeatComposition(controller.doc).members.length === 0 ? '' : 'none';
     // Phase 5.3 item 1: a panel never outlives the workspace it belongs to.
     if (controller.doc.view.workspace !== shownWorkspace) {
       shownWorkspace = controller.doc.view.workspace;

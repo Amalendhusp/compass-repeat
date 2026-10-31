@@ -37,7 +37,7 @@ import { drawnLayers, type DrawnLayer } from '../geometry/repeatStroke.ts';
 import { latticeShape } from '../geometry/latticeSnap.ts';
 import { compositionFeatures } from '../geometry/repeatComposition.ts';
 import { copyFeatures } from '../geometry/closeGap.ts';
-import type { Feature } from '../geometry/fairGeometry.ts';
+import { placePrim, type Feature } from '../geometry/fairGeometry.ts';
 import { copyShift, type LocalGap } from '../interaction/closeGapMode.ts';
 import type { FaceSig, RepeatColouring } from '../model/types.ts';
 import { color, stroke } from './tokens.ts';
@@ -476,6 +476,36 @@ function drawUnit(ctx: CanvasRenderingContext2D, doc: Doc, view: ViewTransform, 
   const skips = unitSkips(doc, flat, unit);
   const colour = doc.repeatSetup?.colour;
   unit.members.forEach((member, k) => drawCopy(ctx, doc, view, composePose(pose, member), flat, display, showFills, showStrokes, skips[k], paintFor(colour, unit.keys[k]!, group), layer));
+  if (showStrokes && unit.developed.length) drawDeveloped(ctx, doc, view, pose, unit, display, layer);
+}
+
+/** The Developed Primary at one lattice placement, in its one Primary style — ink at the Fair default
+ * width (design units, so it scales with the pattern) — or Repeat's Stroke style, like every line. */
+function drawDeveloped(ctx: CanvasRenderingContext2D, doc: Doc, view: ViewTransform, pose: InstancePose, unit: RepeatUnit, display: RepeatDisplay, layer?: DrawnLayer): void {
+  const colourOverride = layer ? layer.colour : (display.strokeColour ?? null);
+  const widthOverride = layer ? layer.width : (display.strokeWidth ?? null);
+  if (widthOverride === 0) return;
+  const pivot = doc.frame.origin;
+  const path = makePath(ctx);
+  for (const prim of unit.developed) {
+    const p = placePrim(prim, pivot, pose);
+    if (p.k === 'seg') {
+      const a = worldToScreen(view, p.a);
+      const b = worldToScreen(view, p.b);
+      path.moveTo(a.x, a.y);
+      path.lineTo(b.x, b.y);
+    } else {
+      const c = worldToScreen(view, p.c);
+      const r = p.r * view.zoom;
+      path.moveTo(c.x + r * Math.cos(p.a0), c.y + r * Math.sin(p.a0));
+      path.arc(c.x, c.y, r, p.a0, p.a0 + p.sw);
+    }
+  }
+  ctx.strokeStyle = colourOverride ?? color.ink;
+  ctx.lineWidth = (widthOverride ?? stroke.fairDefault) * view.zoom;
+  ctx.lineCap = 'round';
+  ctx.lineJoin = 'round';
+  ctx.stroke(path);
 }
 
 /**
