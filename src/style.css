@@ -2560,6 +2560,27 @@ canvas.stage {
 .space-chip.fill-action svg {
   flex: none;
 }
+/* Final sprint: while filling, Fill (on) carries the colour it applies; the row has no other choice. */
+.fill-row .space-chip.fill-action {
+  margin-left: 0;
+}
+.space-chip.fill-action.active {
+  background: var(--ink);
+  color: var(--paper);
+}
+.fill-on-dot {
+  width: 16px;
+  height: 16px;
+  border-radius: 50%;
+  margin-left: 2px;
+  box-shadow: 0 0 0 1.5px var(--paper), 0 0 0 2.5px var(--ink);
+}
+.fill-on-dot.none {
+  background: linear-gradient(135deg, transparent 45%, #c6402c 45%, #c6402c 55%, transparent 55%), var(--paper) !important;
+}
+.fill-row .fill-cue {
+  margin-left: 4px;
+}
 /* The contextual control: the Appearance icon in Repeat (not filling), the Fill colour while filling. */
 .cc-btn.as-icon .cc-dot {
   display: none;

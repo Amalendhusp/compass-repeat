@@ -4,9 +4,10 @@ Keep this short and current. It is a starting point, not a substitute for readin
 
 ## Where things are
 
-- **Branch:** `feature/ui-refinement` (UI phase, from `feature/integration-a-d` `cf5b038`). Latest commit: see
-  `git log -1`. A–D and Fill stay on `feature/integration-a-d` (unchanged).
-- **Accelerated cycle (approved 2026-10-31):** Stages A–D, one or more commits per stage, no merge/push/deploy.
+- **Branch:** `feature/final-sprint` (final development sprint, from `feature/ui-refinement` `cbb5ee4`). Latest
+  commit: see `git log -1`. UI-1–UI-4 stay on `feature/ui-refinement`; A–D and Fill on `feature/integration-a-d`.
+- **Final sprint (2026-11-01):** Stage 1 Fill · Stage 2 Appearance/UI · Stage 3 Interlacing · Stage 4 release
+  candidate; one commit (or more) per stage; no merge/push/deploy; stop for the user's iPhone review after Stage 4.
 
 | Stage | Scope | Status |
 |---|---|---|
@@ -20,6 +21,10 @@ Keep this short and current. It is a starting point, not a substitute for readin
 | UI-2 | Contextual Appearance panel (top right): construction / Fair / Fill preferences | done — "UI-2" |
 | UI-3 | Intersect: Reference into Menu; eye keeps the sliders | done — "UI-3" |
 | UI-4 | Repeat: rules row, Construct/Intersect source, Motif/Space Fill, master guide toggle | done — "UI-4" |
+| S1 | One Fill: Intersect-unit regions, no Motif/Space choice, gap marks | done — "Sprint S1" |
+| S2 | Top-left Appearance (Fill · Stroke · Background), Fill toggle, preferences in the draft | next |
+| S3 | Interlaced strokes (Single · Banded · Interlaced, over-under, crossing reversal) | — |
+| S4 | Integration, regression, iPhone release candidate | — |
 
 ## Protected — never modify, merge into, push or deploy
 
@@ -29,6 +34,7 @@ Keep this short and current. It is a starting point, not a substitute for readin
 - C1: `feature/c1-construction-colouring` `6b8e300`
 - Close Gap PoC: `feature/close-gap-poc` `f75482a`
 - Accelerated A–D + Fill: `feature/integration-a-d` `cf5b038` (A–D `cb28659`; Fill `f927427`, `4434caf`)
+- UI phase: `feature/ui-refinement` `cbb5ee4` (UI-1 `27b5ceb`, UI-2 `353c44e`, UI-3 `d86b54b`, UI-4 `cbb5ee4`)
 - `dist/phone-import.html`, `dist/plate113.json` (phone import fixtures; never delete)
 
 ## Decisions in force
@@ -55,8 +61,9 @@ Keep this short and current. It is a starting point, not a substitute for readin
   geometry; legacy artworks keep identical output; empty-state card; one Primary stroke style; no snapping to
   Developed Primary yet.
 
-- UI-4 supersedes the Fill interface below: scopes shown are Motif | Space (Pattern hidden, its data and drawing
-  kept); Fill colour/opacity live in the top-right contextual panel while filling.
+- Sprint S1 supersedes the Fill interfaces below: ONE Fill (no Motif | Space | Done). Fill chip on → tap any
+  enclosed region; the app decides region-of-the-design vs space-between-copies; Fill chip again → off. Pattern
+  stays hidden (its data and drawing kept).
 - Fill (2026-10-31): Repeat's Fill is one entry point with scopes Space | Motif | Pattern; colour and opacity
   live in Appearance → Fill (shared by all scopes). Space = an enclosed space between copies (and every one like
   it); Motif = a region of the motif in every copy; Pattern = a region in the second group (every other copy, row
@@ -66,9 +73,7 @@ Keep this short and current. It is a starting point, not a substitute for readin
 ## Known limitations
 
 - At 375 px a long selection ribbon scrolls sideways (existing pattern).
-- Form Development V1 Fill is per member: regions formed jointly by the Developed Primary and Primary-copies
-  (or by the Developed Primary alone) cannot be filled yet, and Repeat draws no fills for the Developed Primary.
-  Combined-region Fill is a separate investigation (D7).
+- (Fixed in S1: regions formed by the Developed Primary, or jointly by several Intersect members, can be filled.)
 - No snapping to the Developed Primary (D12). The Developed Primary is one style (ink); per-segment styling is not in V1.
 - A bookmark restores the arrangement and In Repeat states, never the Developed Primary (D8).
 - Copies moved after developing leave the Developed Primary where it was (by design); its segments can still
@@ -297,12 +302,55 @@ Keep this short and current. It is a starting point, not a substitute for readin
   src/interaction src/model` is empty for the whole UI phase.
 - Harness: `scratchpad/ui4-app.js`.
 
+## Sprint S1: one Fill (root cause, correction, gap marks)
+
+- **Root cause of "Not a closed region of the design" (Intersect source)** — computational, not geometric. Repeat
+  had two separate region models: Motif fill (`regionAtInRepeat`) knew only the Construct motif's own Fair faces,
+  applied member by member; Space (`spaces.ts`) traced the whole unit's faces (`unitFaces`) but used them only to
+  EXCLUDE points from Spaces. A region bounded by the Developed Primary (no Construct faces at all), or jointly by
+  several members, was therefore in neither model. Reproduced (`scratchpad/fillx-app.js`): Developed-Primary-only
+  star → every region "not closed"; Developed + Original → the developed tips unfillable and the centre filled the
+  whole square; legacy two-square star → every tap filled a whole square, never the piece tapped.
+- **Correction (smallest, no migration)**: `spaces.ts` `unitRegions(doc)` promotes those same unit faces to
+  fillable regions — traced from the exact composition features (members placed + Developed Primary, arcs finely
+  sampled as Space does), split where members cross, holes from other parts lying inside (evenodd), cached per
+  unit geometry (lattice-independent). Identity `face:` + boundary signature (which member's which piece, in order,
+  direction; `#n` only for an identical signature). Nothing flattened, merged or stored besides the colour.
+- `repeatColour.ts` `fillTargetAt` — the one tap: Construct source → motif region (as before) else Space; Intersect
+  → the unit region under the tap in the top lattice copy; if it is exactly one member's own face (area within
+  0.5 %) it keeps that face's legacy key `instance|sig` (old fills still toggle and stay tied to the construction),
+  else `face:…`; else Space. Fills go in `repeatSetup.colour.regions` (same map, same toggle/Undo); drawn by
+  `repeatRenderer.ts` `drawUnitRegionFills` over member fills, under every line, in the sprite and exports.
+- Stability: unit regions never depend on the lattice; a changed arrangement changes the signature → the fill is
+  hidden, never moved; each source keeps its own fills; legacy per-member fills are untouched and still drawn.
+- **Gap marks** (`geometry/repeatGaps.ts` `fillOpeningsAt`, read-only): only when curves cover ≥ 75 % of the turn
+  round the tap; (1) curve ends touching nothing (between copies a ≤ 2 % hair-line counts as closed, as for Space)
+  and visible from the tap; else (2) near misses: rays escaping past 3× the median distance pass between two curves
+  that do not meet → their closest points (≤ 20 % of motif radius) marked, joined by a dashed hairline — never an
+  invented endpoint. `controller.repeatGapMarks` (session; cleared by the next tap, leaving Fill, or any commit);
+  drawn screen-only as 7 px alert rings. Distinct from Close Gap (which moves a lattice arm).
+- UI: Fill chip (`colouringBtn`) toggles Fill (`repeatColourMode = 'motif'`); while on, the row is a dark Fill chip
+  carrying the current Fill colour dot (tap = finish) + "Tap any enclosed region". `spaceMode` is no longer set.
+- Tests (`scratchpad/fill1-app.js` 20/20): closed square; star tip and centre from crossing segments; Developed
+  Primary only; Developed tip + Original; Original face keeps key; joint region of two members; space between
+  copies; space between Intersect units; open square → both ends marked; crossing / X → nothing marked; tangent
+  circles → space; 4 % near miss → miss marked; wide spacing → nothing; coincident duplicate side; partly
+  overlapping sides (overlap and remainder); lens and crescent of two circles. Live (`fill1-live.js`): Developed
+  star filled in every copy by a tap, one Undo, Undo/Redo exact, same colour clears, open tap marks nothing wrongly,
+  SVG carries the fill, PNG, save → reopen keeps it; Construct: one Fill fills a motif region and a space; open
+  shape → 2 rings, no Undo step; row fits at 375 px. Plate 113 taps: region ≤ 1 ms, open-ground diagnosis ≤ 15 ms
+  (grid + angular ray buckets; was 143 ms). Suite: fingerprints identical, cancel 16/0, smoke all true, Guide
+  baseline. PNG/SVG, Timelapse (8 frames), Undo/Redo fine. (The suite's touch tests need a ≥ 1100 px viewport.)
+- Limits: a unit region that equals a member's face uses the legacy key only when the member on top there owns it;
+  an old whole-member fill under a newly split region stays (clear it with Clear in the Fill panel); hair-line
+  bridging applies between lattice copies only (not inside one unit), as before.
+
 ## Exact next step
 
-UI phase (approved 2026-10-31, Option B) UI-1 to UI-4 done on `feature/ui-refinement`; a fresh iPhone build is on
-the phone-preview server. Stop for the user's physical-device review. Do not merge, push or deploy.
-Open questions for the review: Spread's "Reference" button shares the word with the reference image; on launch an
-unsaved session shows the Start screen with Recover (one tap) rather than reopening by itself.
+Final sprint: S1 done. Next S2 (Appearance and UI finalisation): restore the top-left Appearance button in Repeat
+with Fill | Stroke | Background tabs (Fill colour/opacity there; remove the duplicate from the top-right control in
+Repeat); keep the Fill chip as the only Fill toggle; move appearance preferences (`persistPrefs` in `main.ts`) into
+the working draft only — committed to the saved record on Save / Save As. Then S3 interlacing, S4 release candidate.
 
 ## Commands
 

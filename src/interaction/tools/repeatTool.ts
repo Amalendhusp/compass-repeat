@@ -9,9 +9,10 @@ import type { AppController, ViewTransform } from '../../app/controller.ts';
 import { screenToWorld, worldToScreen } from '../../app/controller.ts';
 import { motifRadius, snapRotation } from '../../geometry/lattice.ts';
 import { dist } from '../../geometry/vec.ts';
-import { computeSpaces, spaceAt } from '../../geometry/spaces.ts';
+import { computeSpaces } from '../../geometry/spaces.ts';
+import { fillOpeningsAt } from '../../geometry/repeatGaps.ts';
 import { withAlpha } from '../../model/colour.ts';
-import { patternGroup, regionAtInRepeat, toggleRegion } from '../../geometry/repeatColour.ts';
+import { fillTargetAt, patternGroup, toggleRegion } from '../../geometry/repeatColour.ts';
 import { repeatSourceOf } from '../../geometry/repeatSetup.ts';
 import { showToast } from '../../ui/toast.ts';
 import { gapsAtTap } from '../closeGapMode.ts';
@@ -105,41 +106,6 @@ function rotateRingGesture(controller: AppController, view: ViewTransform, downS
   };
 }
 
-/** Fill · Space: a tap fills the enclosed space under it — and with it every equivalent space across
- * the tessellation (its whole class) — with the Fill colour; tapping a space that already has exactly
- * that colour (or with "No fill") clears it. Only `repeat.gapFills` changes: never Construct geometry,
- * its fills, or the lattice. A tap inside a motif says so instead. */
-function spaceTapGesture(controller: AppController, view: ViewTransform): Gesture {
-  return {
-    onMove() {},
-    onUp(sp, wasDrag) {
-      if (wasDrag) return;
-      const doc = controller.doc;
-      const topology = computeSpaces(doc);
-      const hit = spaceAt(topology, screenToWorld(view, sp));
-      if (!hit) {
-        if (regionAtInRepeat(doc, view, sp)) showToast('That’s inside a motif · choose Motif to fill it', 2400, 'warning');
-        else showToast(topology.classes.length > 0 ? 'Not an enclosed space' : 'No enclosed spaces · the copies don’t meet', 2400, 'warning');
-        return;
-      }
-      const keys = (topology.groups.get(hit.group) ?? [hit]).map((c) => c.key);
-      const paint = repeatFill(controller);
-      const now = doc.repeat.gapFills.get(hit.key);
-      if (!now && !paint) return; // "No fill" on an empty space: nothing to clear
-      const clear = !paint || now === paint;
-      controller.commit((d) => {
-        for (const k of keys) {
-          if (clear) d.repeat.gapFills.delete(k);
-          else d.repeat.gapFills.set(k, paint!);
-        }
-      });
-      // A space closed only across a hair-line gap: said once, plainly, so it is never a surprise.
-      if (!clear && hit.gap > 0) showToast(`Filled · its copies miss by ${Number(hit.gap.toFixed(2))} — under the line`, 2600);
-    },
-    onCancel() {},
-  };
-}
-
 /** The colour Repeat Fill applies next, #rrggbb (null = unfilled). */
 export const REPEAT_PAINT_DEFAULT = '#1E3A6E';
 export function repeatPaint(controller: AppController): string | null {
@@ -156,30 +122,54 @@ export function repeatFill(controller: AppController): string | null {
   return c ? withAlpha(c, repeatPaintOpacity(controller)) : null;
 }
 
-/** Fill · Motif / Pattern: a tap colours the region under it — in every copy (Motif), or, in
- * Pattern, in every copy of the group the tapped copy belongs to — or, if that region already has
- * exactly this colour there, returns it to as designed. One Undo step; only Repeat's own colouring
- * changes, never the construction or its fills. A tap in a space between copies says so instead. */
-function colourTapGesture(controller: AppController, view: ViewTransform): Gesture {
+/** Final sprint, Stage 1 — one Fill: a tap fills whatever enclosed region is under it, and the app
+ * decides what kind it is (repeatColour.ts `fillTargetAt`): a region of the design — the motif's, or
+ * the Intersect unit's, bounded by any of its members and the Developed Primary together — in every
+ * copy (or, in Pattern, in every copy of the tapped copy's group); or an enclosed space between copies,
+ * with every space like it. A region that already has exactly this colour returns to as designed (a
+ * space: unfilled). One Undo step; never the construction, its fills or the lattice. A tap in no
+ * enclosed region marks where it is open (repeatGaps.ts), changing nothing. */
+function fillTapGesture(controller: AppController, view: ViewTransform): Gesture {
   return {
     onMove() {},
     onUp(sp, wasDrag) {
       if (wasDrag) return;
       const doc = controller.doc;
-      const hit = regionAtInRepeat(doc, view, sp);
-      if (!hit) {
-        if (spaceAt(computeSpaces(doc), screenToWorld(view, sp))) showToast('That’s a space between motifs · choose Space to fill it', 2400, 'warning');
-        else showToast('Not a closed region of the design', 2200, 'warning');
+      controller.repeatGapMarks = null;
+      const target = fillTargetAt(doc, view, sp);
+      if (!target) {
+        const marks = fillOpeningsAt(doc, screenToWorld(view, sp));
+        if (marks) {
+          controller.repeatGapMarks = { ...marks, doc };
+          showToast(marks.ends.length ? 'Not closed · its open ends are marked' : 'Not closed · the lines miss where marked', 2600, 'warning');
+        } else showToast('Not an enclosed region', 2200, 'warning');
+        controller.notifyView();
+        return;
+      }
+      const paint = repeatFill(controller);
+      if (target.kind === 'space') {
+        const hit = target.space;
+        const keys = (computeSpaces(doc).groups.get(hit.group) ?? [hit]).map((c) => c.key);
+        const now = doc.repeat.gapFills.get(hit.key);
+        if (!now && !paint) return; // "No fill" on an empty space: nothing to clear
+        const clear = !paint || now === paint;
+        controller.commit((d) => {
+          for (const k of keys) {
+            if (clear) d.repeat.gapFills.delete(k);
+            else d.repeat.gapFills.set(k, paint!);
+          }
+        });
+        // A space closed only across a hair-line gap: said once, plainly, so it is never a surprise.
+        if (!clear && hit.gap > 0) showToast(`Filled · its copies miss by ${Number(hit.gap.toFixed(2))} — under the line`, 2600);
         return;
       }
       const colour = doc.repeatSetup?.colour;
-      const group = controller.repeatColourMode === 'pattern' ? patternGroup(colour, hit.i, hit.j) : 0;
-      const paint = repeatFill(controller);
+      const group = controller.repeatColourMode === 'pattern' ? patternGroup(colour, target.i, target.j) : 0;
       controller.commit((d) => {
-        d.repeatSetup = { ...(d.repeatSetup ?? { source: repeatSourceOf(d) }), colour: toggleRegion(d.repeatSetup?.colour, hit.key, paint, group) };
+        d.repeatSetup = { ...(d.repeatSetup ?? { source: repeatSourceOf(d) }), colour: toggleRegion(d.repeatSetup?.colour, target.key, paint, group) };
       });
-      // Overlaps are not regions of their own: say plainly which one was coloured.
-      if (hit.overlapped) showToast('Overlap · the region on top was coloured');
+      // Overlapping copies are not regions of their own: say plainly which one was coloured.
+      if (target.overlapped) showToast('Overlap · the region on top was coloured');
     },
     onCancel() {},
   };
@@ -226,8 +216,7 @@ export const repeatTool: ToolModule = {
       }
       return closeGapTapGesture(controller, view);
     }
-    if (controller.spaceMode) return spaceTapGesture(controller, view);
-    if (controller.repeatColourMode) return colourTapGesture(controller, view);
+    if (controller.repeatColourMode || controller.spaceMode) return fillTapGesture(controller, view);
     if (!controller.doc.repeatDisplay.handles) return null; // hidden handles are not interactive
     const doc = controller.doc;
     const pivot = doc.frame.origin;

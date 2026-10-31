@@ -570,8 +570,6 @@ function designStroke(doc: Doc): { colour: string; width: number } {
 let appearanceTab: 'stroke' | 'background' = 'stroke';
 /** Repeat Fill's scopes: a space between motifs, a region in every copy, or in the second group. */
 type FillScope = 'space' | 'motif' | 'pattern';
-/** The scope Fill returns to (session). */
-let lastFillScope: FillScope = 'motif';
 /** Which stroke layer's colours are showing in the panel (session). */
 let strokeSwatchesOpen: number | null = null;
 
@@ -2360,40 +2358,33 @@ export function buildShell(
   const colouringBtn = document.createElement('button');
   colouringBtn.className = 'space-chip fill-action';
   colouringBtn.innerHTML = `${iconSvg('fill', 16)}<span>Fill</span>`;
-  colouringBtn.title = 'Fill regions of the motif, or spaces between motifs';
+  colouringBtn.title = 'Fill: tap any enclosed region';
   colouringBtn.setAttribute('aria-label', 'Fill');
   colouringBtn.setAttribute('aria-pressed', 'false');
-  onTap(colouringBtn, () => setFillScope(fillScope() ? null : lastFillScope === 'pattern' ? 'motif' : lastFillScope));
+  onTap(colouringBtn, () => setFillScope(fillScope() ? null : 'motif'));
   repeatPanel.appendChild(ruleLine);
 
-  // While filling: ● [Space | Motif | Pattern] · Done. The dot is the Fill colour now; it opens
-  // Appearance → Fill (upper left), where the colour and opacity are chosen — never duplicated here.
+  // Final sprint, Stage 1: one Fill. While filling the row shows only Fill itself (on, with the colour
+  // it applies) and a cue: tap any enclosed region — the app works out whether it is a region of the
+  // design or a space between copies. Tap Fill again to finish. (Motif | Space | Done are gone; Pattern's
+  // fills are kept and drawn.)
   const colourKindRow = document.createElement('div');
   colourKindRow.className = 'space-row fill-row';
-  const colourKind = document.createElement('div');
-  colourKind.className = 'segmented-mini';
-  colourKind.setAttribute('role', 'group');
-  colourKind.setAttribute('aria-label', 'Fill');
-  const colourKindBtns = new Map<FillScope, HTMLButtonElement>();
-  // UI-4: Pattern (every other copy, row or column) is hidden for now — its fills are kept and drawn.
-  for (const [id, label, title] of [
-    ['motif', 'Motif', 'A region of the motif composition — in every copy'],
-    ['space', 'Space', 'A space enclosed between motifs — and every one like it'],
-  ] as const) {
-    const b = document.createElement('button');
-    b.textContent = label;
-    b.title = title;
-    onTap(b, () => setFillScope(id));
-    colourKindBtns.set(id, b);
-    colourKind.appendChild(b);
-  }
-  const colourDone = document.createElement('button');
-  colourDone.className = 'space-chip active';
-  colourDone.textContent = 'Done';
-  colourDone.setAttribute('aria-label', 'Done filling');
-  onTap(colourDone, () => setFillScope(null));
-  colourKindRow.appendChild(colourKind);
-  colourKindRow.appendChild(colourDone);
+  const fillOnBtn = document.createElement('button');
+  fillOnBtn.className = 'space-chip fill-action active';
+  fillOnBtn.innerHTML = `${iconSvg('fill', 16)}<span>Fill</span>`;
+  const fillOnDot = document.createElement('span');
+  fillOnDot.className = 'fill-on-dot';
+  fillOnBtn.appendChild(fillOnDot);
+  fillOnBtn.title = 'Finish filling';
+  fillOnBtn.setAttribute('aria-label', 'Fill — on; tap to finish');
+  fillOnBtn.setAttribute('aria-pressed', 'true');
+  onTap(fillOnBtn, () => setFillScope(null));
+  const fillCue = document.createElement('span');
+  fillCue.className = 'close-gap-cue fill-cue';
+  fillCue.textContent = 'Tap any enclosed region';
+  colourKindRow.appendChild(fillOnBtn);
+  colourKindRow.appendChild(fillCue);
   repeatPanel.appendChild(colourKindRow);
 
   // Close Gap (Stage C): picking — "Tap near a gap" · Cancel; previewing — up to three nearby gaps,
@@ -2498,12 +2489,11 @@ export function buildShell(
   function setFillScope(scope: FillScope | null): void {
     closeAnyPopover();
     if (scope === fillScope()) return;
-    if (scope) lastFillScope = scope;
     controller.spaceMode = scope === 'space';
     controller.repeatColourMode = scope === 'motif' || scope === 'pattern' ? scope : null;
+    controller.repeatGapMarks = null;
     if (scope) controller.closeGap = null;
-    if (scope === 'space') showToast('Tap a space between motifs to fill it — and every one like it');
-    if (scope === 'motif') showToast('Tap a region to fill it in every copy');
+    if (scope === 'motif' || scope === 'space') showToast('Tap any enclosed region to fill it · Fill again to finish');
     if (scope === 'pattern') {
       // Copies alternating is where a pattern starts; rows or columns are one tap away.
       const p = controller.doc.repeatSetup?.colour?.pattern;
@@ -2516,7 +2506,9 @@ export function buildShell(
     const scope = fillScope();
     colouringBtn.classList.toggle('active', !!scope);
     colouringBtn.setAttribute('aria-pressed', String(!!scope));
-    for (const [id, b] of colourKindBtns) b.classList.toggle('active', scope === id);
+    const fill = repeatFill(controller);
+    fillOnDot.style.background = fill ?? 'transparent';
+    fillOnDot.classList.toggle('none', !fill);
     const by = controller.doc.repeatSetup?.colour?.pattern?.by;
     for (const [id, b] of patternBtns) b.classList.toggle('active', by === id);
   }
@@ -3493,6 +3485,7 @@ export function buildShell(
       closeAnyPopover();
       controller.spaceMode = false; // Space belongs to one visit to Repeat, not the next
       controller.repeatColourMode = null; // nor does Colouring
+      controller.repeatGapMarks = null;
       controller.closeGap = null; // nor does Close Gap
       controller.intersectionPicks = []; // nor do Intersection's picks outlive a visit
       controller.intersectionPickKind = 'instance';

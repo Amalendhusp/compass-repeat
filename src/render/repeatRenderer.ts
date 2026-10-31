@@ -15,7 +15,7 @@ import { drawArtworkLayer, type ScreenLayers } from './underlay.ts';
 import type { Doc, Entity, RepeatDisplay, RepeatSystem, SegmentState, Vec2 } from '../model/types.ts';
 import type { AppController, ViewTransform } from '../app/controller.ts';
 import { screenToWorld, worldToScreen } from '../app/controller.ts';
-import { computeSpaces, spaceTranslations } from '../geometry/spaces.ts';
+import { computeSpaces, spaceTranslations, unitRegions } from '../geometry/spaces.ts';
 import { resolveEntityGeom } from '../geometry/kernel.ts';
 import { deriveSegments, type DerivedSegment } from '../geometry/segments.ts';
 import { computeDirectHoles, computeFairRegions, type FairRegion } from '../geometry/regions.ts';
@@ -43,6 +43,7 @@ import type { FaceSig, RepeatColouring } from '../model/types.ts';
 import { color, stroke } from './tokens.ts';
 import { makePath } from './svgContext.ts';
 import type { ArtworkExport } from './renderer.ts';
+import type { GapMarks } from '../geometry/repeatGaps.ts';
 
 function appendTransformedLoop(path: Path2D, view: ViewTransform, pivot: Vec2, pose: InstancePose, worldPts: Vec2[]): void {
   if (worldPts.length === 0) return;
@@ -476,7 +477,67 @@ function drawUnit(ctx: CanvasRenderingContext2D, doc: Doc, view: ViewTransform, 
   const skips = unitSkips(doc, flat, unit);
   const colour = doc.repeatSetup?.colour;
   unit.members.forEach((member, k) => drawCopy(ctx, doc, view, composePose(pose, member), flat, display, showFills, showStrokes, skips[k], paintFor(colour, unit.keys[k]!, group), layer));
+  if (showFills) drawUnitRegionFills(ctx, doc, view, pose, display, colour, group);
   if (showStrokes && unit.developed.length) drawDeveloped(ctx, doc, view, pose, unit, display, layer);
+}
+
+/** Final sprint, Stage 1: the Intersect unit's own regions (spaces.ts `unitRegions` — bounded by any
+ * members and the Developed Primary together) with a Fill colour, over the members' own fills and under
+ * every line. Effective opacity: the colour's own × Repeat's Motif fills strength, as for motif regions. */
+function drawUnitRegionFills(ctx: CanvasRenderingContext2D, doc: Doc, view: ViewTransform, pose: InstancePose, display: RepeatDisplay, colour: RepeatColouring | undefined, group: 0 | 1): void {
+  if (!colouringInUse(colour)) return;
+  const pivot = doc.frame.origin;
+  let any = false;
+  for (const r of unitRegions(doc)) {
+    const c = regionColour(colour, r.key, group);
+    if (!c) continue;
+    if (!any) ctx.globalAlpha = display.fillOpacity;
+    any = true;
+    const path = makePath(ctx);
+    appendTransformedLoop(path, view, pivot, pose, r.loop);
+    for (const h of r.holes) appendTransformedLoop(path, view, pivot, pose, h);
+    ctx.fillStyle = c;
+    ctx.fill(path, 'evenodd');
+  }
+  if (any) ctx.globalAlpha = 1;
+}
+
+/** Fill's gap marks (repeatGaps.ts): small rings at open ends, or both sides of a near miss joined by a
+ * dashed hairline. Screen only, never exported; they stay until the next tap or any change. */
+function drawGapMarks(ctx: CanvasRenderingContext2D, marks: GapMarks, view: ViewTransform): void {
+  ctx.save();
+  const ring = (w: Vec2) => {
+    const s = worldToScreen(view, w);
+    ctx.beginPath();
+    ctx.arc(s.x, s.y, 7, 0, Math.PI * 2);
+    ctx.fillStyle = color.paper;
+    ctx.globalAlpha = 0.85;
+    ctx.fill();
+    ctx.globalAlpha = 1;
+    ctx.lineWidth = 2.5;
+    ctx.strokeStyle = color.alert;
+    ctx.stroke();
+    ctx.beginPath();
+    ctx.arc(s.x, s.y, 2, 0, Math.PI * 2);
+    ctx.fillStyle = color.alert;
+    ctx.fill();
+  };
+  for (const n of marks.necks) {
+    const a = worldToScreen(view, n.a);
+    const b = worldToScreen(view, n.b);
+    ctx.beginPath();
+    ctx.moveTo(a.x, a.y);
+    ctx.lineTo(b.x, b.y);
+    ctx.setLineDash([3, 3]);
+    ctx.lineWidth = 1.5;
+    ctx.strokeStyle = color.alert;
+    ctx.stroke();
+    ctx.setLineDash([]);
+    ring(n.a);
+    ring(n.b);
+  }
+  for (const e of marks.ends) ring(e);
+  ctx.restore();
 }
 
 /** The Developed Primary at one lattice placement, in its one Primary style — ink at the Fair default
@@ -695,6 +756,8 @@ export function renderRepeat(ctx: CanvasRenderingContext2D, controller: AppContr
     if (!controller.closeGap) drawRotationRing(ctx, controller, view);
   }
   if (gap) drawCloseGapInset(ctx, doc, view, gap);
+  const marks = exp ? null : controller.repeatGapMarks;
+  if (marks && marks.doc === doc && (controller.repeatColourMode || controller.spaceMode)) drawGapMarks(ctx, marks, view);
 
   ctx.restore();
   return instances.length;

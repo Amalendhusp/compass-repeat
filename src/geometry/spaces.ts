@@ -196,7 +196,7 @@ interface Face {
 
 /** Every bounded face of the arrangement of `edges` (pieces a→b in their curve's direction).
  * `bridgeGap` > 0: hair-line gaps between different lattice copies up to that wide are bridged. */
-function traceFaces(arr: Arrangement, edges: Edge[], tol: number, cell: number, bridgeGap = 0): Face[] {
+function traceFaces(arr: Arrangement, edges: Edge[], tol: number, cell: number, bridgeGap = 0, outers?: Vec2[][]): Face[] {
   const { xs, ys } = arr;
   // Index pieces by grid cell (bbox inflated by tol).
   const cellsOf = (e: { a: number; b: number }) => {
@@ -340,6 +340,7 @@ function traceFaces(arr: Arrangement, edges: Edge[], tol: number, cell: number, 
       cy += (p.y + q.y) * cr;
     }
     area /= 2;
+    if (area < 0 && outers) outers.push(loop); // a connected piece's outer boundary (a hole, if it lies in a face)
     if (area <= 0) continue; // the unbounded outside of a connected piece — background, never a Space
     let gap = 0;
     for (const he of boundary) if (he.sub.src.bridge) gap = Math.max(gap, Math.hypot(xs[he.to]! - xs[he.from]!, ys[he.to]! - ys[he.from]!));
@@ -768,4 +769,111 @@ export function spaceTranslations(c: SpaceClass, box: { minX: number; minY: numb
     }
   }
   return out;
+}
+
+// ---- Final sprint, Stage 1: the Intersect unit's own regions, fillable ----
+//
+// Cause of "Not a closed region of the design" with the Intersect source: Repeat's Motif fill knew only
+// the Construct motif's own faces, applied member by member — so a region bounded by the Developed
+// Primary, or jointly by several members, belonged to no member, and Space (above) counted it as part
+// of the unit and left it out. Neither could fill it. These are exactly the unit's faces (`unitFaces`,
+// already traced for Space): each is now a region of its own, known by which members' which curves bound
+// it, in order (`signature`) — never by where it is — so lattice spacing never moves it, and a changed
+// arrangement hides its fill rather than moving it elsewhere. Nothing is merged, flattened or stored.
+
+export interface UnitRegion {
+  /** Stored identity: `face:` + the boundary signature (`#n` only if two faces read the same). */
+  key: string;
+  /** Boundary, in the unit's own coordinates (lattice copy 0). */
+  loop: Vec2[];
+  /** Other connected parts of the unit lying directly inside it. */
+  holes: Vec2[][];
+  area: number;
+}
+
+export const UNIT_REGION_PREFIX = 'face:';
+
+function loopArea(loop: Vec2[]): number {
+  let a = 0;
+  for (let k = 0; k < loop.length; k++) {
+    const p = loop[k]!;
+    const q = loop[(k + 1) % loop.length]!;
+    a += p.x * q.y - q.x * p.y;
+  }
+  return a / 2;
+}
+
+const unitByDoc = new WeakMap<Doc, UnitRegion[]>();
+let unitLast: { key: string; regions: UnitRegion[] } | null = null;
+
+/** The Intersect unit's regions (empty for the Construct source) — cached like the Spaces. */
+export function unitRegions(doc: Doc): UnitRegion[] {
+  const hit = unitByDoc.get(doc);
+  if (hit) return hit;
+  if (repeatSourceOf(doc) !== 'intersect') {
+    unitByDoc.set(doc, []);
+    return [];
+  }
+  const R = motifRadius(doc);
+  const tol = R * 0.003;
+  const strokes = unitStrokes(doc, tol);
+  // The unit alone: the lattice never changes it (so dragging or spacing never recomputes it).
+  const q = R * 1e-6;
+  const key = ['unit-regions', Math.round(doc.frame.origin.x / q), Math.round(doc.frame.origin.y / q), Math.round(doc.frame.radius / q), ...strokes.flatMap((s) => [s.entityId, ...s.pts.flatMap((p) => [Math.round(p.x / q), Math.round(p.y / q)])])].join(',');
+  let regions: UnitRegion[];
+  if (unitLast?.key === key) regions = unitLast.regions;
+  else {
+    const E = repeatUnit(doc)?.extent ?? motifExtent(doc);
+    const cell = Math.max(E / 6, tol * 20);
+    const arr = new Arrangement(tol);
+    const edges: Edge[] = [];
+    for (const s of strokes) {
+      const src: Source = { i: 0, j: 0, entityId: s.entityId };
+      let prev = arr.vertex(s.pts[0]!);
+      for (let k = 1; k < s.pts.length; k++) {
+        const next = arr.vertex(s.pts[k]!);
+        if (next !== prev) edges.push({ a: prev, b: next, src, copy: s.member, lat: 0 });
+        prev = next;
+      }
+    }
+    const outers: Vec2[][] = [];
+    const faces = traceFaces(arr, edges, tol, cell, 0, outers).filter((f) => (2 * f.area) / perimeter(f.loop) >= R * 0.002);
+    const seen = new Map<string, number>();
+    // Faces in a fixed order (by centroid), so a repeated signature always gets the same ordinal.
+    faces.sort((p, q) => p.centroid.y - q.centroid.y || p.centroid.x - q.centroid.x);
+    regions = faces.map((f) => {
+      const sig = signature(f, false);
+      const n = (seen.get(sig) ?? 0) + 1;
+      seen.set(sig, n);
+      return { key: `${UNIT_REGION_PREFIX}${sig}${n > 1 ? `#${n}` : ''}`, loop: f.loop, holes: [], area: f.area };
+    });
+    // A part of the unit lying inside a face (not touching it) is a hole in that face's fill.
+    const bySize = [...regions].sort((p, q) => p.area - q.area);
+    for (const o of outers) {
+      const a = Math.abs(loopArea(o));
+      if (a < R * R * 1e-5) continue; // open lines alone enclose nothing
+      const host = bySize.find((r) => r.area > a * (1 + 1e-6) && pointInPolygon(r.loop, o[0]!));
+      if (host) host.holes.push(o);
+    }
+  }
+  unitLast = { key, regions };
+  unitByDoc.set(doc, regions);
+  return regions;
+}
+
+/** The unit region containing a point given in the unit's own coordinates (smallest wins). */
+export function unitRegionAt(regions: UnitRegion[], p: Vec2): UnitRegion | null {
+  let found: UnitRegion | null = null;
+  for (const r of regions) {
+    if (found && r.area >= found.area) continue;
+    if (!pointInPolygon(r.loop, p)) continue;
+    if (r.holes.some((h) => pointInPolygon(h, p))) continue;
+    found = r;
+  }
+  return found;
+}
+
+/** What Repeat repeats as polylines (exported for the Fill gap diagnosis). */
+export function repeatStrokes(doc: Doc): { id: string; pts: Vec2[] }[] {
+  return strokesOf(doc, motifRadius(doc) * 0.003).map((s) => ({ id: s.entityId, pts: s.pts }));
 }

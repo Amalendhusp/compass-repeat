@@ -21,6 +21,8 @@ import { screenToWorld, type ViewTransform } from '../app/controller.ts';
 import { computeFairRegions, findRegionAt } from './regions.ts';
 import { composePose, visibleInstances, type InstancePose } from './lattice.ts';
 import { repeatUnit } from './repeatUnit.ts';
+import { computeSpaces, spaceAt, unitRegionAt, unitRegions, type SpaceClass } from './spaces.ts';
+import { repeatSourceOf } from './repeatSetup.ts';
 
 export type PatternBy = NonNullable<RepeatColouring['pattern']>['by'];
 
@@ -61,7 +63,7 @@ export function colouringInUse(colour: RepeatColouring | undefined): boolean {
 }
 
 /** A point of a copy back in the construction's own coordinates (transformPoint, undone). */
-function intoMotif(pivot: Vec2, pose: InstancePose, w: Vec2): Vec2 {
+export function intoMotif(pivot: Vec2, pose: InstancePose, w: Vec2): Vec2 {
   const dx = w.x - pivot.x - pose.translate.x;
   const dy = w.y - pivot.y - pose.translate.y;
   const c = Math.cos(-pose.rotation);
@@ -81,6 +83,8 @@ export interface RegionHit {
   /** Another copy or instance has a region under the same spot too: an overlap, which is not a
    * region of its own (only the source's own faces are) — the one on top was found. */
   overlapped: boolean;
+  /** The region's area (artwork units²). */
+  area: number;
 }
 
 /** The region under a canvas point in Repeat (paper px): the copy drawn on top there, and its
@@ -104,7 +108,7 @@ export function regionAtInRepeat(doc: Doc, view: ViewTransform, paper: Vec2): Re
         found.overlapped = true;
         return found;
       }
-      found = { key: regionKey(m.key, r.sig), sig: r.sig, instanceKey: m.key, i: pose.i, j: pose.j, overlapped: false };
+      found = { key: regionKey(m.key, r.sig), sig: r.sig, instanceKey: m.key, i: pose.i, j: pose.j, overlapped: false, area: r.areaWorld };
     }
   }
   return found;
@@ -127,4 +131,44 @@ export function toggleRegion(colour: RepeatColouring | undefined, key: string, p
     else regions[key] = paint;
   }
   return next;
+}
+
+/**
+ * Final sprint, Stage 1 — one Fill: what a tap in Repeat fills, decided here rather than by the
+ * designer. The region of the design under the tap (in the copy drawn on top), else the enclosed space
+ * between copies, else nothing (then the caller looks for the opening).
+ *
+ * - Construct source: the motif's own region (as Motif fill always did), else a Space.
+ * - Intersect source: the unit's own region under the tap (spaces.ts `unitRegions`: bounded by any
+ *   members and the Developed Primary together). When that region is exactly one member's own face, it
+ *   keeps that face's existing key (`instance|signature`), so fills made before keep working and stay
+ *   tied to the construction; otherwise it is known by its `face:` key. Else a Space.
+ */
+export type FillTarget =
+  | { kind: 'region'; key: string; i: number; j: number; overlapped: boolean }
+  | { kind: 'space'; space: SpaceClass };
+
+export function fillTargetAt(doc: Doc, view: ViewTransform, paper: Vec2): FillTarget | null {
+  const w = screenToWorld(view, paper);
+  if (repeatSourceOf(doc) === 'intersect') {
+    const regions = unitRegions(doc);
+    if (regions.length) {
+      const pivot = doc.frame.origin;
+      const unit = repeatUnit(doc);
+      const poses = visibleInstances(doc, view, unit?.extent);
+      for (let n = poses.length - 1; n >= 0; n--) {
+        const pose = poses[n]!;
+        const r = unitRegionAt(regions, intoMotif(pivot, pose, w));
+        if (!r) continue;
+        const member = regionAtInRepeat(doc, view, paper);
+        if (member && member.i === pose.i && member.j === pose.j && Math.abs(member.area - r.area) <= r.area * 5e-3) return { kind: 'region', key: member.key, i: pose.i, j: pose.j, overlapped: false };
+        return { kind: 'region', key: r.key, i: pose.i, j: pose.j, overlapped: false };
+      }
+    }
+  } else {
+    const hit = regionAtInRepeat(doc, view, paper);
+    if (hit) return { kind: 'region', key: hit.key, i: hit.i, j: hit.j, overlapped: hit.overlapped };
+  }
+  const space = spaceAt(computeSpaces(doc), w);
+  return space ? { kind: 'space', space } : null;
 }
