@@ -2538,3 +2538,11 @@ canvas.stage {
   width: 32px;
   height: 32px;
 }
+
+/* UI-3: which strength each eye slider sets — the reference image's or the artwork's over it. */
+.vslider-caption {
+  font-size: 9.5px;
+  line-height: 1;
+  letter-spacing: 0.02em;
+  color: var(--muted);
+}

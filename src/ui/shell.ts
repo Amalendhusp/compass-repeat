@@ -330,7 +330,7 @@ function panelSegmented<T extends string>(parent: HTMLElement, options: { id: T;
  * A quiet vertical slider for the canvas's edge (0–1, bottom to top): a finger anywhere on its
  * track sets the value there and follows the drag; arrow keys step it. `icon` names it at the top.
  */
-function verticalSlider(label: string, icon: string, min: number, get: () => number, set: (v: number) => void): { el: HTMLElement; refresh: () => void } {
+function verticalSlider(label: string, icon: string, min: number, get: () => number, set: (v: number) => void, caption?: string): { el: HTMLElement; refresh: () => void } {
   const el = document.createElement('div');
   el.className = 'vslider';
   const head = document.createElement('span');
@@ -355,6 +355,13 @@ function verticalSlider(label: string, icon: string, min: number, get: () => num
   el.appendChild(head);
   el.appendChild(track);
   el.appendChild(value);
+  if (caption) {
+    // UI-3: a word under the value, so the image's strength and the artwork's are told apart.
+    const cap = document.createElement('span');
+    cap.className = 'vslider-caption';
+    cap.textContent = caption;
+    el.appendChild(cap);
+  }
   const show = (v: number) => {
     const pct = Math.round(v * 100);
     // The thumb travels within the track (its centre 9 px in from either end), never past it.
@@ -1785,6 +1792,9 @@ export function buildShell(
         { label: 'Open…', onSelect: () => opts.onOpen() },
         { label: 'Save', onSelect: () => opts.onSave() },
         { label: 'Save As…', onSelect: () => opts.onSaveAs() },
+        // UI-3: the reference image (Reference Library, import, Transform, Lock, Remove, this
+        // workspace's visibility and strength) — formerly the image button on the canvas row.
+        { label: 'Reference image…', divided: true, onSelect: () => openReferencePanel() },
         // UI-1: the point settings are kept (with their saved values) but not offered to ordinary
         // users — only with ?dev in the address, for internal testing.
         ...(controller.doc.view.workspace === 'repeat' || !DEV_MENU
@@ -2069,11 +2079,11 @@ export function buildShell(
     controller.doc.underlayView = withUnderlayView(controller.doc, ws, { ...patch, visible: true });
     controller.notifyView();
     refreshReferenceButtons();
-    if (openPopoverAnchor === referencePanelBtn) openReferencePanel(); // an open panel follows
+    if (referencePanelShown()) openReferencePanel(); // an open panel follows
   };
   const opacitySliders = [
-    verticalSlider('Reference opacity', iconSvg('reference', 16), 0, () => underlayViewOf(controller.doc, controller.doc.view.workspace).referenceOpacity, (x) => setOpacity({ referenceOpacity: x })),
-    verticalSlider('Artwork opacity', iconSvg('circle', 16), 0.05, () => underlayViewOf(controller.doc, controller.doc.view.workspace).artworkOpacity, (x) => setOpacity({ artworkOpacity: x })),
+    verticalSlider('Reference opacity', iconSvg('reference', 16), 0, () => underlayViewOf(controller.doc, controller.doc.view.workspace).referenceOpacity, (x) => setOpacity({ referenceOpacity: x }), 'Image'),
+    verticalSlider('Artwork opacity', iconSvg('circle', 16), 0.05, () => underlayViewOf(controller.doc, controller.doc.view.workspace).artworkOpacity, (x) => setOpacity({ artworkOpacity: x }), 'Artwork'),
   ];
   for (const sl of opacitySliders) opacityColumn.appendChild(sl.el);
   canvasWrap.appendChild(opacityColumn);
@@ -2096,7 +2106,9 @@ export function buildShell(
     if (opacityOpen) for (const sl of opacitySliders) sl.refresh();
   }
   let eyeShows: boolean | null = null;
-  const openReferencePanel = () => showReferencePanel(referencePanelBtn, controller, { onChange: refreshReferenceButtons, startTransform });
+  // UI-3: opened from the Menu (anchored there); the canvas row keeps only the eye.
+  const openReferencePanel = () => showReferencePanel(menuBtn, controller, { onChange: refreshReferenceButtons, startTransform });
+  const referencePanelShown = () => openPopoverAnchor === menuBtn && !!document.querySelector('.popover-menu.reference-panel');
   onTap(referenceEyeBtn, () => {
     opacityOpen = !opacityOpen;
     refreshReferenceButtons();
@@ -2221,7 +2233,7 @@ export function buildShell(
   utilRight.className = 'util-right';
   utilRight.appendChild(handlesBtn);
   utilRight.appendChild(referenceEyeBtn);
-  utilRight.appendChild(referencePanelBtn);
+  // UI-3: the Reference image button left the canvas row for the Menu (Reference image…).
   utilRight.appendChild(fitBtn);
 
   utilRow.appendChild(undoRedoPill);

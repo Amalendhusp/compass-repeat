@@ -18,8 +18,8 @@ Keep this short and current. It is a starting point, not a substitute for readin
 | Fill | Enclosed-space detection + Fill interface (after the user's device test, 2026-10-31) | done — F1, F2 (see `git log` "Fill F") |
 | UI-1 | Working draft vs saved artworks; Recover last session; Menu simplified | done — see `git log` "UI-1" |
 | UI-2 | Contextual Appearance panel (top right): construction / Fair / Fill preferences | done — "UI-2" |
-| UI-3 | Intersect: Reference into Menu; eye keeps the sliders | next |
-| UI-4 | Repeat: rules row, Construct/Intersect source, Motif/Space Fill, master guide toggle | pending |
+| UI-3 | Intersect: Reference into Menu; eye keeps the sliders | done — "UI-3" |
+| UI-4 | Repeat: rules row, Construct/Intersect source, Motif/Space Fill, master guide toggle | next |
 
 ## Protected — never modify, merge into, push or deploy
 
@@ -251,11 +251,29 @@ Keep this short and current. It is a starting point, not a substitute for readin
 - Not in UI-2: the swatch is Construct-only (Intersect's linked Line/Circle/Arc still draw in the construction colour
   set in Construct).
 
+## UI-3: Reference into the Menu
+
+- The canvas-row image button (`referencePanelBtn`, `.reference-btn`) is no longer added, in any workspace. The
+  same panel (`showReferencePanel`: this workspace's Show / Reference % / Artwork %, Transform…, Remove from
+  artwork, Reference Library with Edit, + Add to library, + Image for this artwork only) opens from Menu →
+  **Reference image…**, anchored at the Menu button. Nothing about references or their storage changed.
+- The eye stays on the canvas row (only while the artwork has a reference); it shows / hides the two right-hand
+  vertical sliders, now captioned **Image** and **Artwork** (`verticalSlider(..., caption)`).
+- Bookmarks (Snapshots) untouched. Spread and its **Reference** text button (sets Spread's reference arrangement —
+  a different thing from the reference image) stay exactly where they were; the shared word is flagged for review.
+- Old git-ignored harness files `anchor-app.js`, `modal-app.js`, `refxf-app.js` still tap `.reference-btn`
+  (not part of the suite): open the panel through Menu → Reference image… instead.
+- Results (375 px): Menu shows New · Open… · Save · Save As… · Reference image…; panel opens, a library image
+  applied, Transform → Move image | Anchors | Done, Done locks; eye toggles the captioned sliders; reference kept.
+  Intersect: bookmark panel opens; Fair tap develops the Primary (one Undo); save/reopen keeps it; PNG/SVG,
+  Timelapse, Undo/Redo fine. Suite identical / 16/0 / all true / Guide baseline; no stored record changed.
+
 ## Exact next step
 
-UI phase (approved 2026-10-31, Option B — contextual Appearance panel): UI-1, UI-2 done; next UI-3 (Intersect:
-Reference Library and underlay controls into the main Menu, remove the bottom Reference button, keep the eye +
-right-hand sliders, bookmarks untouched, Spread stays), then UI-4, then a fresh iPhone build and stop for the
+UI phase (approved 2026-10-31, Option B — contextual Appearance panel): UI-1, UI-2, UI-3 done; next UI-4 (Repeat:
+rules row Uniform | Alternate | Mirror only, Fill separate; source labels Construct | Intersect; Fill = Motif |
+Space with Pattern hidden (data kept); Fill colour/opacity only in the top-right panel; Background stays an
+appearance setting; top-right master show/hide for handles + boundary + guides; Close Gap unchanged), then a fresh iPhone build and stop for the
 user's device review. Do not merge, push or deploy.
 
 ## Commands
