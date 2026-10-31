@@ -17,8 +17,8 @@ Keep this short and current. It is a starting point, not a substitute for readin
 | D | Intersect Form Development (independent Primary) | done — D1–D7 (see `git log` "Stage D") |
 | Fill | Enclosed-space detection + Fill interface (after the user's device test, 2026-10-31) | done — F1, F2 (see `git log` "Fill F") |
 | UI-1 | Working draft vs saved artworks; Recover last session; Menu simplified | done — see `git log` "UI-1" |
-| UI-2 | Contextual Appearance panel (top right): construction / Fair / Fill preferences | next |
-| UI-3 | Intersect: Reference into Menu; eye keeps the sliders | pending |
+| UI-2 | Contextual Appearance panel (top right): construction / Fair / Fill preferences | done — "UI-2" |
+| UI-3 | Intersect: Reference into Menu; eye keeps the sliders | next |
 | UI-4 | Repeat: rules row, Construct/Intersect source, Motif/Space Fill, master guide toggle | pending |
 
 ## Protected — never modify, merge into, push or deploy
@@ -37,7 +37,7 @@ Keep this short and current. It is a starting point, not a substitute for readin
 - Construction colour: optional `colour` on line/circle entities (whole element, incl. dashed extension
   tails; trimmed circle = one colour). Frame never coloured. Fair colours independent. Intersect keeps
   instance colours (its magnifiers stay grey). Repeat never draws construction.
-- Stage A: top-bar swatch beside Menu (Construct only). Nothing selected → sets
+- Stage A (moved by UI-2 to the top RIGHT, beside Share, and made contextual): top-bar swatch (Construct only). Nothing selected → sets
   `doc.toolPrefs.constructionColour` (a drawing preference: not Undo, saved with the artwork); new
   entities inherit it in `addEntity` / `addArc` (`doc.ts`). Construction selected (Select tool) → the same
   swatch recolours the whole selected elements (one Undo step) and never changes the drawing colour; a
@@ -230,12 +230,33 @@ Keep this short and current. It is a starting point, not a substitute for readin
   stored artwork records changed during the suite (previously autosave rewrote them). PNG/SVG export, Timelapse
   (8 frames, playable), Undo/Redo fine; prompt checked at 375 px.
 
+## UI-2: contextual Appearance control (Option B)
+
+- `shell.ts` `ccBtn` / `showConstructAppearance` (`.appearance-panel`): Construct only, in `rightSide` before Share.
+  Kind follows the tool: Fair → "Fair colour · new strokes" (Default = ink) + "Fair width" slider (1–8, default
+  2.5); Fill → "Fill colour · next fills" + "Fill opacity" (10–100 %, default 100 %); anything else →
+  "Construction · new lines, circles, arcs" (Default + palette + custom). The dot shows that kind's colour (Fill
+  with its opacity). Select with construction selected → also a "Selected · whole line/circle/N…" section
+  (recolour = one Undo step, `setEntityColour`), above the drawing section; the drawing colour never changes from it.
+- The Fair tool's and Construct Fill tool's ribbon Colour / Width / Opacity chips are gone (the ribbon hides when
+  empty). The Select ribbon's chips for a selected Fair stroke / region (recolour that selection) are unchanged.
+- Preferences (`toolPrefs.constructionColour`, `fairDefaults`, `fillDefaults`, `repeatPaint`) are never Undo steps
+  and never count as unsaved changes; `main.ts` `persistPrefs` writes just those fields into the saved record at
+  once (`onPrefs`), so reopening a saved artwork remembers them without saving its edits.
+- Results (375 px): independent kinds; no Undo steps for preferences; new line / circle take the construction colour;
+  Fair stroke #C98A2C @ 4 px; Fill `#C98A2C80` at 50 %; selection recolour one Undo (Undo/Redo exact) and the
+  drawing colour untouched; prefs survive Don't-save + reopen; rows fit at 375 px. Suite: fingerprints identical,
+  cancel 16/0, smoke all true, Guide baseline, no stored record changed; PNG/SVG, Timelapse (1031 frames) fine.
+  (Plate 113's fill preference was changed during the test and put back to `#1E3A6E` / 100 %.)
+- Not in UI-2: the swatch is Construct-only (Intersect's linked Line/Circle/Arc still draw in the construction colour
+  set in Construct).
+
 ## Exact next step
 
-UI phase (approved 2026-10-31, Option B — contextual Appearance panel): UI-1 done; next UI-2 (move the
-construction swatch top-right as the contextual Appearance control: Line/Circle/Arc colour, Fair colour + width
-(default 2.5), Fill colour + opacity (default 100 %); remove the lower Fair Colour/Width chips), then UI-3, UI-4,
-then a fresh iPhone build and stop for the user's device review. Do not merge, push or deploy.
+UI phase (approved 2026-10-31, Option B — contextual Appearance panel): UI-1, UI-2 done; next UI-3 (Intersect:
+Reference Library and underlay controls into the main Menu, remove the bottom Reference button, keep the eye +
+right-hand sliders, bookmarks untouched, Spread stays), then UI-4, then a fresh iPhone build and stop for the
+user's device review. Do not merge, push or deploy.
 
 ## Commands
 

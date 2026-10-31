@@ -2525,3 +2525,16 @@ canvas.stage {
 .fill-row {
   flex-wrap: nowrap;
 }
+
+/* UI-2: the contextual Appearance panel (top right) — each colour row on one line at phone width. */
+.popover-menu.appearance-panel {
+  max-width: min(360px, calc(100vw - 16px));
+}
+.appearance-panel .swatch-row {
+  flex-wrap: nowrap;
+  gap: 5px;
+}
+.appearance-panel .swatch {
+  width: 32px;
+  height: 32px;
+}

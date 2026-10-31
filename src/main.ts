@@ -240,6 +240,7 @@ function boot(doc: Doc, opts: { fitToScreen: boolean; history?: { undo: Doc[]; r
     onSave: () => saveArtwork(),
     onSaveAs: () => saveAsNewArtwork(),
     unsaved: () => isDirty(),
+    onPrefs: () => void persistPrefs(),
     getView: () => getView(),
     getToolView: () => getToolView(),
     // vNext Phase 4B: Timelapse reads the history after every change so far is recorded.
@@ -564,6 +565,23 @@ async function writeSaved(s: NonNullable<typeof session>): Promise<void> {
   s.tracker.rebase(s.tracker.hash(doc));
   s.autosave.flush(); // the draft now matches the saved artwork
   s.controller.notify();
+}
+
+/** UI-2: drawing preferences (construction, Fair and Fill colours, Fair width, Fill opacity, Repeat's
+ * fill colour) belong to the artwork but are not artwork: a change is kept in the saved version
+ * straight away — only those fields — so reopening it remembers them without saving its edits. */
+async function persistPrefs(): Promise<void> {
+  const s = session;
+  if (!s || !s.savedBase || guideReturn) return;
+  const doc = s.controller.doc;
+  const record = await loadDocument(doc.id);
+  if (!record?.snapshot) return;
+  const snap = record.snapshot;
+  snap.toolPrefs = { ...snap.toolPrefs, constructionColour: doc.toolPrefs?.constructionColour ?? null };
+  snap.fairDefaults = { ...doc.fairDefaults };
+  snap.fillDefaults = { ...doc.fillDefaults };
+  if (doc.repeatPaint) snap.repeatPaint = { ...doc.repeatPaint };
+  await saveDocument(record);
 }
 
 /** Save: the first time, the artwork gets a name; after that it simply writes. `then` runs once

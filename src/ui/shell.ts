@@ -286,6 +286,14 @@ function popoverToggleRow(menu: HTMLElement, label: string, get: () => boolean, 
   return { refresh };
 }
 
+/** UI-2: a quiet one-line note at the foot of a panel section. */
+function panelHint(menu: HTMLElement, text: string): void {
+  const el = document.createElement('div');
+  el.className = 'popover-hint';
+  el.textContent = text;
+  menu.appendChild(el);
+}
+
 function popoverSectionLabel(menu: HTMLElement, text: string): void {
   const el = document.createElement('div');
   el.className = 'popover-section-label';
@@ -1741,6 +1749,8 @@ export function buildShell(
     onSaveAs: () => void;
     /** UI-1: whether the open artwork has changes not saved (named in the menu's heading). */
     unsaved: () => boolean;
+    /** UI-2: a drawing preference changed (the saved artwork keeps it too). */
+    onPrefs?: () => void;
     onSwitchWorkspace: (ws: 'construct' | 'intersection' | 'repeat') => void;
     getView: () => ViewTransform;
     /** The view the single-finger tool works in (Intersect: the active instance's) — where tool-placed
@@ -1788,16 +1798,20 @@ export function buildShell(
   );
   leftSide.appendChild(menuBtn);
 
-  // Stage A: construction colour, beside the menu in Construct. With construction selected (Select),
-  // it recolours that selection — whole lines and circles — and leaves the drawing colour alone;
-  // otherwise it is the colour new lines, circles and arcs are drawn in. Fair colours are separate.
+  // UI-2 (Option B): the contextual Appearance control — a swatch at the top right, beside Share. Its
+  // panel depends on the tool in hand: Line / Circle / Arc (and Select, Divide) → the construction
+  // colour; Fair → Fair colour and width; Fill → Fill colour and opacity. Each is a drawing preference
+  // (never an Undo step), remembered separately. With construction selected (Select), the same panel
+  // also recolours that selection — in its own section, one Undo step — never the drawing colour.
   const ccBtn = document.createElement('button');
   ccBtn.className = 'icon-btn cc-btn';
   const ccDot = document.createElement('span');
   ccDot.className = 'cc-dot';
   ccBtn.appendChild(ccDot);
-  /** The construction the swatch would recolour: whole non-frame lines and circles under a
-   * non-Fair selection (Select only), or none — then it sets the drawing colour. */
+  type AppearanceKind = 'construction' | 'fair' | 'fill';
+  const appearanceKind = (): AppearanceKind => (controller.tool === 'fair' ? 'fair' : controller.tool === 'fill' ? 'fill' : 'construction');
+  /** The construction the panel can recolour: whole non-frame lines and circles under a non-Fair
+   * selection (Select only), or none. */
   function ccTargets(): Entity[] {
     if (controller.tool !== 'select' || controller.doc.view.workspace !== 'construct') return [];
     const doc = controller.doc;
@@ -1812,47 +1826,101 @@ export function buildShell(
       .filter((e): e is Entity => !!e && !frame.has(e.id));
   }
   function refreshCcBtn(): void {
-    const targets = ccTargets();
-    const active = controller.doc.toolPrefs?.constructionColour ?? null;
-    const shown = targets.length > 0 ? (targets.every((e) => (e.colour ?? null) === (targets[0]!.colour ?? null)) ? (targets[0]!.colour ?? null) : null) : active;
-    ccDot.style.background = shown ?? color.construction;
+    const doc = controller.doc;
+    const kind = appearanceKind();
+    const targets = kind === 'construction' ? ccTargets() : [];
+    const shown =
+      kind === 'fair'
+        ? doc.fairDefaults.colour
+        : kind === 'fill'
+          ? withAlpha(doc.fillDefaults.colour, doc.fillDefaults.opacity)
+          : targets.length > 0
+            ? targets.every((e) => (e.colour ?? null) === (targets[0]!.colour ?? null))
+              ? (targets[0]!.colour ?? color.construction)
+              : color.construction
+            : (doc.toolPrefs?.constructionColour ?? color.construction);
+    ccDot.style.background = shown;
+    ccBtn.dataset.kind = kind;
     ccBtn.classList.toggle('recolour', targets.length > 0);
-    ccBtn.setAttribute('aria-label', targets.length > 0 ? 'Recolour the selected construction' : 'Construction colour for new lines and circles');
+    ccBtn.setAttribute(
+      'aria-label',
+      kind === 'fair' ? 'Fair appearance' : kind === 'fill' ? 'Fill appearance' : targets.length > 0 ? 'Appearance · selected construction' : 'Construction colour',
+    );
+    if (openPopoverAnchor === ccBtn && ccBtn.dataset.open !== kind) closeAnyPopover(); // the tool changed under it
   }
-  onTap(ccBtn, () =>
-    togglePanel(ccBtn, () => {
+  /** A drawing preference changed: no Undo step; the artwork remembers it (and so does its saved
+   * version — preferences are not artwork, so this never counts as an unsaved change). */
+  const prefChanged = () => {
+    refreshCcBtn();
+    controller.notify();
+    opts.onPrefs?.();
+  };
+  function showConstructAppearance(): void {
+    const kind = appearanceKind();
+    ccBtn.dataset.open = kind;
+    mountPopover(ccBtn, (menu) => {
+      menu.classList.add('appearance-panel');
+      const doc = controller.doc;
+      if (kind === 'fair') {
+        popoverSectionLabel(menu, 'Fair colour · new strokes');
+        colourSwatchRow(menu, doc.fairDefaults.colour, (c) => {
+          controller.doc.fairDefaults = { ...controller.doc.fairDefaults, colour: c ?? color.ink };
+          prefChanged();
+        }, { label: 'Default', value: null, swatch: color.ink });
+        popoverSectionLabel(menu, 'Fair width');
+        sliderRow(menu, {
+          min: 1,
+          max: 8,
+          step: 0.5,
+          value: doc.fairDefaults.width,
+          format: (v) => `${v} px`,
+          onCommit: (width) => {
+            controller.doc.fairDefaults = { ...controller.doc.fairDefaults, width };
+            prefChanged();
+          },
+        });
+        panelHint(menu, 'Strokes already made keep their own colour and width.');
+        return;
+      }
+      if (kind === 'fill') {
+        popoverSectionLabel(menu, 'Fill colour · next fills');
+        colourSwatchRow(menu, doc.fillDefaults.colour, (c) => {
+          if (!c) return;
+          controller.doc.fillDefaults = { ...controller.doc.fillDefaults, colour: c };
+          prefChanged();
+        });
+        popoverSectionLabel(menu, 'Fill opacity');
+        sliderRow(menu, {
+          min: 10,
+          max: 100,
+          step: 5,
+          value: Math.round(doc.fillDefaults.opacity * 100),
+          format: (v) => `${v}%`,
+          onCommit: (pct) => {
+            controller.doc.fillDefaults = { ...controller.doc.fillDefaults, opacity: pct / 100 };
+            prefChanged();
+          },
+        });
+        panelHint(menu, 'Regions already filled keep their colour.');
+        return;
+      }
       const targets = ccTargets();
       if (targets.length > 0) {
         const first = targets[0]!.colour ?? null;
         const same = targets.every((e) => (e.colour ?? null) === first);
         const what = targets.length === 1 ? (targets[0]!.kind === 'circle' ? 'whole circle' : 'whole line') : `${targets.length} lines and circles`;
-        showColourPopover(ccBtn, [
-          {
-            title: `Recolour · ${what}`,
-            current: same ? first : null,
-            defaultSwatch: color.construction,
-            onPick: (colour) => controller.commit((d) => setEntityColour(d, targets.map((e) => e.id), colour)),
-          },
-        ]);
-        return;
+        popoverSectionLabel(menu, `Selected · ${what}`);
+        colourSwatchRow(menu, same ? first : null, (colour) => controller.commit((d) => setEntityColour(d, targets.map((e) => e.id), colour)), { label: 'Default', value: null, swatch: color.construction });
       }
-      showColourPopover(ccBtn, [
-        {
-          title: 'New lines and circles',
-          current: controller.doc.toolPrefs?.constructionColour ?? null,
-          defaultSwatch: color.construction,
-          // A drawing preference, like Fill's colour: not a change to the artwork, so not an Undo step.
-          onPick: (colour) => {
-            const doc = controller.doc;
-            doc.toolPrefs = { ...doc.toolPrefs, constructionColour: colour };
-            refreshCcBtn();
-            controller.notify();
-          },
-        },
-      ]);
-    }),
-  );
-  leftSide.appendChild(ccBtn);
+      popoverSectionLabel(menu, 'Construction · new lines, circles, arcs');
+      colourSwatchRow(menu, doc.toolPrefs?.constructionColour ?? null, (colour) => {
+        const d = controller.doc;
+        d.toolPrefs = { ...d.toolPrefs, constructionColour: colour };
+        prefChanged();
+      }, { label: 'Default', value: null, swatch: color.construction });
+    });
+  }
+  onTap(ccBtn, () => togglePanel(ccBtn, showConstructAppearance));
 
   // Phase 5.1 item 2: in Repeat, Appearance sits beside the menu (and Grid/Guides on the right,
   // below) — same header architecture, workspace-appropriate controls.
@@ -1934,6 +2002,7 @@ export function buildShell(
 
   rightSide.appendChild(guidesBtn);
   rightSide.appendChild(ixSnapshotsBtn);
+  rightSide.appendChild(ccBtn);
   rightSide.appendChild(exportBtn);
 
   topbar.appendChild(leftSide);
@@ -3333,49 +3402,9 @@ export function buildShell(
     } else if (tool === 'fair' && doc.view.workspace === 'intersection') {
       // Fair in Intersect develops the Primary, in its one Primary style: Construct's Fair colour and
       // width are not its to change (the owner tag says what it edits).
-    } else if (tool === 'fair') {
-      const stroke = doc.fairDefaults;
-      const setStrokeColour = (c: string | null) => {
-        if (!c) return;
-        doc.fairDefaults = { ...doc.fairDefaults, colour: c };
-        controller.notify();
-      };
-      chip('Colour', (el) => showColourPopover(el, [{ title: 'Stroke colour', current: stroke.colour, onPick: setStrokeColour }]), stroke.colour);
-      chip(`Width ${stroke.width}px`, (el) =>
-        showSliderPopover(el, 'Stroke width', {
-          min: 1,
-          max: 8,
-          step: 0.5,
-          value: stroke.width,
-          format: (v) => `${v}px`,
-          onCommit: (width) => {
-            doc.fairDefaults = { ...doc.fairDefaults, width };
-            controller.notify();
-          },
-        }),
-      );
-    } else if (tool === 'fill') {
-      const fill = doc.fillDefaults;
-      const setFillColour = (c: string | null) => {
-        if (!c) return;
-        doc.fillDefaults = { ...doc.fillDefaults, colour: c };
-        controller.notify();
-      };
-      chip('Colour', (el) => showColourPopover(el, [{ title: 'Fill colour', current: fill.colour, onPick: setFillColour }]), withAlpha(fill.colour, fill.opacity));
-      chip(`Opacity ${Math.round(fill.opacity * 100)}%`, (el) =>
-        showSliderPopover(el, 'Fill opacity', {
-          min: 10,
-          max: 100,
-          step: 5,
-          value: Math.round(fill.opacity * 100),
-          format: (v) => `${v}%`,
-          onCommit: (pct) => {
-            doc.fillDefaults = { ...doc.fillDefaults, opacity: pct / 100 };
-            controller.notify();
-          },
-        }),
-      );
     }
+    // UI-2: Fair's colour and width and Fill's colour and opacity are set in the contextual Appearance
+    // panel (the swatch at the top right), not on the ribbon.
   }
 
   /** Phase 5.2 item 3: the ribbon appears only when the tool or selection has controls to offer;
