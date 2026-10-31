@@ -635,8 +635,8 @@ export function renderRepeat(ctx: CanvasRenderingContext2D, controller: AppContr
   drawArtworkLayer(ctx, layers, (ctx) => {
     // Spaces sit on the background, under every motif. While a handle or the ring is being dragged
     // the arrangement is still changing, so they wait for release rather than show a stale shape.
-    // (Spaces are worked out for the single motif's own repeat; a unit of several instances has none.)
-    if (showFills && !drag && !rotating && !unit) drawSpaces(ctx, doc, view);
+    // (Spaces are worked out for whatever repeats — the motif, or the Intersect unit: spaces.ts.)
+    if (showFills && !drag && !rotating) drawSpaces(ctx, doc, view);
 
     for (const pass of passes) for (const pose of instances) {
       const group = groupOf(pose);

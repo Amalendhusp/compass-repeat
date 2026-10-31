@@ -18,12 +18,28 @@
 //
 // Computed once per change of motif geometry or repeat arrangement and cached; pan/zoom and
 // re-colouring never recompute it.
+//
+// Fill refinement (after Stage D):
+// - What repeats is the Repeat composition (repeatComposition.ts): the Construct motif, or — with
+//   the Intersect source — every member of the unit (and the Developed Primary), each where it
+//   stands. Members of one unit are split where they cross, like copies. With the Construct source
+//   the strokes, regions and keys are exactly as before.
+// - Hair-line gaps: where two neighbouring copies miss each other by less than GAP_FRACTION of the
+//   motif's radius (a gap the drawn line itself covers — free lattice handles rarely land exactly),
+//   a short BRIDGE closes it for region-finding only. Nothing is moved and nothing is drawn; Close
+//   Gap still makes the meeting exact. Bridges never enter a Space's identity, so a Space closed
+//   across a hair-line gap keeps its colour once Close Gap makes it exact (and the other way round).
+//   A bridge is only made between different copies, only where they do not already meet nearby,
+//   and never across another line.
 
 import type { Doc, RepeatSystem, Vec2 } from '../model/types.ts';
 import { resolveEntityGeom } from './kernel.ts';
 import { deriveSegments } from './segments.ts';
 import { computeFairRegions, pointInPolygon } from './regions.ts';
 import { instancePose, motifExtent, motifRadius, transformPoint, type InstancePose } from './lattice.ts';
+import { compositionFeatures, repeatComposition } from './repeatComposition.ts';
+import { repeatSourceOf } from './repeatSetup.ts';
+import { repeatUnit } from './repeatUnit.ts';
 
 export interface SpaceClass {
   /** Persistent identity: rule/family plus the class's topological signature. */
@@ -37,6 +53,8 @@ export interface SpaceClass {
   reach: number;
   u: Vec2;
   v: Vec2;
+  /** The widest hair-line gap closed for it (0: its copies meet exactly). */
+  gap: number;
 }
 
 export interface SpaceTopology {
@@ -46,10 +64,15 @@ export interface SpaceTopology {
 
 const ARC_STEP = Math.PI / 48;
 const MAX_COPIES = 220;
+/** The widest gap between two copies that still counts as closed (a fraction of the motif radius):
+ * narrower than the default Fair line, so the gap is one the drawing itself already covers. */
+export const GAP_FRACTION = 0.02;
 
 interface Stroke {
   entityId: string;
   pts: Vec2[]; // Construct-world, in the curve's own parameter direction
+  /** Which member of the repeat unit it belongs to (0 for the Construct source). */
+  member: number;
 }
 
 /** The motif's Fair pieces as polylines. Arcs are sampled finely, but never into chords shorter
@@ -71,14 +94,42 @@ function motifStrokes(doc: Doc, tol: number): Stroke[] {
           const t = a0 + (sweep * k) / n;
           pts.push({ x: g.centre.x + g.radius * Math.cos(t), y: g.centre.y + g.radius * Math.sin(t) });
         }
-        out.push({ entityId: e.id, pts });
+        out.push({ entityId: e.id, pts, member: 0 });
       } else {
         const at = (t: number) => ({ x: g.a.x + (g.b.x - g.a.x) * t, y: g.a.y + (g.b.y - g.a.y) * t });
-        out.push({ entityId: e.id, pts: [at(seg.fromParam), at(seg.toParam)] });
+        out.push({ entityId: e.id, pts: [at(seg.fromParam), at(seg.toParam)], member: 0 });
       }
     }
   }
   return out;
+}
+
+/** The Intersect source's unit as polylines: every member's Fair pieces where it stands (ids
+ * `${member}|${piece}`, the Developed Primary's `developed|${segment}`), arcs sampled as above. */
+function unitStrokes(doc: Doc, tol: number): Stroke[] {
+  const members = new Map(repeatComposition(doc).members.map((m, k) => [m.key, k] as const));
+  const out: Stroke[] = [];
+  for (const f of compositionFeatures(doc, 'pieces')) {
+    const member = members.get(f.source?.member ?? '') ?? 0;
+    const p = f.prim;
+    if (p.k === 'seg') {
+      out.push({ entityId: f.id, pts: [p.a, p.b], member });
+      continue;
+    }
+    const n = Math.max(1, Math.min(Math.ceil(p.sw / ARC_STEP), Math.floor((p.sw * p.r) / (4 * tol))));
+    const pts: Vec2[] = [];
+    for (let k = 0; k <= n; k++) {
+      const t = p.a0 + (p.sw * k) / n;
+      pts.push({ x: p.c.x + p.r * Math.cos(t), y: p.c.y + p.r * Math.sin(t) });
+    }
+    out.push({ entityId: f.id, pts, member });
+  }
+  return out;
+}
+
+/** What Space repeats: the motif's own strokes, or the Intersect unit's. */
+function strokesOf(doc: Doc, tol: number): Stroke[] {
+  return repeatSourceOf(doc) === 'intersect' ? unitStrokes(doc, tol) : motifStrokes(doc, tol);
 }
 
 const usesParityPeriod = (rule: RepeatSystem['rule']) => rule.kind === 'alternate' || rule.kind === 'mirror';
@@ -89,6 +140,20 @@ interface Source {
   i: number;
   j: number;
   entityId: string;
+  /** A bridge across a hair-line gap: region-finding only, never part of an identity. */
+  bridge?: true;
+}
+
+const BRIDGE: Source = { i: 0, j: 0, entityId: '', bridge: true };
+
+interface Edge {
+  a: number;
+  b: number;
+  src: Source;
+  /** Pieces of different `copy` are tested for crossings (a lattice copy's member, for a unit). */
+  copy: number;
+  /** Which lattice copy: bridges only ever join different ones. */
+  lat: number;
 }
 
 /** Vertices snapped together within `tol` (a grid lookup) — also used by geometry/constructionSpace.ts. */
@@ -125,10 +190,13 @@ interface Face {
   area: number;
   centroid: Vec2;
   pieces: { src: Source; forward: boolean }[];
+  /** The widest hair-line gap bridged on its boundary (0: closed exactly). */
+  gap: number;
 }
 
-/** Every bounded face of the arrangement of `edges` (pieces a→b in their curve's direction). */
-function traceFaces(arr: Arrangement, edges: { a: number; b: number; src: Source; copy: number }[], tol: number, cell: number): Face[] {
+/** Every bounded face of the arrangement of `edges` (pieces a→b in their curve's direction).
+ * `bridgeGap` > 0: hair-line gaps between different lattice copies up to that wide are bridged. */
+function traceFaces(arr: Arrangement, edges: Edge[], tol: number, cell: number, bridgeGap = 0): Face[] {
   const { xs, ys } = arr;
   // Index pieces by grid cell (bbox inflated by tol).
   const cellsOf = (e: { a: number; b: number }) => {
@@ -193,6 +261,8 @@ function traceFaces(arr: Arrangement, edges: { a: number; b: number; src: Source
     }
   }
 
+  const bridges = bridgeGap > 0 ? findBridges(arr, edges, splits, grid, cell, tol, bridgeGap) : [];
+
   // Pieces between consecutive split points; a piece already present (from any copy) is kept once.
   interface Sub {
     from: number;
@@ -214,6 +284,12 @@ function traceFaces(arr: Arrangement, edges: { a: number; b: number; src: Source
       subs.push({ from, to, src: e.src });
     }
   });
+  for (const [from, to] of bridges) {
+    const key = Math.min(from, to) * BIG + Math.max(from, to);
+    if (seen.has(key)) continue;
+    seen.add(key);
+    subs.push({ from, to, src: BRIDGE });
+  }
 
   interface HE {
     sub: Sub;
@@ -265,9 +341,121 @@ function traceFaces(arr: Arrangement, edges: { a: number; b: number; src: Source
     }
     area /= 2;
     if (area <= 0) continue; // the unbounded outside of a connected piece — background, never a Space
-    faces.push({ loop, area, centroid: { x: cx / (6 * area), y: cy / (6 * area) }, pieces: boundary.map((he) => ({ src: he.sub.src, forward: he.forward })) });
+    let gap = 0;
+    for (const he of boundary) if (he.sub.src.bridge) gap = Math.max(gap, Math.hypot(xs[he.to]! - xs[he.from]!, ys[he.to]! - ys[he.from]!));
+    faces.push({ loop, area, centroid: { x: cx / (6 * area), y: cy / (6 * area) }, pieces: boundary.map((he) => ({ src: he.sub.src, forward: he.forward })), gap });
   }
   return faces;
+}
+
+/**
+ * Hair-line gaps between different lattice copies, as bridges [from, to] (vertex ids). For each
+ * vertex, the nearest point of each other copy it does not touch, if within `gap`: that copy's vertex
+ * there, or a new vertex on its piece (which then splits it, through `splits`). A bridge is skipped
+ * where the two copies already meet within 2·gap (a crossing or a touch: nothing is open there), and
+ * where it would cross another piece.
+ */
+function findBridges(
+  arr: Arrangement,
+  edges: Edge[],
+  splits: { t: number; v: number }[][],
+  grid: Map<string, number[]>,
+  cell: number,
+  tol: number,
+  gap: number,
+): [number, number][] {
+  const { xs, ys } = arr;
+  // Which lattice copies meet at each vertex (piece ends, crossings and T-junctions alike).
+  const copiesAt = new Map<number, Set<number>>();
+  const note = (v: number, lat: number) => (copiesAt.get(v) ?? copiesAt.set(v, new Set()).get(v)!).add(lat);
+  edges.forEach((e, idx) => {
+    note(e.a, e.lat);
+    note(e.b, e.lat);
+    for (const s of splits[idx]!) note(s.v, e.lat);
+  });
+  // Where two copies meet: a vertex shared by them, found by a coarse grid.
+  const meetCell = gap * 2;
+  const meets = new Map<string, number[]>();
+  for (const [v, set] of copiesAt) {
+    if (set.size < 2) continue;
+    const k = `${Math.floor(xs[v]! / meetCell)},${Math.floor(ys[v]! / meetCell)}`;
+    (meets.get(k) ?? meets.set(k, []).get(k)!).push(v);
+  }
+  const meetNear = (v: number, own: Set<number>, lat: number): boolean => {
+    const cx = Math.floor(xs[v]! / meetCell);
+    const cy = Math.floor(ys[v]! / meetCell);
+    for (let dx = -1; dx <= 1; dx++)
+      for (let dy = -1; dy <= 1; dy++)
+        for (const w of meets.get(`${cx + dx},${cy + dy}`) ?? []) {
+          if (Math.hypot(xs[w]! - xs[v]!, ys[w]! - ys[v]!) > meetCell) continue;
+          const set = copiesAt.get(w)!;
+          if (set.has(lat) && [...own].some((c) => set.has(c))) return true;
+        }
+    return false;
+  };
+  const near = (x: number, y: number): Set<number> => {
+    const out = new Set<number>();
+    for (let gx = Math.floor((x - gap) / cell); gx <= Math.floor((x + gap) / cell); gx++)
+      for (let gy = Math.floor((y - gap) / cell); gy <= Math.floor((y + gap) / cell); gy++) for (const idx of grid.get(`${gx},${gy}`) ?? []) out.add(idx);
+    return out;
+  };
+  const crossesAny = (p: number, q: number, skip: number): boolean => {
+    const ax = xs[p]!, ay = ys[p]!, bx = xs[q]!, by = ys[q]!;
+    for (const idx of near((ax + bx) / 2, (ay + by) / 2)) {
+      if (idx === skip) continue;
+      const e = edges[idx]!;
+      if (e.a === p || e.b === p || e.a === q || e.b === q) continue;
+      const cx = xs[e.a]!, cy = ys[e.a]!, dx = xs[e.b]!, dy = ys[e.b]!;
+      const d1 = (bx - ax) * (cy - ay) - (by - ay) * (cx - ax);
+      const d2 = (bx - ax) * (dy - ay) - (by - ay) * (dx - ax);
+      const d3 = (dx - cx) * (ay - cy) - (dy - cy) * (ax - cx);
+      const d4 = (dx - cx) * (by - cy) - (dy - cy) * (bx - cx);
+      if (((d1 > 0 && d2 < 0) || (d1 < 0 && d2 > 0)) && ((d3 > 0 && d4 < 0) || (d3 < 0 && d4 > 0))) return true;
+    }
+    return false;
+  };
+  const out: [number, number][] = [];
+  const vertices = [...copiesAt.keys()];
+  for (const v of vertices) {
+    const own = copiesAt.get(v)!;
+    const px = xs[v]!;
+    const py = ys[v]!;
+    const best = new Map<number, { d: number; idx: number; t: number }>();
+    for (const idx of near(px, py)) {
+      const e = edges[idx]!;
+      if (own.has(e.lat) || e.a === v || e.b === v) continue;
+      const ax = xs[e.a]!, ay = ys[e.a]!;
+      const rX = xs[e.b]! - ax, rY = ys[e.b]! - ay;
+      const len2 = rX * rX + rY * rY;
+      if (len2 < 1e-18) continue;
+      const t = Math.max(0, Math.min(1, ((px - ax) * rX + (py - ay) * rY) / len2));
+      const d = Math.hypot(ax + rX * t - px, ay + rY * t - py);
+      if (d <= tol || d > gap) continue;
+      const was = best.get(e.lat);
+      if (!was || d < was.d) best.set(e.lat, { d, idx, t });
+    }
+    for (const [lat, b] of best) {
+      if (meetNear(v, own, lat)) continue;
+      const e = edges[b.idx]!;
+      const l = Math.hypot(xs[e.b]! - xs[e.a]!, ys[e.b]! - ys[e.a]!);
+      let to: number;
+      if (b.t * l <= tol) to = e.a;
+      else if ((1 - b.t) * l <= tol) to = e.b;
+      else {
+        to = arr.vertex({ x: xs[e.a]! + (xs[e.b]! - xs[e.a]!) * b.t, y: ys[e.a]! + (ys[e.b]! - ys[e.a]!) * b.t });
+        // A new vertex on the piece (unless it snapped onto one of its ends after all) splits it.
+        if (to !== e.a && to !== e.b) {
+          if (to === v || crossesAny(v, to, b.idx)) continue;
+          splits[b.idx]!.push({ t: b.t, v: to });
+          out.push([v, to]);
+          continue;
+        }
+      }
+      if (to === v || crossesAny(v, to, b.idx)) continue;
+      out.push([v, to]);
+    }
+  }
+  return out;
 }
 
 function perimeter(loop: Vec2[]): number {
@@ -336,7 +524,23 @@ function motifInvariant(strokes: Stroke[], pivot: Vec2, rule: RepeatSystem['rule
   return segs.every(([a, b]) => near(map(a)) && near(map(b)) && near(map({ x: (a.x + b.x) / 2, y: (a.y + b.y) / 2 })));
 }
 
-function build(doc: Doc, repeat: RepeatSystem, strokes: Stroke[]): SpaceTopology {
+/** The bounded faces of a repeat unit on its own (one lattice copy, its members split where they cross). */
+function unitFaces(strokes: Stroke[], tol: number, cell: number): Vec2[][] {
+  const arr = new Arrangement(tol);
+  const edges: Edge[] = [];
+  for (const s of strokes) {
+    const src: Source = { i: 0, j: 0, entityId: s.entityId };
+    let prev = arr.vertex(s.pts[0]!);
+    for (let k = 1; k < s.pts.length; k++) {
+      const next = arr.vertex(s.pts[k]!);
+      if (next !== prev) edges.push({ a: prev, b: next, src, copy: s.member, lat: 0 });
+      prev = next;
+    }
+  }
+  return traceFaces(arr, edges, tol, cell).map((f) => f.loop);
+}
+
+function build(doc: Doc, repeat: RepeatSystem, strokes: Stroke[], intersect: boolean): SpaceTopology {
   const empty: SpaceTopology = { classes: [], groups: new Map() };
   const { a, b } = repeat;
   const det = a.x * b.y - a.y * b.x;
@@ -344,7 +548,8 @@ function build(doc: Doc, repeat: RepeatSystem, strokes: Stroke[]): SpaceTopology
 
   const R = motifRadius(doc);
   const tol = R * 0.003;
-  const E = motifExtent(doc);
+  // How far what stands at each lattice position reaches: the motif, or the whole Intersect unit.
+  const E = intersect ? (repeatUnit(doc)?.extent ?? motifExtent(doc)) : motifExtent(doc);
   const pivot = doc.frame.origin;
   const parity = usesParityPeriod(repeat.rule);
   const u = parity ? { x: a.x + b.x, y: a.y + b.y } : a;
@@ -368,41 +573,51 @@ function build(doc: Doc, repeat: RepeatSystem, strokes: Stroke[]): SpaceTopology
   // every member of a class.
   copies.sort((p, q) => p.j - q.j || p.i - q.i);
 
+  const members = Math.max(1, ...strokes.map((s) => s.member + 1));
   const arr = new Arrangement(tol);
-  const edges: { a: number; b: number; src: Source; copy: number }[] = [];
-  copies.forEach((pose, copy) => {
+  const edges: Edge[] = [];
+  copies.forEach((pose, lat) => {
     for (const s of strokes) {
       const src: Source = { i: pose.i, j: pose.j, entityId: s.entityId };
       let prev = arr.vertex(transformPoint(pivot, pose, s.pts[0]!));
       for (let k = 1; k < s.pts.length; k++) {
         const next = arr.vertex(transformPoint(pivot, pose, s.pts[k]!));
-        if (next !== prev) edges.push({ a: prev, b: next, src, copy });
+        if (next !== prev) edges.push({ a: prev, b: next, src, copy: lat * members + s.member, lat });
         prev = next;
       }
     }
   });
-  const faces = traceFaces(arr, edges, tol, Math.max(E / 6, tol * 20));
+  const cell = Math.max(E / 6, tol * 20);
+  const gapMax = R * GAP_FRACTION;
+  const faces = traceFaces(arr, edges, tol, cell, gapMax);
 
-  // Spaces: bounded faces outside every copy's own Fill regions, far enough in to be complete.
-  const motifRegions = computeFairRegions(doc);
+  // Spaces: bounded faces outside every copy's own regions, far enough in to be complete. The
+  // Construct motif's regions are its Fill regions; an Intersect unit's are the faces of the unit
+  // on its own (its members split where they cross, exactly — no bridges inside a unit).
+  const ownRegions: Vec2[][] = intersect ? unitFaces(strokes, tol, cell) : computeFairRegions(doc).map((r) => r.samplePoints);
   const nearCopies = (p: Vec2) => copies.filter((pose) => Math.hypot(pivot.x + pose.translate.x - p.x, pivot.y + pose.translate.y - p.y) <= E * 1.05);
   const byKey = new Map<string, Face[]>();
+  const gaps = new Map<string, number>();
   for (const f of faces) {
     const width = (2 * f.area) / perimeter(f.loop);
     if (width < R * 0.01) continue; // a sliver where two copies' strokes run side by side
+    if (f.gap > 0 && width < gapMax) continue; // the hair-line gap itself, closed off by its bridges
     if (f.loop.some((p) => Math.hypot(p.x - pivot.x, p.y - pivot.y) > trust)) continue;
     const inside = interiorPoint(f.loop, width);
     if (!inside) continue;
-    if (nearCopies(inside).some((pose) => motifRegions.some((r) => pointInPolygon(r.samplePoints, toMotif(pivot, pose, inside))))) continue;
-    const key = `${repeat.family ?? 'square'}|${repeat.rule.kind}|${signature(f, parity)}`;
+    if (nearCopies(inside).some((pose) => ownRegions.some((loop) => pointInPolygon(loop, toMotif(pivot, pose, inside))))) continue;
+    const sig = signature(f, parity);
+    if (!sig) continue;
+    const key = `${intersect ? 'unit|' : ''}${repeat.family ?? 'square'}|${repeat.rule.kind}|${sig}`;
     (byKey.get(key) ?? byKey.set(key, []).get(key)!).push(f);
+    gaps.set(key, Math.max(gaps.get(key) ?? 0, f.gap));
   }
 
   const classes: SpaceClass[] = [];
   for (const [key, members] of byKey) {
     const rep = members.reduce((best, f) => (Math.hypot(f.centroid.x - pivot.x, f.centroid.y - pivot.y) < Math.hypot(best.centroid.x - pivot.x, best.centroid.y - pivot.y) ? f : best));
     const reach = Math.max(...rep.loop.map((p) => Math.hypot(p.x - rep.centroid.x, p.y - rep.centroid.y)));
-    classes.push({ key, group: key, loop: rep.loop, area: rep.area, centroid: rep.centroid, reach, u, v });
+    classes.push({ key, group: key, loop: rep.loop, area: rep.area, centroid: rep.centroid, reach, u, v, gap: gaps.get(key) ?? 0 });
   }
 
   // Alternate/Mirror with a motif that looks the same either way: classes that are translates by
@@ -444,6 +659,7 @@ function isLatticeTranslate(p: SpaceClass, q: SpaceClass, a: Vec2, b: Vec2, det:
 function signature(f: Face, parity: boolean): string {
   const pieces: { i: number; j: number; id: string }[] = [];
   for (const p of f.pieces) {
+    if (p.src.bridge) continue; // a bridge across a hair-line gap is never part of what a Space is
     const id = `${p.src.entityId}${p.forward ? '+' : '-'}`;
     const last = pieces[pieces.length - 1];
     if (last && last.i === p.src.i && last.j === p.src.j && last.id === id) continue;
@@ -455,6 +671,7 @@ function signature(f: Face, parity: boolean): string {
     if (first.i === last.i && first.j === last.j && first.id === last.id) pieces.pop();
     else break;
   }
+  if (pieces.length === 0) return '';
   let min = pieces[0]!;
   for (const p of pieces) if (p.j < min.j || (p.j === min.j && p.i < min.i)) min = p;
   // Same: any lattice shift. Alternate/Mirror: only shifts with i + j even keep copies alike.
@@ -475,10 +692,10 @@ function signature(f: Face, parity: boolean): string {
 const byDoc = new WeakMap<Doc, SpaceTopology>();
 let last: { key: string; topology: SpaceTopology } | null = null;
 
-function contentKey(doc: Doc, repeat: RepeatSystem, strokes: Stroke[]): string {
+function contentKey(doc: Doc, repeat: RepeatSystem, strokes: Stroke[], intersect: boolean): string {
   const q = motifRadius(doc) * 1e-6;
   const r = (x: number) => Math.round(x / q);
-  const parts: (string | number | undefined)[] = [repeat.family, repeat.rule.kind, r(repeat.a.x), r(repeat.a.y), r(repeat.b.x), r(repeat.b.y), Math.round(repeat.motif.rotation * 1e9), r(doc.frame.origin.x), r(doc.frame.origin.y), r(doc.frame.radius)];
+  const parts: (string | number | undefined)[] = [intersect ? 'unit' : 'motif', GAP_FRACTION, repeat.family, repeat.rule.kind, r(repeat.a.x), r(repeat.a.y), r(repeat.b.x), r(repeat.b.y), Math.round(repeat.motif.rotation * 1e9), r(doc.frame.origin.x), r(doc.frame.origin.y), r(doc.frame.radius)];
   for (const s of strokes) parts.push(s.entityId, ...s.pts.flatMap((p) => [r(p.x), r(p.y)]));
   return parts.join(',');
 }
@@ -488,9 +705,10 @@ function contentKey(doc: Doc, repeat: RepeatSystem, strokes: Stroke[]): string {
 export function computeSpaces(doc: Doc): SpaceTopology {
   const hit = byDoc.get(doc);
   if (hit) return hit;
-  const strokes = motifStrokes(doc, motifRadius(doc) * 0.003);
-  const key = contentKey(doc, doc.repeat, strokes);
-  const topology = last?.key === key ? last.topology : build(doc, doc.repeat, strokes);
+  const intersect = repeatSourceOf(doc) === 'intersect';
+  const strokes = strokesOf(doc, motifRadius(doc) * 0.003);
+  const key = contentKey(doc, doc.repeat, strokes, intersect);
+  const topology = last?.key === key ? last.topology : build(doc, doc.repeat, strokes, intersect);
   last = { key, topology };
   byDoc.set(doc, topology);
   return topology;
