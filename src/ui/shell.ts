@@ -41,7 +41,7 @@ import { PICK_REACH_PX } from '../interaction/tools/intersectionTool.ts';
 import { repeatSource, type RepeatSource } from '../geometry/repeatUnit.ts';
 import { repeatSourceOf, suggestForFamily, switchRepeatSource } from '../geometry/repeatSetup.ts';
 import { repeatComposition } from '../geometry/repeatComposition.ts';
-import { repeatPaint } from '../interaction/tools/repeatTool.ts';
+import { repeatFill, repeatPaint, repeatPaintOpacity } from '../interaction/tools/repeatTool.ts';
 import { editableStroke, MAX_STROKE_PX, strokeKind, withColour, withKind, withWidth } from '../geometry/repeatStroke.ts';
 import type { PatternBy } from '../geometry/repeatColour.ts';
 import { artworksUsing, deleteReference, inLibrary, listReferences, setReferenceScope, type ReferenceRecord } from '../persist/referenceStore.ts';
@@ -553,6 +553,10 @@ function designStroke(doc: Doc): { colour: string; width: number } {
 
 /** Which part of Repeat's Appearance panel was last open (session). */
 let appearanceTab: 'fill' | 'stroke' | 'background' = 'stroke';
+/** Repeat Fill's scopes: a space between motifs, a region in every copy, or in the second group. */
+type FillScope = 'space' | 'motif' | 'pattern';
+/** The scope Fill returns to (session). */
+let lastFillScope: FillScope = 'motif';
 /** Which stroke layer's colours are showing in the panel (session). */
 let strokeSwatchesOpen: number | null = null;
 
@@ -562,7 +566,7 @@ let strokeSwatchesOpen: number | null = null;
  * canvas — "Colour regions") and how strongly fills are drawn. Stroke: the outlines. Background:
  * the colour behind the pattern. Nothing here changes the construction or its own styling.
  */
-function showRepeatAppearancePanel(anchor: HTMLElement, controller: AppController, hooks: { colourRegions: () => void }): void {
+function showRepeatAppearancePanel(anchor: HTMLElement, controller: AppController, hooks: { startFill: () => void; scope: () => FillScope | null }): void {
   const display = (): RepeatDisplay => controller.doc.repeatDisplay;
   const changed = () => controller.notifyView();
 
@@ -763,16 +767,65 @@ function showRepeatAppearancePanel(anchor: HTMLElement, controller: AppControlle
       };
 
       const buildFill = (menu: HTMLElement) => {
-      // Fill: Repeat's own region colours — a mode on the canvas (the panel steps aside for it) —
-      // and how strongly every fill is drawn (not the background or strokes).
-      popoverSectionLabel(menu, 'Fill');
-      const regionsRow = document.createElement('button');
-      regionsRow.className = 'popover-row appearance-regions';
-      regionsRow.textContent = 'Colour regions…';
-      regionsRow.title = 'Tap regions of the pattern to colour them (Motif or Pattern colouring)';
-      onTap(regionsRow, () => hooks.colourRegions());
-      menu.appendChild(regionsRow);
-      panelSliderRow(menu, 'Fill opacity', {
+      // Fill: the colour and opacity Fill applies next — one choice for Space, Motif and Pattern
+      // (the bottom row only picks the scope) — clearing what the current scope has filled, and how
+      // strongly motif regions are drawn. Choosing a colour never changes what is already filled:
+      // tap a filled region or space with the new colour to change it.
+      popoverSectionLabel(menu, 'Fill colour');
+      colourSwatchRow(
+        menu,
+        repeatPaint(controller),
+        (c) => {
+          controller.doc.repeatPaint = { colour: c, opacity: repeatPaintOpacity(controller) };
+          controller.notify();
+        },
+        { label: 'No fill', value: null },
+      );
+      panelSliderRow(menu, 'Opacity', {
+        min: 10,
+        max: 100,
+        step: 5,
+        value: Math.round(repeatPaintOpacity(controller) * 100),
+        format: (v) => `${v}%`,
+        onInput: (v) => {
+          controller.doc.repeatPaint = { colour: repeatPaint(controller), opacity: v / 100 };
+          controller.notify();
+        },
+      }).slider.title = 'Opacity of the next fill (each fill keeps its own)';
+      const scope = hooks.scope();
+      if (!scope) {
+        const start = document.createElement('button');
+        start.className = 'popover-row appearance-regions';
+        start.textContent = 'Fill on the canvas…';
+        start.title = 'Choose Space, Motif or Pattern, then tap to fill';
+        onTap(start, () => hooks.startFill());
+        menu.appendChild(start);
+      } else {
+        // Clearing what this scope has filled: one Undo step.
+        const doc = controller.doc;
+        const colour = doc.repeatSetup?.colour;
+        const has = scope === 'space' ? doc.repeat.gapFills.size > 0 : scope === 'pattern' ? !!colour?.pattern && Object.keys(colour.pattern.regions).length > 0 : !!colour?.regions && Object.keys(colour.regions).length > 0;
+        const clear = document.createElement('button');
+        clear.className = 'popover-row appearance-regions';
+        clear.textContent = scope === 'space' ? 'Clear Space fills' : scope === 'pattern' ? 'Pattern as designed' : 'Motif as designed';
+        clear.title = scope === 'space' ? 'Every space unfilled again' : 'Every region shows the design’s own colours again';
+        clear.disabled = !has;
+        onTap(clear, () => {
+          if (!has) return;
+          controller.commit((d) => {
+            if (scope === 'space') d.repeat.gapFills = new Map();
+            else {
+              const c = structuredClone(d.repeatSetup!.colour!);
+              if (scope === 'pattern') c.pattern = { ...c.pattern!, regions: {} };
+              else delete c.regions;
+              d.repeatSetup = { ...d.repeatSetup!, colour: c };
+            }
+          });
+          build();
+        });
+        menu.appendChild(clear);
+      }
+      panelSliderRow(menu, 'Motif fills', {
         min: 0,
         max: 100,
         step: 5,
@@ -782,7 +835,7 @@ function showRepeatAppearancePanel(anchor: HTMLElement, controller: AppControlle
           display().fillOpacity = v / 100;
           changed();
         },
-      });
+      }).slider.title = 'How strongly every motif region is drawn (spaces keep their own opacity)';
       };
       build();
     },
@@ -1802,7 +1855,8 @@ export function buildShell(
   appearanceBtn.className = 'icon-btn';
   appearanceBtn.setAttribute('aria-label', 'Appearance');
   appearanceBtn.innerHTML = iconSvg('appearance');
-  onTap(appearanceBtn, () => togglePanel(appearanceBtn, () => showRepeatAppearancePanel(appearanceBtn, controller, { colourRegions: () => startColouring() })));
+  const openAppearance = () => showRepeatAppearancePanel(appearanceBtn, controller, { startFill: () => setFillScope(lastFillScope), scope: () => fillScope() });
+  onTap(appearanceBtn, () => togglePanel(appearanceBtn, openAppearance));
   leftSide.appendChild(appearanceBtn);
 
   // Intersection: in that slot, the Copies panel — its icon a little 2×2 of the constructions' own
@@ -2172,32 +2226,48 @@ export function buildShell(
   const colouringBtn = document.createElement('button');
   colouringBtn.className = 'space-chip';
   colouringBtn.textContent = 'Fill';
-  colouringBtn.title = 'Colour regions of the pattern';
+  colouringBtn.title = 'Fill spaces and regions of the pattern';
   colouringBtn.setAttribute('aria-pressed', 'false');
-  onTap(colouringBtn, () => setColourMode(controller.repeatColourMode ? null : 'motif'));
+  onTap(colouringBtn, () => setFillScope(fillScope() ? null : lastFillScope));
   ruleLine.appendChild(colouringBtn);
   repeatPanel.appendChild(ruleLine);
 
-  // While colouring: [Motif | Pattern] · Done, then the colour and As designed.
+  // While filling: ● [Space | Motif | Pattern] · Done. The dot is the Fill colour now; it opens
+  // Appearance → Fill (upper left), where the colour and opacity are chosen — never duplicated here.
   const colourKindRow = document.createElement('div');
-  colourKindRow.className = 'space-row';
+  colourKindRow.className = 'space-row fill-row';
+  const fillDotBtn = document.createElement('button');
+  fillDotBtn.className = 'space-chip fill-dot-btn';
+  const fillDot = document.createElement('span');
+  fillDot.className = 'stroke-chip-dot';
+  fillDotBtn.appendChild(fillDot);
+  onTap(fillDotBtn, () => {
+    appearanceTab = 'fill';
+    togglePanel(appearanceBtn, openAppearance);
+  });
   const colourKind = document.createElement('div');
   colourKind.className = 'segmented-mini';
   colourKind.setAttribute('role', 'group');
-  colourKind.setAttribute('aria-label', 'Colouring');
-  const colourKindBtns = new Map<'motif' | 'pattern', HTMLButtonElement>();
-  for (const [id, label] of [['motif', 'Motif'], ['pattern', 'Pattern']] as const) {
+  colourKind.setAttribute('aria-label', 'Fill');
+  const colourKindBtns = new Map<FillScope, HTMLButtonElement>();
+  for (const [id, label, title] of [
+    ['space', 'Space', 'A space enclosed between motifs — and every one like it'],
+    ['motif', 'Motif', 'A region of the motif — in every copy'],
+    ['pattern', 'Pattern', 'A region of the motif — in every other copy, row or column'],
+  ] as const) {
     const b = document.createElement('button');
     b.textContent = label;
-    onTap(b, () => setColourMode(id));
+    b.title = title;
+    onTap(b, () => setFillScope(id));
     colourKindBtns.set(id, b);
     colourKind.appendChild(b);
   }
   const colourDone = document.createElement('button');
   colourDone.className = 'space-chip active';
   colourDone.textContent = 'Done';
-  colourDone.setAttribute('aria-label', 'Done colouring');
-  onTap(colourDone, () => setColourMode(null));
+  colourDone.setAttribute('aria-label', 'Done filling');
+  onTap(colourDone, () => setFillScope(null));
+  colourKindRow.appendChild(fillDotBtn);
   colourKindRow.appendChild(colourKind);
   colourKindRow.appendChild(colourDone);
   repeatPanel.appendChild(colourKindRow);
@@ -2295,140 +2365,45 @@ export function buildShell(
     });
   }
 
-  const colourToolRow = document.createElement('div');
-  colourToolRow.className = 'space-row';
-  const paintBtn = document.createElement('button');
-  paintBtn.className = 'space-chip';
-  const paintDot = document.createElement('span');
-  paintDot.className = 'stroke-chip-dot';
-  paintBtn.appendChild(paintDot);
-  paintBtn.appendChild(document.createTextNode('Colour'));
-  paintBtn.addEventListener('click', () =>
-    togglePanel(paintBtn, () =>
-      showColourPopover(paintBtn, [
-        {
-          title: 'Colour',
-          current: repeatPaint(controller),
-          noFill: true,
-          onPick: (c) => {
-            controller.doc.repeatPaint = { colour: c };
-            closeAnyPopover();
-            controller.notify();
-          },
-        },
-      ]),
-    ),
-  );
-  const asDesignedBtn = document.createElement('button');
-  asDesignedBtn.className = 'space-chip';
-  asDesignedBtn.textContent = 'As designed';
-  asDesignedBtn.title = 'Every region shows the design’s own colours again';
-  onTap(asDesignedBtn, () => {
-    const colour = controller.doc.repeatSetup?.colour;
-    const pattern = controller.repeatColourMode === 'pattern';
-    if (pattern ? !colour?.pattern || Object.keys(colour.pattern.regions).length === 0 : !colour?.regions || Object.keys(colour.regions).length === 0) return;
-    controller.commit((d) => {
-      const c = structuredClone(d.repeatSetup!.colour!);
-      if (pattern) c.pattern = { ...c.pattern!, regions: {} };
-      else delete c.regions;
-      d.repeatSetup = { ...d.repeatSetup!, colour: c };
-    });
-  });
-  colourToolRow.appendChild(paintBtn);
-  colourToolRow.appendChild(asDesignedBtn);
-  repeatPanel.appendChild(colourToolRow);
-
-  /** Appearance → Fill → Colour regions: the colouring mode, as the Fill chip starts it. */
-  function startColouring(): void {
-    setColourMode(controller.repeatColourMode ?? 'motif');
+  /** Which Fill scope is on (null: not filling). Space, Motif and Pattern share one colour. */
+  function fillScope(): FillScope | null {
+    return controller.spaceMode ? 'space' : controller.repeatColourMode;
   }
-  function setColourMode(mode: 'motif' | 'pattern' | null): void {
+  /** Fill, scoped: Space (spaces between motifs), Motif (a region in every copy) or Pattern (a
+   * region in the second group of copies) — or null to stop filling. */
+  function setFillScope(scope: FillScope | null): void {
     closeAnyPopover();
-    if (mode === controller.repeatColourMode) return;
-    controller.repeatColourMode = mode;
-    if (mode) {
-      controller.spaceMode = false;
-      controller.closeGap = null;
-    }
-    if (mode === 'motif') showToast('Tap a region to colour it in every copy');
-    if (mode === 'pattern') {
+    if (scope === fillScope()) return;
+    if (scope) lastFillScope = scope;
+    controller.spaceMode = scope === 'space';
+    controller.repeatColourMode = scope === 'motif' || scope === 'pattern' ? scope : null;
+    if (scope) controller.closeGap = null;
+    if (scope === 'space') showToast('Tap a space between motifs to fill it — and every one like it');
+    if (scope === 'motif') showToast('Tap a region to fill it in every copy');
+    if (scope === 'pattern') {
       // Copies alternating is where a pattern starts; rows or columns are one tap away.
       const p = controller.doc.repeatSetup?.colour?.pattern;
       if (!p || p.by === 'none') setPatternBy('copies');
-      showToast('Marked copies are the second group · tap a region to colour it there');
+      showToast('Marked copies are the second group · tap a region to fill it there');
     }
     controller.notify();
   }
   function refreshColourRows(): void {
-    const mode = controller.repeatColourMode;
-    colouringBtn.classList.toggle('active', !!mode);
-    colouringBtn.setAttribute('aria-pressed', String(!!mode));
-    for (const [id, b] of colourKindBtns) b.classList.toggle('active', mode === id);
+    const scope = fillScope();
+    colouringBtn.classList.toggle('active', !!scope);
+    colouringBtn.setAttribute('aria-pressed', String(!!scope));
+    for (const [id, b] of colourKindBtns) b.classList.toggle('active', scope === id);
     const by = controller.doc.repeatSetup?.colour?.pattern?.by;
     for (const [id, b] of patternBtns) b.classList.toggle('active', by === id);
-    const paint = repeatPaint(controller);
-    paintDot.classList.toggle('none', !paint);
-    paintDot.style.background = paint ?? '';
-    paintBtn.setAttribute('aria-label', `Colouring colour ${paint ?? 'unfilled'}`);
-    const colour = controller.doc.repeatSetup?.colour;
-    asDesignedBtn.disabled = mode === 'pattern' ? !colour?.pattern || Object.keys(colour.pattern.regions).length === 0 : !colour?.regions || Object.keys(colour.regions).length === 0;
+    const paint = repeatFill(controller);
+    fillDot.classList.toggle('none', !paint);
+    fillDot.style.background = paint ?? '';
+    fillDotBtn.setAttribute('aria-label', `Fill colour ${repeatPaint(controller) ?? 'no fill'}, ${Math.round(repeatPaintOpacity(controller) * 100)}% — change in Appearance`);
   }
 
-  // Phase 5.6 items 19–20: Space — one compact toggle; while on, its Colour · Opacity sit beside
-  // it (the same grammar as Construct's Fill) and a tap on the canvas colours negative space.
+  // The Source row (Fill's Space moved into Fill: Space | Motif | Pattern).
   const spaceRow = document.createElement('div');
   spaceRow.className = 'space-row';
-  const spaceBtn = document.createElement('button');
-  spaceBtn.className = 'space-chip';
-  spaceBtn.textContent = 'Space';
-  spaceBtn.setAttribute('aria-pressed', 'false');
-  onTap(spaceBtn, () => {
-    closeAnyPopover();
-    controller.spaceMode = !controller.spaceMode;
-    if (controller.spaceMode) {
-      controller.repeatColourMode = null;
-      controller.closeGap = null;
-    }
-    controller.notify();
-  });
-  const spaceColourBtn = document.createElement('button');
-  spaceColourBtn.className = 'space-chip';
-  const spaceDot = document.createElement('span');
-  spaceDot.className = 'stroke-chip-dot';
-  spaceColourBtn.appendChild(spaceDot);
-  spaceColourBtn.appendChild(document.createTextNode('Colour'));
-  spaceColourBtn.addEventListener('click', () =>
-    togglePanel(spaceColourBtn, () =>
-      showColourPopover(spaceColourBtn, [
-        {
-          title: 'Space colour',
-          current: controller.doc.spaceDefaults.colour,
-          noFill: true,
-          onPick: (c) => {
-            controller.doc.spaceDefaults = { ...controller.doc.spaceDefaults, colour: c };
-            controller.notify();
-          },
-        },
-      ]),
-    ),
-  );
-  const spaceOpacityBtn = document.createElement('button');
-  spaceOpacityBtn.className = 'space-chip';
-  spaceOpacityBtn.addEventListener('click', () =>
-    togglePanel(spaceOpacityBtn, () =>
-      showSliderPopover(spaceOpacityBtn, 'Space opacity', {
-        min: 10,
-        max: 100,
-        step: 5,
-        value: Math.round(controller.doc.spaceDefaults.opacity * 100),
-        format: (v) => `${v}%`,
-        onCommit: (pct) => {
-          controller.doc.spaceDefaults = { ...controller.doc.spaceDefaults, opacity: pct / 100 };
-          controller.notify();
-        },
-      }),
-    ),
-  );
   // Source: what stands at each lattice position — the motif (as ever), or the current Intersect
   // arrangement as one unit (geometry/repeatUnit.ts). Only the choice is kept; nothing is copied.
   // It shares Space's row (and steps aside while Space's own controls are out), so the panel is no
@@ -2453,7 +2428,6 @@ export function buildShell(
     onTap(b, () => {
       if (repeatSource(controller.doc) === id) return;
       closeAnyPopover();
-      controller.spaceMode = false;
       // One Undo step; each source keeps its own spacing, appearance and colouring. No geometry is
       // made or changed.
       switchRepeatSource(controller, id);
@@ -2464,9 +2438,6 @@ export function buildShell(
   sourceGroup.appendChild(sourceLabel);
   sourceGroup.appendChild(sourceSeg);
 
-  spaceRow.appendChild(spaceBtn);
-  spaceRow.appendChild(spaceColourBtn);
-  spaceRow.appendChild(spaceOpacityBtn);
   spaceRow.appendChild(sourceGroup);
   repeatPanel.appendChild(spaceRow);
 
@@ -2800,22 +2771,10 @@ export function buildShell(
   }
 
   function refreshSpaceRow(): void {
-    const on = controller.spaceMode;
-    const pref = controller.doc.spaceDefaults;
-    spaceBtn.classList.toggle('active', on);
-    spaceBtn.setAttribute('aria-pressed', String(on));
-    spaceColourBtn.style.display = on ? '' : 'none';
-    spaceOpacityBtn.style.display = on ? '' : 'none';
     const source = repeatSource(controller.doc);
-    sourceGroup.style.display = on ? 'none' : '';
     for (const [id, b] of sourceBtns) b.classList.toggle('active', source === id);
-    spaceBtn.disabled = source === 'intersect';
-    spaceBtn.title = source === 'intersect' ? 'Space belongs to the motif’s own repeat — choose Source: Motif' : '';
-    spaceDot.classList.toggle('none', !pref.colour);
-    spaceDot.style.background = pref.colour ? withAlpha(pref.colour, pref.opacity) : '';
-    spaceColourBtn.setAttribute('aria-label', `Space colour ${pref.colour ?? 'no fill'}`);
-    spaceOpacityBtn.textContent = `Opacity ${Math.round(pref.opacity * 100)}%`;
   }
+
 
 
   // Line: how its direction is given — a compact strip over the ribbon, only while Line is the tool
@@ -3486,14 +3445,13 @@ export function buildShell(
     repeatPanel.style.display = placing ? 'flex' : 'none';
     // Repeat's lattice controls belong to Repeat; Intersection has its own rows.
     // While colouring, the lattice rows step aside for the colouring controls.
-    const colouring = inRepeat && !!controller.repeatColourMode;
+    const colouring = inRepeat && (!!controller.repeatColourMode || controller.spaceMode);
     const closingGap = inRepeat && !!controller.closeGap;
     ruleLine.style.display = inRepeat && !colouring && !closingGap ? '' : 'none';
     spaceRow.style.display = inRepeat && !colouring && !closingGap ? '' : 'none';
     closeGapRow.style.display = closingGap ? '' : 'none';
     if (closingGap) refreshCloseGapRow();
     colourKindRow.style.display = colouring ? '' : 'none';
-    colourToolRow.style.display = colouring ? '' : 'none';
     patternRow.style.display = colouring && controller.repeatColourMode === 'pattern' ? '' : 'none';
     if (colouring) refreshColourRows();
     // Spread arranges the instances: it belongs to Select's instance arranging — never under a

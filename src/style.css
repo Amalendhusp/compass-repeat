@@ -2433,3 +2433,19 @@ canvas.stage {
   gap: 8px;
   flex-wrap: wrap;
 }
+
+/* Repeat Fill: ● [Space | Motif | Pattern] · Done — the dot shows the Fill colour and opens
+   Appearance → Fill, where colour and opacity are chosen. */
+.space-chip.fill-dot-btn {
+  padding: 0;
+  width: 32px;
+  justify-content: center;
+  flex: 0 0 auto;
+}
+.fill-dot-btn .stroke-chip-dot {
+  width: 18px;
+  height: 18px;
+}
+.fill-row {
+  flex-wrap: nowrap;
+}

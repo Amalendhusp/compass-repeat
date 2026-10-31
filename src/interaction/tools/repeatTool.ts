@@ -105,9 +105,10 @@ function rotateRingGesture(controller: AppController, view: ViewTransform, downS
   };
 }
 
-/** Phase 5.6 items 19–23: with Space on, a tap colours the enclosed gap under it — and with it
- * every equivalent gap across the tessellation (its whole class) — or, if already coloured, clears
- * that class. Only `repeat.gapFills` changes: never Construct geometry, its fills, or the lattice. */
+/** Fill · Space: a tap fills the enclosed space under it — and with it every equivalent space across
+ * the tessellation (its whole class) — with the Fill colour; tapping a space that already has exactly
+ * that colour (or with "No fill") clears it. Only `repeat.gapFills` changes: never Construct geometry,
+ * its fills, or the lattice. A tap inside a motif says so instead. */
 function spaceTapGesture(controller: AppController, view: ViewTransform): Gesture {
   return {
     onMove() {},
@@ -117,35 +118,48 @@ function spaceTapGesture(controller: AppController, view: ViewTransform): Gestur
       const topology = computeSpaces(doc);
       const hit = spaceAt(topology, screenToWorld(view, sp));
       if (!hit) {
-        showToast(topology.classes.length > 0 ? 'Not an enclosed space' : 'No enclosed spaces yet', 2200, 'warning');
+        if (regionAtInRepeat(doc, view, sp)) showToast('That’s inside a motif · choose Motif to fill it', 2400, 'warning');
+        else showToast(topology.classes.length > 0 ? 'Not an enclosed space' : 'No enclosed spaces · the copies don’t meet', 2400, 'warning');
         return;
       }
       const keys = (topology.groups.get(hit.group) ?? [hit]).map((c) => c.key);
-      const coloured = doc.repeat.gapFills.has(hit.key);
-      const pref = doc.spaceDefaults;
-      if (!coloured && !pref.colour) return; // "No fill" only ever clears
+      const paint = repeatFill(controller);
+      const now = doc.repeat.gapFills.get(hit.key);
+      if (!now && !paint) return; // "No fill" on an empty space: nothing to clear
+      const clear = !paint || now === paint;
       controller.commit((d) => {
         for (const k of keys) {
-          if (coloured) d.repeat.gapFills.delete(k);
-          else d.repeat.gapFills.set(k, withAlpha(pref.colour!, pref.opacity));
+          if (clear) d.repeat.gapFills.delete(k);
+          else d.repeat.gapFills.set(k, paint!);
         }
       });
+      // A space closed only across a hair-line gap: said once, plainly, so it is never a surprise.
+      if (!clear && hit.gap > 0) showToast(`Filled · its copies miss by ${Number(hit.gap.toFixed(2))} — under the line`, 2600);
     },
     onCancel() {},
   };
 }
 
-/** The colour Repeat Colouring applies next (null = unfilled). */
+/** The colour Repeat Fill applies next, #rrggbb (null = unfilled). */
 export const REPEAT_PAINT_DEFAULT = '#1E3A6E';
 export function repeatPaint(controller: AppController): string | null {
   const p = controller.doc.repeatPaint;
   return p ? p.colour : REPEAT_PAINT_DEFAULT;
 }
+/** The Fill opacity applied next (0–1). */
+export function repeatPaintOpacity(controller: AppController): number {
+  return controller.doc.repeatPaint?.opacity ?? 1;
+}
+/** The fill a tap applies next: the colour carrying its opacity (#rrggbbaa below 100%), or null. */
+export function repeatFill(controller: AppController): string | null {
+  const c = repeatPaint(controller);
+  return c ? withAlpha(c, repeatPaintOpacity(controller)) : null;
+}
 
-/** Repeat Colouring: a tap colours the region under it — in every copy (Motif Colouring), or, in
- * Pattern Colouring, in every copy of the group the tapped copy belongs to — or, if that region
- * already has exactly this colour there, returns it to as designed. One Undo step; only Repeat's
- * own colouring changes, never the construction or its fills. */
+/** Fill · Motif / Pattern: a tap colours the region under it — in every copy (Motif), or, in
+ * Pattern, in every copy of the group the tapped copy belongs to — or, if that region already has
+ * exactly this colour there, returns it to as designed. One Undo step; only Repeat's own colouring
+ * changes, never the construction or its fills. A tap in a space between copies says so instead. */
 function colourTapGesture(controller: AppController, view: ViewTransform): Gesture {
   return {
     onMove() {},
@@ -154,12 +168,13 @@ function colourTapGesture(controller: AppController, view: ViewTransform): Gestu
       const doc = controller.doc;
       const hit = regionAtInRepeat(doc, view, sp);
       if (!hit) {
-        showToast('Not a closed region of the design', 2200, 'warning');
+        if (spaceAt(computeSpaces(doc), screenToWorld(view, sp))) showToast('That’s a space between motifs · choose Space to fill it', 2400, 'warning');
+        else showToast('Not a closed region of the design', 2200, 'warning');
         return;
       }
       const colour = doc.repeatSetup?.colour;
       const group = controller.repeatColourMode === 'pattern' ? patternGroup(colour, hit.i, hit.j) : 0;
-      const paint = repeatPaint(controller);
+      const paint = repeatFill(controller);
       controller.commit((d) => {
         d.repeatSetup = { ...(d.repeatSetup ?? { source: repeatSourceOf(d) }), colour: toggleRegion(d.repeatSetup?.colour, hit.key, paint, group) };
       });

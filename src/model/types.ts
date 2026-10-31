@@ -369,8 +369,9 @@ export interface Doc {
   /** Repeat's source and each source's own configuration and colouring (types: RepeatSetup). Part
    * of Undo and of the recorded artwork. Absent = the motif, never configured separately. */
   repeatSetup?: RepeatSetup;
-  /** Repeat colouring's next colour (null = unfilled) — a tool preference like `spaceDefaults`. */
-  repeatPaint?: { colour: string | null };
+  /** Repeat Fill's next colour (null = unfilled / "No fill") and opacity (absent = 100%) — one
+   * choice for Space, Motif and Pattern alike. A tool preference like `fillDefaults`, never history. */
+  repeatPaint?: { colour: string | null; opacity?: number };
   /** Intersection's own camera — like repeatView, never history. Absent until Intersection is first
    * entered. */
   intersectionView?: Camera;
