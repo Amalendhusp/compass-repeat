@@ -4,10 +4,12 @@ Keep this short and current. It is a starting point, not a substitute for readin
 
 ## Where things are
 
-- **Branch:** `feature/final-sprint` (final development sprint, from `feature/ui-refinement` `cbb5ee4`). Latest
-  commit: see `git log -1`. UI-1–UI-4 stay on `feature/ui-refinement`; A–D and Fill on `feature/integration-a-d`.
-- **Final sprint (2026-11-01):** Stage 1 Fill · Stage 2 Appearance/UI · Stage 3 Interlacing · Stage 4 release
-  candidate; one commit (or more) per stage; no merge/push/deploy; stop for the user's iPhone review after Stage 4.
+- **Branch:** `feature/release-candidate` (release refinements R1–R5, from `feature/final-sprint` `d331b1f`, which the
+  user tested on iPhone and approved). Latest commit: see `git log -1`. Remote: `origin`
+  https://github.com/Amalendhusp/compass-repeat.git — nothing pushed.
+- **Release cycle (2026-11-01):** R1 point-first · R2 Intersect Fair from construction/extension · R3 Intersect
+  arrangement popover · R4 Repeat Fill / handles · R5 participant info + export attribution. One commit each; no
+  merge/push/deploy; stop for iPhone approval. No further features this cycle.
 
 | Stage | Scope | Status |
 |---|---|---|
@@ -25,6 +27,11 @@ Keep this short and current. It is a starting point, not a substitute for readin
 | S2 | Top-left Appearance (Fill · Stroke · Background), Fill toggle, preferences in the draft | done — "Sprint S2" |
 | S3 | Interlaced strokes (Single · Banded · Interlaced, over-under, crossing reversal) | done — "Sprint S3" |
 | S4 | Integration, regression, iPhone release candidate | done — "Sprint S4" (features frozen) |
+| R1 | Point first: a selected point feeds Line (A) / Circle (centre); Divide keeps it selected | done — "Release R1" |
+| R2 | Intersect Fair: develop from construction and extension segments too (Fair only · Construction · Extensions) | next |
+| R3 | Intersect: Spread / Reference / Save arrangement / bookmarks in the bookmark popover | — |
+| R4 | Repeat: Fill on the lower row; grid/handle icon = back to geometry | — |
+| R5 | Optional participant info; export attribution (default off) | — |
 
 ## Protected — never modify, merge into, push or deploy
 
@@ -434,6 +441,19 @@ Keep this short and current. It is a starting point, not a substitute for readin
 - iPhone build (temp dir, `index-BXXhE8eU.js` / `index-DrX1Jkwo.css`); fixtures unchanged (`2350b02c56`, `5d4b82fd7d`);
   phone-preview on 5189 → http://192.168.1.5:5189/compass-repeat/ (HTTP 200, new assets, no console errors).
 - Not tested on a physical iPhone (simulated touch and 375 px emulation only).
+
+## Release R1: point first
+
+- `controller.ts` `setTool`: when the tool changes from Select with exactly one existing point selected (Construct
+  only), Line gets `pending = { kind: 'line', a: point }` and Circle (By radius) `pending = { kind: 'circle', centre:
+  point }` — the same state a first tap makes, so the next tap completes it exactly as tool-first does (preview, A's
+  continuations on the ribbon, one Undo step, no new point). Divide (its first input is a curve): the point simply
+  stays selected; nothing started. Other tools, other circle variants, Intersect / Repeat: as before (selection
+  cleared). Changing the tool again, or a Circle variant / Line guide, cancels the pending step (never executes it).
+- Tests (`scratchpad/r1-app.js`, real taps): A → Line → tap B: one line A–B, 0 new points, 1 Undo, Undo/Redo exact;
+  A → Circle → tap C: circle centred on A, same new points as the tool-first circle (2 and 2 on a fresh square);
+  A → Divide: tool Divide, A still selected, nothing pending or made; A → Line → Circle: nothing made; tool first
+  Line unchanged; Circle with nothing selected: nothing pending. Suite identical / 16/0 / all true / Guide baseline.
 
 ## Exact next step
 

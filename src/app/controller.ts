@@ -654,6 +654,11 @@ export class AppController {
   /** §1.3: tapping the lit tool, or Select, returns to Select. */
   setTool(tool: ToolId): void {
     if (!LIVE_TOOLS.has(tool)) return;
+    // Release R1 — point first: one point selected (Select, Construct), then a tool — exactly as if the
+    // tool had been chosen first and the point tapped.
+    const was = this.tool;
+    const sel = this.selection;
+    const pointFirst = was === 'select' && sel.length === 1 && sel[0]!.kind === 'point' && this.doc.view.workspace === 'construct' && this.doc.points.some((p) => p.id === (sel[0] as { id: string }).id) ? (sel[0] as { kind: 'point'; id: string }).id : null;
     this.lineChoice = null;
     this.formPress = null;
     this.incircle = null;
@@ -684,6 +689,14 @@ export class AppController {
     this.lineGuide = 'free';
     this.lineReference = null;
     if (this.tool !== 'select') this.selection = [];
+    if (pointFirst && this.tool !== 'select') {
+      // Line: the point is A. Circle (By radius): the point is the centre. Nothing is made until the
+      // second input, as ever. Any other tool (Divide's first input is a curve): the point simply stays
+      // selected — no operation is started.
+      if (this.tool === 'line') this.pending = { kind: 'line', a: { kind: 'existing', id: pointFirst } };
+      else if (this.tool === 'circle' && this.circleVariant === 'centre-radius') this.pending = { kind: 'circle', centre: { kind: 'existing', id: pointFirst } };
+      else if (this.tool === 'divide') this.selection = sel;
+    }
     this.notify();
   }
 
