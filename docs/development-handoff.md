@@ -521,12 +521,39 @@ Keep this short and current. It is a starting point, not a substitute for readin
   off); Undo keeps it; Timelapse playable (9 frames, 5.8 s); Save writes it; off again → no text, details kept;
   sheet fits at 375 px.
 
+## Release candidate: final regression and build (2026-11-01)
+
+- Full suite: Plate 113 / legacy Intersect-source / coloured construction fingerprints identical; interrupted-touch
+  16/0; smoke all true; Beginner Guide baseline; digest of all 160 stored artwork records identical before/after.
+  Fill 20/20, weave 14/14; R1–R5 tests pass; chain (Intersect: develop 16 → Fill → Interlace 12 crossings → PNG/SVG,
+  Undo/Redo, Timelapse 23 frames; Construct: Fill → Interlace 20 → exports, Timelapse); Close Gap with guides hidden
+  (Apply, Undo exact); Save As leaves the original unchanged; reload → Recover → unsaved change back, record not.
+- iPhone build (temp dir): `index-tMPIdqHe.js` / `index-BLapttXc.css`; fixtures unchanged (`2350b02c56`,
+  `5d4b82fd7d`); http://192.168.1.5:5189/compass-repeat/ (HTTP 200, new assets, no console errors).
+- Not tested on a physical iPhone by me.
+
+## GitHub Desktop release checklist (for the user — do not run without their approval)
+
+1. Repository: `Amalendhusp/compass-repeat` (local folder `Compass-Repeat - Git`). Branch: `feature/release-candidate`,
+   HEAD = `git log -1` (code at `6629ea5`, then this handoff). It is 84+ commits ahead of `main` (`c9096bd`) and based
+   on it (merge base = `c9096bd`): no divergence, a clean merge.
+2. Publish the branch (GitHub Desktop → Publish branch) — this alone deploys nothing.
+3. Open a pull request: base `main` ← compare `feature/release-candidate`. Review the diff; leave the intermediate
+   branches (`feature/final-sprint`, `feature/ui-refinement`, `feature/integration-a-d`, …) as they are.
+4. **Deployment implication:** merging into `main` (any push to `main`) runs `.github/workflows/deploy.yml`, which
+   builds and deploys the PUBLIC site to GitHub Pages (https://amalendhusp.github.io/compass-repeat/) within minutes.
+   Merge only when the iPhone review is approved.
+5. Existing users of the public site keep their artworks (IndexedDB on their device; nothing is migrated or deleted).
+   After the update, autosave keeps a working draft instead of adding Gallery entries (UI-1); older artworks open
+   unchanged. Participant information stays on each device; nothing is uploaded.
+6. The Geometry Explorer student pilot is a separate repository — unaffected.
+7. After merging: check the Actions tab (Deploy to GitHub Pages: success), open the public URL on the iPhone, hard
+   refresh once, and test one saved artwork.
+
 ## Exact next step
 
-Final sprint S1–S4 done on `feature/final-sprint`; features frozen; release candidate on the phone-preview server.
-Stop for the user's physical iPhone review. Do not merge, push or deploy. Review questions: the Interlaced default
-(edged cream band on ink, 6 / 3 units); whether conflicts in dense patterns (e.g. Plate 113: 16 of 197) need more than
-manual reversal; one-band gaps use the Background colour.
+Release refinements R1–R5 done on `feature/release-candidate`; release candidate on the phone-preview server. Stop
+for the user's physical iPhone approval. Do not merge, push or deploy. No further features this cycle.
 
 ## Commands
 
