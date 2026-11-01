@@ -4,13 +4,21 @@
 // rebuilt from the history and drawn by the same export-mode renderers PNG and SVG use, onto a
 // private off-screen canvas. The live canvas, document, history and Undo are never touched.
 //
-// Construct or Repeat follows the workspace the timelapse is made from, and so does the framing —
-// the same views a PNG export would use, held steady for the whole video:
-// - From Repeat: states from before Repeat was first set up are drawn as Construct (in the
-//   Construct view, construction included — it's the building phase), every later one as the
-//   pattern (in the Repeat view, with Share's own Construction / Grid settings).
-// - From Construct: every state as Construct; changes that only affect Repeat look identical
-//   there, so they're skipped instead of shown as frozen frames.
+// Each moment is shown in the workspace it happened in, framed steadily for the whole video:
+// - Construct and Intersect moments are framed to fit the artwork — everything any of their
+//   moments draws (for Intersect, every instance as placed and turned), with Fit's usual margin —
+//   so nothing the process ever made is cropped by where the camera happened to be at the end.
+// - Repeat moments keep the Repeat view chosen live: the pattern is unbounded, and that view is its
+//   composition (as a PNG export of Repeat frames it).
+// - Moments made in Intersect are drawn as the arrangement: every instance placed and turned, in
+//   its own colour, Construction light and Fair strong — never handles, rings, picks or the dock.
+// - From Repeat: moments made in Construct are Construct (construction included — the building
+//   phase); the rest are the pattern once Repeat is set up (the repeated design only, with Share's
+//   Grid setting). Moments recorded before the workspace was kept follow the old rule: Construct
+//   until Repeat was set up, the pattern after.
+// - From Construct: Construct and Intersect moments as such; changes that only affect Repeat look
+//   identical in Construct, so they're skipped instead of shown as frozen frames.
+// So a process that went Construct → Intersect → Repeat plays back that way.
 // Changes are cuts, never animated: each recorded state is simply shown, for a time that adapts to
 // how many there are.
 //
@@ -19,19 +27,27 @@
 // included), then WebM.
 
 import { AppController, type ViewTransform } from '../app/controller.ts';
-import type { Doc } from '../model/types.ts';
+import type { Doc, Vec2, Workspace } from '../model/types.ts';
 import { render, type ArtworkExport } from './renderer.ts';
 import { renderRepeat } from './repeatRenderer.ts';
+import { renderIntersection } from './intersectionRenderer.ts';
 import { shareFilename } from './export.ts';
+import { attributionOf, drawAttribution } from './attribution.ts';
+import { color } from './tokens.ts';
 import { loadEvents, loadMeta, type ProcessEvent } from '../persist/processStore.ts';
 import { walkProcess } from '../persist/processReplay.ts';
 import { captureState, stateHash, stateToDoc, type ArtworkState } from '../persist/processState.ts';
+import { drawnShapes } from '../geometry/bounds.ts';
+import { developedSegments, intersectionCopies } from '../geometry/intersection.ts';
+import { transformPoint, type InstancePose } from '../geometry/lattice.ts';
 
 const MAX_SIDE = 1080; // px, the video's longest side
 const FPS = 30;
 const BITS_PER_SECOND = 6_000_000;
 export const START_HOLD = 750; // ms on the first state
 export const END_HOLD = 1750; // ms on the finished artwork
+/** Release R5: extra time on the final frame when it carries an attribution, so it can be read. */
+export const CREDIT_HOLD = 1250;
 /** Each change: 24 s shared between them, but never shorter than 60 ms or longer than 250 ms. */
 export const stepMs = (changes: number): number => Math.min(250, Math.max(60, 24_000 / Math.max(changes, 1)));
 
@@ -83,9 +99,92 @@ export interface TimelapsePlan {
   stepMs: number;
   totalMs: number;
   asRepeat: boolean;
+  /** Everything the Construct and the Intersect moments draw (world coordinates), for framing. */
+  extent: { construct: Box | null; intersect: Box | null };
+  /** The finished design in each (its last moment's Fair pieces; else all it draws): what the
+   * frame centres where it has room to spare. */
+  focus: { construct: Box | null; intersect: Box | null };
 }
 
-export async function planTimelapse(liveDoc: Doc): Promise<TimelapsePlan> {
+interface Box {
+  minX: number;
+  minY: number;
+  maxX: number;
+  maxY: number;
+}
+const grow = (b: Box | null, x: number, y: number): Box => (b ? { minX: Math.min(b.minX, x), minY: Math.min(b.minY, y), maxX: Math.max(b.maxX, x), maxY: Math.max(b.maxY, y) } : { minX: x, minY: y, maxX: x, maxY: y });
+
+/** How a moment is shown: in the workspace it happened in (see the top of this file). */
+function modeFor(asRepeat: boolean, state: ArtworkState, workspace?: Workspace): 'construct' | 'intersect' | 'repeat' {
+  if (workspace === 'intersection') return 'intersect';
+  if (!asRepeat || workspace === 'construct') return 'construct';
+  return state.repeat.family !== undefined ? 'repeat' : 'construct';
+}
+
+/**
+ * Phase 1.1: the box of what one moment draws in its workspace — exactly the pieces its frame
+ * draws (bounds.ts drawnShapes: no points, no trimmed pieces, no Extension tails), with
+ * Construction only when the frame shows it (`construction`), or Fair alone (`fairOnly`). In
+ * Intersect each piece is placed and turned with each instance itself (turning a box's corners
+ * instead made the extent reach well past the drawing on the side of turned instances).
+ */
+function drawnBox(mode: 'construct' | 'intersect', state: ArtworkState, liveDoc: Doc, construction: boolean): Box | null {
+  const doc = stateToDoc(state, liveDoc);
+  const { points, discs } = drawnShapes(doc, construction);
+  let box: Box | null = null;
+  const place = (p: Vec2, pose: InstancePose | null) => (pose ? transformPoint(doc.frame.origin, pose, p) : p);
+  for (const pose of mode === 'construct' ? [null] : intersectionCopies(doc).map((c) => c.pose)) {
+    for (const p of points) {
+      const q = place(p, pose);
+      box = grow(box, q.x, q.y);
+    }
+    // A circle turns into itself: its centre placed, its radius either side.
+    for (const d of discs) {
+      const q = place(d, pose);
+      box = grow(grow(box, q.x - d.r, q.y - d.r), q.x + d.r, q.y + d.r);
+    }
+  }
+  // Stage D: the Developed Primary stands where it was developed (copies may have moved since).
+  if (mode === 'intersect')
+    for (const s of developedSegments(doc)) {
+      const g = s.geom;
+      if (g.kind === 'line') box = grow(grow(box, g.a.x, g.a.y), g.b.x, g.b.y);
+      else box = grow(grow(box, g.c.x - g.r, g.c.y - g.r), g.c.x + g.r, g.c.y + g.r);
+    }
+  return box;
+}
+const union = (a: Box | null, b: Box | null): Box | null => (!a ? b : !b ? a : grow(grow(a, b.minX, b.minY), b.maxX, b.maxY));
+
+/** Fit's margin around the framed artwork. */
+const FIT_PADDING = 0.86;
+
+/**
+ * A view of w × h framing `box` with Fit's margin (or null if there is nothing to frame). Phase
+ * 1.1: the zoom always fits the whole of `box` (nothing is cropped); where the frame has room to
+ * spare along an axis, it is spent centring `focus` (the finished design) as nearly as the whole of
+ * `box` still allows — rather than centring everything ever drawn, which can leave the design itself
+ * off to one side.
+ */
+function fittedView(box: Box | null, w: number, h: number, focus: Box | null = null): ViewTransform | null {
+  if (!box) return null;
+  const bw = Math.max(box.maxX - box.minX, 1e-6);
+  const bh = Math.max(box.maxY - box.minY, 1e-6);
+  const zoom = Math.min(w / bw, h / bh) * FIT_PADDING;
+  // Where the view's centre may go with all of `box` inside the frame's padded area.
+  const centreWithin = (lo: number, hi: number, half: number, want: number): number => {
+    const inner = half * FIT_PADDING;
+    const from = hi - inner;
+    const to = lo + inner;
+    return from >= to ? (lo + hi) / 2 : Math.min(to, Math.max(from, want));
+  };
+  const cx = centreWithin(box.minX, box.maxX, w / (2 * zoom), focus ? (focus.minX + focus.maxX) / 2 : (box.minX + box.maxX) / 2);
+  const cy = centreWithin(box.minY, box.maxY, h / (2 * zoom), focus ? (focus.minY + focus.maxY) / 2 : (box.minY + box.maxY) / 2);
+  return { zoom, pan: { x: -cx, y: -cy }, w, h };
+}
+
+/** `construction`: whether Construct frames show the construction (an export setting; a timelapse
+ * made from Repeat always shows it while the pattern is being built). */
+export async function planTimelapse(liveDoc: Doc, { construction = true }: { construction?: boolean } = {}): Promise<TimelapsePlan> {
   const asRepeat = liveDoc.view.workspace === 'repeat';
   const events: ProcessEvent[] = await loadEvents(liveDoc.id);
   if (events.length < 2) throw new Error('No recorded changes yet');
@@ -97,16 +196,40 @@ export async function planTimelapse(liveDoc: Doc): Promise<TimelapsePlan> {
   // cut, never invented steps in between.
   const current = captureState(liveDoc);
   let last: ArtworkState | null = null;
-  for (const { state } of walkProcess(events)) last = state;
+  // One walk through the history: where it ends, and how far the shown moments reach (framing).
+  const extent: TimelapsePlan['extent'] = { construct: null, intersect: null };
+  const lastIn: { construct: ArtworkState | null; intersect: ArtworkState | null } = { construct: null, intersect: null };
+  const showsConstruction = { construct: construction || asRepeat, intersect: true };
+  const add = (state: ArtworkState, workspace?: Workspace) => {
+    const mode = modeFor(asRepeat, state, workspace);
+    if (mode === 'repeat') return;
+    extent[mode] = union(extent[mode], drawnBox(mode, state, liveDoc, showsConstruction[mode]));
+    lastIn[mode] = state;
+  };
+  let first = true;
+  for (const { event, state } of walkProcess(events)) {
+    last = state;
+    if (first || keep(event)) add(state, event.workspace);
+    first = false;
+  }
   const appendCurrent = stateHash(last!) !== stateHash(current) ? current : null;
+  if (appendCurrent) add(appendCurrent, liveDoc.view.workspace);
+  // The finished design in each workspace: its last moment's Fair pieces (or, before anything is
+  // Fair, everything that moment draws).
+  const focus: TimelapsePlan['focus'] = { construct: null, intersect: null };
+  for (const mode of ['construct', 'intersect'] as const) {
+    const s = lastIn[mode];
+    if (s) focus[mode] = drawnBox(mode, s, liveDoc, false) ?? drawnBox(mode, s, liveDoc, showsConstruction[mode]);
+  }
   const changes = shown - 1 + (appendCurrent ? 1 : 0);
   const step = stepMs(changes);
-  return { events, keep, appendCurrent, changes, stepMs: step, totalMs: START_HOLD + changes * step + END_HOLD, asRepeat };
+  return { events, keep, appendCurrent, changes, stepMs: step, totalMs: START_HOLD + changes * step + END_HOLD, asRepeat, extent, focus };
 }
 
-/** Draws recorded states exactly as the video frames show them: the export-mode renderers, the
- * live views, at the video's size. */
-export function frameRenderer(liveDoc: Doc, view: ViewTransform, settings: { construction: boolean; guides: boolean }, asRepeat: boolean) {
+/** Draws recorded states exactly as the video frames show them: the export-mode renderers at the
+ * video's size — Construct and Intersect fitted to `extent` (the whole process), Repeat in its live
+ * view. Without `extent`, every workspace in its live view. */
+export function frameRenderer(liveDoc: Doc, view: ViewTransform, settings: { construction: boolean; guides: boolean }, asRepeat: boolean, extent?: TimelapsePlan['extent'], focus?: TimelapsePlan['focus']) {
   const scale = MAX_SIDE / Math.max(view.w, view.h);
   const even = (n: number) => Math.max(2, Math.round(n / 2) * 2);
   const W = even(view.w * scale);
@@ -119,19 +242,37 @@ export function frameRenderer(liveDoc: Doc, view: ViewTransform, settings: { con
   // Made from Repeat, the states before the pattern existed are the construction being built:
   // they show it, whatever the pattern's own Construction setting is.
   const building: ArtworkExport = asRepeat ? { ...exp, construction: true } : exp;
-  const constructView: ViewTransform = { zoom: liveDoc.view.zoom, pan: { ...liveDoc.view.pan }, w: view.w, h: view.h };
+  const constructView: ViewTransform = fittedView(extent?.construct ?? null, view.w, view.h, focus?.construct ?? null) ?? { zoom: liveDoc.view.zoom, pan: { ...liveDoc.view.pan }, w: view.w, h: view.h };
   const repeatView: ViewTransform = { zoom: liveDoc.repeatView.zoom, pan: { ...liveDoc.repeatView.pan }, w: view.w, h: view.h };
+  const ix = liveDoc.intersectionView ?? liveDoc.view;
+  const intersectView: ViewTransform = fittedView(extent?.intersect ?? null, view.w, view.h, focus?.intersect ?? null) ?? { zoom: ix.zoom, pan: { ...ix.pan }, w: view.w, h: view.h };
   const drawer = new AppController(liveDoc); // private: only ever handed rebuilt states
+  // Intersect's renderer reads its transient state off a controller: here, none at all — no tool,
+  // no selection, no picks, no drag — so it draws the arrangement alone.
+  const still = { doc: liveDoc, tool: null, fairTrace: null, lineChoice: null, intersectionDrag: null, intersectionSpreadDraft: null, intersectionSelected: null, intersectionPicks: [], intersectionPickKind: 'line' };
   return {
     canvas,
     W,
     H,
-    /** Shown as the pattern once Repeat has been set up — when made from Repeat. */
-    isRepeat: (s: ArtworkState) => asRepeat && s.repeat.family !== undefined,
-    draw(state: ArtworkState): void {
+    /** The view each workspace's frames use. */
+    views: { construct: constructView, intersect: intersectView, repeat: repeatView },
+    /** How a moment is shown: in the workspace it happened in (see the top of this file). */
+    modeOf(state: ArtworkState, workspace?: Workspace): 'construct' | 'intersect' | 'repeat' {
+      return modeFor(asRepeat, state, workspace);
+    },
+    /** Release R5: the participant's attribution over the frame as drawn (the final one). */
+    attribution(text: string, mode: 'construct' | 'intersect' | 'repeat'): void {
+      ctx.setTransform(W / view.w, 0, 0, H / view.h, 0, 0);
+      drawAttribution(ctx, view.w, view.h, text, mode === 'repeat' ? liveDoc.repeatDisplay.background : color.plaster);
+    },
+    draw(state: ArtworkState, workspace?: Workspace): void {
       drawer.doc = stateToDoc(state, liveDoc);
       ctx.setTransform(W / view.w, 0, 0, H / view.h, 0, 0);
-      if (this.isRepeat(state)) renderRepeat(ctx, drawer, repeatView, exp);
+      const mode = this.modeOf(state, workspace);
+      if (mode === 'intersect') {
+        still.doc = drawer.doc;
+        renderIntersection(ctx, still as unknown as AppController, intersectView);
+      } else if (mode === 'repeat') renderRepeat(ctx, drawer, repeatView, exp);
       else render(ctx, drawer, constructView, building);
     },
   };
@@ -152,8 +293,8 @@ export async function createTimelapse(
   const type = videoType();
   if (!type) throw new Error('This browser can’t record video');
   const liveDoc = live.doc;
-  const plan = await planTimelapse(liveDoc);
-  const frames = frameRenderer(liveDoc, view, settings, plan.asRepeat);
+  const plan = await planTimelapse(liveDoc, { construction: settings.construction });
+  const frames = frameRenderer(liveDoc, view, settings, plan.asRepeat, plan.extent, plan.focus);
   const out = document.createElement('canvas'); // the frame is copied here 30 times a second
   out.width = frames.W;
   out.height = frames.H;
@@ -189,7 +330,8 @@ export async function createTimelapse(
   try {
     document.addEventListener('visibilitychange', onVisibility);
     const walk = walkProcess(plan.events);
-    frames.draw(walk.next().value!.state);
+    const first = walk.next().value!;
+    frames.draw(first.state, first.event.workspace);
     copy();
     recorder.start(1000);
     const t0 = performance.now();
@@ -199,22 +341,33 @@ export async function createTimelapse(
     }, 1000 / FPS);
 
     let due = t0 + START_HOLD;
+    let lastMode = frames.modeOf(first.state, first.event.workspace);
     for (const { event, state } of walk) {
       if (!plan.keep(event)) continue;
       await sleepUntil(due);
       if (stop()) return null;
-      frames.draw(state);
+      frames.draw(state, event.workspace);
+      lastMode = frames.modeOf(state, event.workspace);
       copy();
       due += plan.stepMs;
     }
     if (plan.appendCurrent) {
       await sleepUntil(due);
       if (stop()) return null;
-      frames.draw(plan.appendCurrent);
+      frames.draw(plan.appendCurrent, liveDoc.view.workspace);
       copy();
       due += plan.stepMs;
     }
-    await sleepUntil(due + END_HOLD);
+    // Release R5: the attribution, if chosen, on the finished artwork only — held a little longer to read.
+    const credit = attributionOf(liveDoc);
+    if (credit) {
+      await sleepUntil(due);
+      if (stop()) return null;
+      const lastState = plan.appendCurrent ?? null;
+      frames.attribution(credit, lastState ? frames.modeOf(lastState, liveDoc.view.workspace) : lastMode);
+      copy();
+    }
+    await sleepUntil(due + END_HOLD + (credit ? CREDIT_HOLD : 0));
     if (stop()) return null;
     onProgress(1);
     const durationMs = performance.now() - t0;

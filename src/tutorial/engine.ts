@@ -12,7 +12,7 @@
 // the "last open" artwork, and Exit/Finish reopen whatever was open before, untouched.
 
 import type { AppController, ToolId, ViewTransform } from '../app/controller.ts';
-import { worldToScreen } from '../app/controller.ts';
+import { paperToScreen, worldToScreen } from '../app/controller.ts';
 import type { Doc, Vec2 } from '../model/types.ts';
 import { onTap } from '../ui/tap.ts';
 
@@ -239,7 +239,7 @@ export function openGuide(guide: Guide, host: CoachHost): void {
     const targets = (view?.targets ?? []).filter((el): el is Element => !!el && el.isConnected).map((el) => el.getBoundingClientRect()).filter((r) => r.width > 0);
     place(halos, 'coach-halo', targets, 4);
     const canvas = document.querySelector('canvas.stage')?.getBoundingClientRect();
-    const spots = vt && canvas ? (view?.spots ?? []).slice(0, 12).map((p) => worldToScreen(vt, p)).map((s) => ({ left: canvas.left + s.x - 14, top: canvas.top + s.y - 14, width: 28, height: 28 })) : [];
+    const spots = vt && canvas ? (view?.spots ?? []).slice(0, 12).map((p) => paperToScreen(vt, worldToScreen(vt, p))).map((s) => ({ left: canvas.left + s.x - 14, top: canvas.top + s.y - 14, width: 28, height: 28 })) : [];
     place(rings, 'coach-spot', spots.filter((r) => r.top + 14 > (canvas?.top ?? 0) && r.top + 14 < (canvas?.bottom ?? 0)), 0);
   }
 

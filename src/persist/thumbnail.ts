@@ -23,6 +23,7 @@ export function makeThumbnail(doc: Doc): string {
   ctx.setTransform(2, 0, 0, 2, 0, 0);
   // The artwork-only render path reads just these from the controller.
   const artworkOnly = { doc, tool: 'select', fairTrace: null, fillPreview: null } as unknown as AppController;
-  render(ctx, artworkOnly, view, { background: true, construction: true, guides: false });
+  const style = doc.repeatDisplay;
+  render(ctx, artworkOnly, view, { background: true, construction: true, guides: false, fairStroke: { colour: style.strokeColour ?? null, width: style.strokeWidth ?? null } });
   return canvas.toDataURL('image/png');
 }

@@ -1,6 +1,6 @@
 import './style.css';
 import { cloneDoc, createDoc, defaultRepeatDisplay, placeFrame } from './model/doc.ts';
-import { AppController, type ToolId, type ViewTransform } from './app/controller.ts';
+import { AppController, cameraView, paperToScreen, screenToPaper, screenToWorld, type ToolId, type ViewTransform } from './app/controller.ts';
 import { PointerManager } from './interaction/pointer.ts';
 import { selectTool } from './interaction/tools/select.ts';
 import { circleTool } from './interaction/tools/circle.ts';
@@ -10,8 +10,20 @@ import { divideTool } from './interaction/tools/divide.ts';
 import { fairTool } from './interaction/tools/fair.ts';
 import { fillTool } from './interaction/tools/fill.ts';
 import { repeatTool } from './interaction/tools/repeatTool.ts';
-import { render } from './render/renderer.ts';
+import { intersectionTool } from './interaction/tools/intersectionTool.ts';
+import { intersectFairTool } from './interaction/tools/intersectFair.ts';
+import { drawInteraction, render } from './render/renderer.ts';
 import { renderRepeat } from './render/repeatRenderer.ts';
+import { renderIntersection } from './render/intersectionRenderer.ts';
+import { intersectionCopies, layoutOf, type IntersectionCopy } from './geometry/intersection.ts';
+import { contextLinesNear, contextPointNear, instanceCamera, instanceUnder } from './geometry/intersectionLink.ts';
+import { setContextProvider } from './interaction/context.ts';
+import { curveCandidatesAt, pickPointTarget } from './interaction/hittest.ts';
+import type { ToolModule } from './interaction/tools/types.ts';
+import { drawUnderlayOutline, onUnderlayImage, screenLayers, settleUnderlay, underlayIn } from './render/underlay.ts';
+import { referenceTakeover, referenceWheel } from './interaction/referenceTransform.ts';
+import { anchorTool } from './interaction/tools/anchorTool.ts';
+import { anchorTargets, anchorWorld, drawAnchorLoupe, drawAnchors } from './reference/anchors.ts';
 import { buildShell, closeAnyPopover } from './ui/shell.ts';
 import { openGuide, type CoachHost } from './tutorial/engine.ts';
 import { beginnerGuide } from './tutorial/guides/beginner.ts';
@@ -19,24 +31,27 @@ import { openStartScreen, type CardActions } from './ui/startscreen.ts';
 import { buildDrawFrameHud } from './ui/drawframehud.ts';
 import { attachDrawFrame } from './interaction/drawframe.ts';
 import { initToast } from './ui/toast.ts';
-import type { Doc, FrameKind } from './model/types.ts';
+import type { Camera, Doc, FrameKind, Vec2 } from './model/types.ts';
 import { resolvePoint } from './geometry/kernel.ts';
 import { worldToScreen } from './app/controller.ts';
 import { attachAutosave, type AutosaveHandle } from './persist/autosave.ts';
 import { attachProcessRecorder, type ProcessHandle } from './persist/processRecorder.ts';
-import { copyProcess, enqueue, listProcesses, loadEvents, loadMeta } from './persist/processStore.ts';
+import { copyProcess, deleteProcess, enqueue, listProcesses, loadEvents, loadMeta, rollbackProcess } from './persist/processStore.ts';
+import { artworkHash, clearDraft, dirtyTracker, draftSlot, loadDraft, prefsHash, type WorkingDraft } from './persist/draft.ts';
 import { replayProcess, stateAt } from './persist/processReplay.ts';
 import { captureState, stateHash, stateToDoc } from './persist/processState.ts';
 import { makeThumbnail } from './persist/thumbnail.ts';
-import { deleteArtwork, getMeta, listArtworks, loadDocument, loadHistory, saveDocument, setMeta, type ArtworkSummary } from './persist/db.ts';
+import { deleteArtwork, getMeta, listArtworks, loadDocument, loadHistory, saveDocument, saveHistory, setMeta, type ArtworkSummary } from './persist/db.ts';
 import { openNameSheet } from './ui/artworks.ts';
 import { openConfirmSheet } from './ui/confirmsheet.ts';
 import { showToast } from './ui/toast.ts';
 import { genId } from './model/id.ts';
 import { setupCanvasDPR } from './render/canvasSetup.ts';
 import { attachDiagnostics } from './ui/diagnostics.ts';
-import { computeVisibleBounds } from './geometry/bounds.ts';
-import { ensureRepeatDefaults, fitBounds as repeatFitBounds, firstEntryBounds } from './geometry/lattice.ts';
+import { computeVisibleBounds, discBounds, turned } from './geometry/bounds.ts';
+import { composePose, ensureRepeatDefaults, firstEntryBounds, fitInstances, motifRadius } from './geometry/lattice.ts';
+import { refreshSuggestedSpacing } from './geometry/repeatSetup.ts';
+import { repeatUnit } from './geometry/repeatUnit.ts';
 import { preventSafariPageZoom } from './interaction/preventPageZoom.ts';
 import { migrateLegacyFillKeys } from './geometry/regions.ts';
 
@@ -49,7 +64,21 @@ const tools = { select: selectTool, circle: circleTool, line: lineTool, arc: arc
 
 /** Phase 5.5: the artwork currently open. Tearing it down stops its render loop, resize observer
  * and autosave, so switching artworks never leaves an old one drawing or saving in the background. */
-let session: { controller: AppController; autosave: AutosaveHandle; process: ProcessHandle | null; getView: () => ViewTransform; fit: () => void; teardown: () => void } | null = null;
+let session: {
+  controller: AppController;
+  autosave: AutosaveHandle;
+  process: ProcessHandle | null;
+  getView: () => ViewTransform;
+  fit: () => void;
+  teardown: () => void;
+  /** UI-1: a saved artwork with this id exists (it is listed in My Artworks). */
+  savedBase: boolean;
+  /** UI-1: whether the artwork differs from its saved version (a new one: from its bare frame). */
+  tracker: ReturnType<typeof dirtyTracker>;
+} | null = null;
+
+/** UI-1: the open artwork has changes not saved (never for the Beginner Guide's practice). */
+const isDirty = (s = session): boolean => !!s && !guideReturn && s.tracker.dirty(s.controller.doc);
 
 /** Phase 5.7: the draw-frame gesture's own listeners and render loop, while it's armed. */
 let detachFrameDrawing: (() => void) | null = null;
@@ -65,15 +94,18 @@ function endSession(): void {
  * practice artwork — never autosaved, never listed, never the "last open" artwork. What was open
  * before is saved as it stands on entry and reopened, untouched, when the guide closes. */
 let guideReturn: { artworkId: string | null } | null = null;
-const inertAutosave: AutosaveHandle = { detach: () => {}, flush: () => {} };
+const inertAutosave: AutosaveHandle = { detach: () => {}, flush: () => {}, thumbnail: () => undefined };
 
 const FIT_PADDING = 0.86; // consistent margin around the fitted geometry, both axes
 
 /** Shared by fitView and fitRepeatView: fits `bounds` into whatever usable rectangle the canvas
  * currently has, writing the result into `viewState` directly (never through commit — Fit is a
  * view action, same as Phase 3.6 item 2 established for pan/zoom generally). The usable rectangle
- * excludes wherever the floating context-bar/dock overlay obstructs the bottom of the canvas. */
-function fitViewState(viewState: { zoom: number; pan: { x: number; y: number } }, bounds: { minX: number; minY: number; maxX: number; maxY: number } | null, fallbackRadius: number, fallbackCentre: { x: number; y: number }, canvas: HTMLCanvasElement, overlay: HTMLElement): void {
+ * excludes wherever the floating context-bar/dock overlay obstructs the bottom of the canvas.
+ *
+ * A turned camera keeps its turn: `boundsFor(turn)` gives the bounds as that turned view sees them
+ * (geometry/bounds.ts — turned()), so what is fitted is what is actually shown, corners and all. */
+function fitViewState(viewState: Camera, boundsFor: (turn: number) => { minX: number; minY: number; maxX: number; maxY: number } | null, fallbackRadius: number, fallbackCentre: { x: number; y: number }, canvas: HTMLCanvasElement, overlay: HTMLElement): void {
   const canvasW = canvas.clientWidth || 1;
   const canvasH = canvas.clientHeight || 1;
   const canvasRect = canvas.getBoundingClientRect();
@@ -84,9 +116,11 @@ function fitViewState(viewState: { zoom: number; pan: { x: number; y: number } }
   const usableTop = strip ? Math.min(Math.max(strip.bottom + 8 - canvasRect.top, 0), usableBottom * 0.5) : 0;
   const usableW = canvasW;
   const usableH = Math.min(Math.max(usableBottom - usableTop, canvasH * 0.25), canvasH);
+  const turn = viewState.rotation ?? 0;
+  const bounds = boundsFor(turn);
 
   let zoom: number;
-  let centre: { x: number; y: number };
+  let centre: { x: number; y: number }; // in the turned view's frame
   if (bounds) {
     const bw = Math.max(bounds.maxX - bounds.minX, 1e-6);
     const bh = Math.max(bounds.maxY - bounds.minY, 1e-6);
@@ -94,17 +128,16 @@ function fitViewState(viewState: { zoom: number; pan: { x: number; y: number } }
     centre = { x: (bounds.minX + bounds.maxX) / 2, y: (bounds.minY + bounds.maxY) / 2 };
   } else {
     zoom = (Math.min(usableW, usableH) * FIT_PADDING) / Math.max(fallbackRadius, 1);
-    centre = fallbackCentre;
+    centre = turned(fallbackCentre, turn);
   }
   zoom = Math.max(0.15, Math.min(8, zoom));
 
   viewState.zoom = zoom;
-  // worldToScreen(p) = (p + pan) * zoom + canvas-half — solve pan so `centre` lands on the
-  // usable rectangle's centre (canvas-local coordinates) rather than the full canvas's centre.
-  viewState.pan = {
-    x: (usableW / 2 - canvasW / 2) / zoom - centre.x,
-    y: (usableTop + usableH / 2 - canvasH / 2) / zoom - centre.y,
-  };
+  // On the canvas, a world point p lands at canvas-centre + turn((p + pan) * zoom) — solve pan so
+  // `centre` lands on the usable rectangle's centre rather than the full canvas's centre (with no
+  // turn: worldToScreen(p) = (p + pan) * zoom + canvas-half, as always).
+  const want = turned({ x: (usableW / 2 - canvasW / 2) / zoom - centre.x, y: (usableTop + usableH / 2 - canvasH / 2) / zoom - centre.y }, -turn);
+  viewState.pan = { x: want.x, y: want.y };
 }
 
 /**
@@ -119,16 +152,31 @@ function fitViewState(viewState: { zoom: number; pan: { x: number; y: number } }
  * the design. Never touches document geometry, only view.zoom/view.pan.
  */
 function fitView(controller: AppController, canvas: HTMLCanvasElement, overlay: HTMLElement): void {
-  const bounds = computeVisibleBounds(controller.doc);
-  fitViewState(controller.doc.view, bounds, controller.doc.frame.radius, controller.doc.frame.origin, canvas, overlay);
+  fitViewState(controller.doc.view, (turn) => computeVisibleBounds(controller.doc, turn), controller.doc.frame.radius, controller.doc.frame.origin, canvas, overlay);
   controller.notify();
 }
 
 /** Phase 5 item 13: Repeat's own Fit — a small 3×3 tessellation sample (geometry/lattice.ts's
- * fitBounds), never the Construct viewport, never an unbounded lattice extent. */
+ * fitInstances), never the Construct viewport, never an unbounded lattice extent: each instance's
+ * own frame extent (the same as lattice.ts's fitBounds when unturned). */
 function fitRepeatView(controller: AppController, canvas: HTMLCanvasElement, overlay: HTMLElement): void {
-  const bounds = repeatFitBounds(controller.doc);
-  fitViewState(controller.doc.repeatView, bounds, controller.doc.frame.radius, controller.doc.frame.origin, canvas, overlay);
+  const doc = controller.doc;
+  const pivot = doc.frame.origin;
+  const r = motifRadius(doc);
+  // From an Intersect arrangement, each lattice position holds the whole unit: every instance's frame.
+  const unit = repeatUnit(doc);
+  const members = unit?.members ?? [null];
+  const discs = fitInstances(doc).flatMap((lattice) => [
+    ...members.map((member) => {
+      const pose = member ? composePose(lattice, member) : lattice;
+      return { x: pivot.x + pose.translate.x, y: pivot.y + pose.translate.y, r };
+    }),
+    // Stage D: the Developed Primary stands about the lattice position, as far as it reaches.
+    ...(unit?.developed.length ? [{ x: pivot.x + lattice.translate.x, y: pivot.y + lattice.translate.y, r: unit.extent }] : []),
+  ]);
+  // An empty Intersect composition draws nothing: fit the lattice positions themselves.
+  if (discs.length === 0) for (const lattice of fitInstances(doc)) discs.push({ x: pivot.x + lattice.translate.x, y: pivot.y + lattice.translate.y, r });
+  fitViewState(doc.repeatView, (turn) => discBounds(discs, turn), doc.frame.radius, doc.frame.origin, canvas, overlay);
   controller.notifyView();
 }
 
@@ -136,28 +184,65 @@ function fitRepeatView(controller: AppController, canvas: HTMLCanvasElement, ove
  * than fitRepeatView's own 3×3 sample (see firstEntryBounds): "here is my motif, with room for a
  * neighbour," not "here is the whole pattern." */
 function fitRepeatFirstEntry(controller: AppController, canvas: HTMLCanvasElement, overlay: HTMLElement): void {
-  const bounds = firstEntryBounds(controller.doc);
-  fitViewState(controller.doc.repeatView, bounds, controller.doc.frame.radius, controller.doc.frame.origin, canvas, overlay);
+  const doc = controller.doc;
+  const b = firstEntryBounds(doc);
+  const disc = { x: (b.minX + b.maxX) / 2, y: (b.minY + b.maxY) / 2, r: (b.maxX - b.minX) / 2 };
+  fitViewState(doc.repeatView, (turn) => discBounds([disc], turn), doc.frame.radius, doc.frame.origin, canvas, overlay);
+  controller.notifyView();
+}
+
+/** Intersection's own Fit — the primary and its neighbours shown, into Intersection's own view
+ * (each construction's own frame extent — intersectionBounds' discs). */
+function fitIntersectionView(controller: AppController, canvas: HTMLCanvasElement, overlay: HTMLElement): void {
+  const doc = controller.doc;
+  doc.intersectionView ??= { zoom: 1, pan: { x: 0, y: 0 } };
+  const pivot = doc.frame.origin;
+  const r = motifRadius(doc);
+  const discs = intersectionCopies(doc).map((c) => ({ x: pivot.x + c.pose.translate.x, y: pivot.y + c.pose.translate.y, r }));
+  fitViewState(doc.intersectionView, (turn) => discBounds(discs, turn), doc.frame.radius, doc.frame.origin, canvas, overlay);
   controller.notifyView();
 }
 
 /** Boots the app on a document. `fitToScreen: false` preserves a drawn/restored viewport. */
 const KEY_ZOOM_STEP = 1.25;
 
-function boot(doc: Doc, opts: { fitToScreen: boolean; history?: { undo: Doc[]; redo: Doc[] }; fresh?: boolean }): void {
+function boot(doc: Doc, opts: { fitToScreen: boolean; history?: { undo: Doc[]; redo: Doc[] }; fresh?: boolean; savedBase?: boolean; baseHash?: string; prefsBase?: string | null }): void {
   endSession();
   const controller = new AppController(doc);
+  // UI-1: what this session started from — the saved version, or a new artwork's bare frame (a
+  // recovered draft brings its own). Sprint S2: and, for a saved artwork, its saved drawing preferences.
+  const savedBase = opts.savedBase ?? false;
+  const tracker = dirtyTracker(opts.baseHash ?? artworkHash(doc), opts.prefsBase !== undefined ? opts.prefsBase : savedBase ? prefsHash(doc) : null);
   // §9 restore: "the tool reset to Select" — AppController already defaults tool to 'select'.
   if (opts.history) controller.restoreHistory(opts.history.undo, opts.history.redo);
+  // The reference: a workspace showing it for the first time takes its own placement from the most
+  // recently established one (an older artwork's one shared placement goes to all three) — now,
+  // and whenever the artwork state or workspace changes (render/underlay.ts — settleUnderlay).
+  settleUnderlay(controller.doc, controller.doc.view.workspace);
+  controller.subscribe(() => settleUnderlay(controller.doc, controller.doc.view.workspace));
+  // A Parallel / Perpendicular reference is given in the active instance's frame as arranged: it
+  // goes when the workspace, the active instance or the arrangement changes (and with the tool).
+  let referenceFor = '';
+  controller.subscribe(() => {
+    const doc = controller.doc;
+    const now = doc.view.workspace === 'intersection' ? `${controller.intersectionSelected ?? ''}|${JSON.stringify(layoutOf(doc))}` : doc.view.workspace;
+    if (now !== referenceFor || controller.tool !== 'line' || controller.lineGuide === 'free') controller.lineReference = null;
+    referenceFor = now;
+  });
 
-  const fit = () => (controller.doc.view.workspace === 'repeat' ? fitRepeatView(controller, canvas, overlay) : fitView(controller, canvas, overlay));
+
+  const fitFor = (ws: Doc['view']['workspace']) => (ws === 'repeat' ? fitRepeatView : ws === 'intersection' ? fitIntersectionView : fitView);
+  const fit = () => fitFor(controller.doc.view.workspace)(controller, canvas, overlay);
   const { canvas, overlay } = buildShell(root!, controller, {
     onFit: () => fit(),
     onNew: () => showStart('frames'),
     onOpen: () => showStart('artworks'),
     onSave: () => saveArtwork(),
     onSaveAs: () => saveAsNewArtwork(),
+    unsaved: () => isDirty(),
+    onPrefs: () => persistPrefs(),
     getView: () => getView(),
+    getToolView: () => getToolView(),
     // vNext Phase 4B: Timelapse reads the history after every change so far is recorded.
     timelapse: guideReturn
       ? null
@@ -175,11 +260,23 @@ function boot(doc: Doc, opts: { fitToScreen: boolean; history?: { undo: Doc[]; r
       // automatic Fit (a first look at the motif) or should leave the last Repeat view exactly
       // where the participant left it (item 12/18: Repeat's own viewport persists across visits).
       const firstEntry = ws === 'repeat' && controller.doc.repeat.family === undefined;
+      // A half-made step belongs to the workspace it was started in — and Line is Free again: an
+      // exact Parallel / Perpendicular mode is only ever on because it was just asked for.
+      controller.cancelPending();
+      controller.lineGuide = 'free';
+      controller.lineReference = null;
       controller.doc.view.workspace = ws;
+      // Intersect offers the construction tools but not Fill.
+      // Intersect opens on Select: arranging the instances is what it is for.
+      if (ws === 'intersection' && controller.tool !== 'select') controller.setTool('select');
       if (ws === 'repeat') {
         ensureRepeatDefaults(controller.doc);
+        // A suggested spacing follows the Intersect arrangement as it is now (an adjusted one stays).
+        refreshSuggestedSpacing(controller.doc);
         if (firstEntry) fitRepeatFirstEntry(controller, canvas, overlay);
       }
+      // Intersection has its own arrangement (never Repeat's lattice) and its own camera.
+      if (ws === 'intersection' && !controller.doc.intersectionView) fitIntersectionView(controller, canvas, overlay);
       controller.notify();
     },
   });
@@ -190,24 +287,125 @@ function boot(doc: Doc, opts: { fitToScreen: boolean; history?: { undo: Doc[]; r
   // on every boot — a toast mounted before that point, as this used to be at module scope, ends
   // up appended then immediately detached, so showToast() would set text on an orphaned node no
   // one could ever see. Mounting it fresh after the shell exists keeps it alive for this boot.
-  initToast(root!);
+  // The status line sits just above the canvas's control row (ui/toast.ts).
+  initToast(root!.querySelector<HTMLElement>('.util-row') ?? root!);
 
   const ctx = canvas.getContext('2d');
   if (!ctx) throw new Error('2d context unavailable');
 
+  /** The current workspace's camera on this canvas — turned, when its camera is (see ViewTransform). */
   function getView(): ViewTransform {
-    const vs = controller.doc.view.workspace === 'repeat' ? controller.doc.repeatView : controller.doc.view;
-    return { zoom: vs.zoom, pan: vs.pan, w: canvas.clientWidth, h: canvas.clientHeight };
+    return cameraView(viewState(), canvas.clientWidth, canvas.clientHeight);
   }
 
+  /** Each workspace navigates its own camera. */
+  function viewState(): Camera {
+    const doc = controller.doc;
+    if (doc.view.workspace === 'repeat') return doc.repeatView;
+    if (doc.view.workspace === 'intersection') return (doc.intersectionView ??= { zoom: 1, pan: { x: 0, y: 0 } });
+    return doc.view;
+  }
+
+  // ---- Intersect as a linked editing workspace (geometry/intersectionLink.ts) ----
+  // Select arranges the instances, as before. A construction tool works on the ACTIVE instance —
+  // the one selected (the Primary until another is) — through that instance's own view, so the
+  // tool itself is Construct's, unchanged, and what it commits is an edit of the one construction.
+  // (Fair is not one of them: in Intersect it develops the Primary — intersectFair.ts.)
+  const LINKED_TOOLS: ToolId[] = ['circle', 'line', 'arc', 'divide'];
+  function linkedTool(): ToolModule | null {
+    if (controller.doc.view.workspace !== 'intersection' || !LINKED_TOOLS.includes(controller.tool)) return null;
+    return tools[controller.tool] ?? null;
+  }
+  function activeCopy(): IntersectionCopy {
+    const copies = intersectionCopies(controller.doc);
+    return copies.find((c) => c.key === controller.intersectionSelected) ?? copies[0]!;
+  }
+  /** The view the single-finger tool works in: the camera's own — or, for a construction tool in
+   * Intersect, the active instance's (its placement, then the camera). */
+  function getToolView(): ViewTransform {
+    if (!linkedTool() || (controller.referenceTransform && controller.referenceAnchorMode)) return getView();
+    return cameraView(instanceCamera(viewState(), controller.doc.frame.origin, activeCopy().pose), canvas.clientWidth, canvas.clientHeight);
+  }
+  /** Whether a construction step is under way that belongs to the active instance as it is — or
+   * the tool is Line's Parallel / Perpendicular, where a tap on another instance's line means
+   * "this is the reference", never "work on that instance". */
+  const midStep = () =>
+    !!controller.pending || !!controller.incircle || !!controller.copyRadius || !!controller.divide || !!controller.precision || (controller.tool === 'line' && controller.lineGuide !== 'free');
+  /**
+   * A construction tool in Intersect. Between steps, the touch belongs to whichever instance has
+   * drawn geometry nearest the finger: another instance's line or point clearly nearer than anything
+   * of the active one (by SWITCH_NEARER_PX) makes THAT instance the active one, and the tool works
+   * there — so what is touched is what is edited, wherever the active instance's own geometry lies.
+   * A near-tie stays with the active instance (the tool's own press feedback shows what it took).
+   * Mid-step the instance never changes; other instances are reached as contextual places.
+   */
+  const SWITCH_NEARER_PX = 4;
+  const REACH_PX = 16;
+  /** How far (screen px) the active instance's own nearest point or curve is from the finger. */
+  const ownDistance = (doc: Doc, view: ViewTransform, sp: Vec2): number =>
+    Math.min(pickPointTarget(doc, view, sp, { explicitOnly: true })?.screenD ?? Infinity, curveCandidatesAt(doc, view, sp, REACH_PX)[0]?.d ?? Infinity);
+  function onActiveInstance(tool: ToolModule): ToolModule {
+    return {
+      id: tool.id,
+      hint: (c) => tool.hint(c),
+      beginGesture(c, view, sp) {
+        const doc = c.doc;
+        const other = midStep() ? null : instanceUnder(doc, intersectionCopies(doc), activeCopy().key, screenToWorld(view, sp), REACH_PX / view.zoom);
+        if (other && other.d * view.zoom + SWITCH_NEARER_PX < ownDistance(doc, view, sp)) {
+          const onCanvas = paperToScreen(view, sp);
+          c.intersectionSelected = other.key;
+          const next = getToolView();
+          c.notify();
+          return tool.beginGesture(c, next, screenToPaper(next, onCanvas));
+        }
+        return tool.beginGesture(c, view, sp);
+      },
+    };
+  }
+  // Contextual places for the construction tools: only in Intersect, only around the finger.
+  setContextProvider({
+    point(view, sp, radiusPx) {
+      if (!linkedTool()) return null;
+      const doc = controller.doc;
+      const hit = contextPointNear(doc, intersectionCopies(doc), activeCopy().key, screenToWorld(view, sp), radiusPx / view.zoom);
+      return hit && { at: hit.at, screenD: hit.d * view.zoom, label: hit.label };
+    },
+    lines(view, sp, radiusPx) {
+      if (!linkedTool()) return [];
+      const doc = controller.doc;
+      return contextLinesNear(doc, intersectionCopies(doc), activeCopy().key, screenToWorld(view, sp), radiusPx / view.zoom).map((l) => ({ a: l.a, b: l.b, screenD: l.d * view.zoom }));
+    },
+    near(view, sp, radiusPx) {
+      if (!linkedTool()) return false;
+      const doc = controller.doc;
+      return instanceUnder(doc, intersectionCopies(doc), activeCopy().key, screenToWorld(view, sp), radiusPx / view.zoom) !== null;
+    },
+  });
   const pointer = new PointerManager(
     canvas,
     controller,
     getView,
-    () => (controller.doc.view.workspace === 'repeat' ? repeatTool : (tools[controller.tool] ?? null)),
-    () => (controller.doc.view.workspace === 'repeat' ? controller.doc.repeatView : controller.doc.view),
+    () => {
+      const ws = controller.doc.view.workspace;
+      // Placing reference anchors (Transform → Anchors): one finger is an anchor, in any workspace.
+      if (controller.referenceTransform && controller.referenceAnchorMode) return anchorTool;
+      if (ws === 'repeat') return repeatTool;
+      if (ws === 'intersection') {
+        const linked = linkedTool();
+        if (linked) return onActiveInstance(linked);
+        return controller.tool === 'fair' ? intersectFairTool : intersectionTool;
+      }
+      return tools[controller.tool] ?? null;
+    },
+    () => viewState(),
   );
-  const autosave = guideReturn ? inertAutosave : attachAutosave(controller);
+  pointer.getToolView = getToolView;
+  // While the reference's Transform mode is on, a touch moves the reference, not a tool or the camera.
+  pointer.getTakeover = () => referenceTakeover(controller, getView);
+  pointer.onWheelTransform = (at, factor, turn) => referenceWheel(controller, getView, at, factor, turn);
+  const autosave = guideReturn
+    ? inertAutosave
+    : attachAutosave(controller, { dirty: () => tracker.dirty(controller.doc), baseHash: () => tracker.base(), prefsBase: () => tracker.prefsBase(), savedBase: () => (session?.controller === controller ? session.savedBase : savedBase) });
   // vNext Phase 4A: the artwork's process history — never for the Beginner Guide's practice artwork.
   // A brand-new artwork's history starts at its frame; an existing one at its first real change.
   const process = guideReturn ? null : attachProcessRecorder(controller, { fresh: opts.fresh === true });
@@ -217,8 +415,9 @@ function boot(doc: Doc, opts: { fitToScreen: boolean; history?: { undo: Doc[]; r
       controller,
       canvas,
       getView,
+      getToolView,
       resolvePoint: (id: string) => resolvePoint(controller.doc, id),
-      pointScreen: (id: string) => worldToScreen(getView(), resolvePoint(controller.doc, id)),
+      pointScreen: (id: string) => paperToScreen(getView(), worldToScreen(getView(), resolvePoint(controller.doc, id))),
     };
   }
 
@@ -234,8 +433,43 @@ function boot(doc: Doc, opts: { fitToScreen: boolean; history?: { undo: Doc[]; r
     dirty = false;
     const t0 = performance.now();
     let copies: number | null = null;
-    if (controller.doc.view.workspace === 'repeat') copies = renderRepeat(ctx!, controller, getView());
-    else render(ctx!, controller, getView());
+    const ws = controller.doc.view.workspace;
+    // The reference underlay and the artwork's viewing strength over it — on screen only.
+    const layers = screenLayers(controller.doc, ws, controller.underlayDraft);
+    const view = getView();
+    // A turned camera: the paper frame (view) is drawn turned about the canvas centre — the whole
+    // world together; nothing drawn needs to know (ViewTransform).
+    ctx!.save();
+    if (view.screen) {
+      ctx!.translate(view.screen.w / 2, view.screen.h / 2);
+      ctx!.rotate(view.screen.turn);
+      ctx!.translate(-view.w / 2, -view.h / 2);
+    }
+    if (ws === 'repeat') copies = renderRepeat(ctx!, controller, view, undefined, layers);
+    else if (ws === 'intersection') copies = renderIntersection(ctx!, controller, view, layers);
+    else render(ctx!, controller, view, undefined, layers);
+    // Reference Transform: the reference's bounds, over everything, while it can be moved.
+    const moving = controller.underlayDraft ?? (controller.doc.underlay && underlayIn(controller.doc.underlay, ws));
+    if (controller.referenceTransform && moving) {
+      drawUnderlayOutline(ctx!, moving, view);
+      drawAnchors(ctx!, moving, view, anchorTargets(controller.doc, ws), controller.anchorSelected, controller.anchorDraft, controller.snapPulling);
+      const placing = controller.anchorLoupe && controller.anchorDraft;
+      if (placing) drawAnchorLoupe(ctx!, moving, view, anchorWorld(moving, controller.anchorDraft!), controller.anchorLoupe!);
+    }
+    ctx!.restore();
+    // Intersect, a construction tool at work: its own feedback (previews, points, snap marks) on
+    // the active instance, through that instance's view.
+    if (linkedTool()) {
+      const toolView = getToolView();
+      ctx!.save();
+      if (toolView.screen) {
+        ctx!.translate(toolView.screen.w / 2, toolView.screen.h / 2);
+        ctx!.rotate(toolView.screen.turn);
+        ctx!.translate(-toolView.w / 2, -toolView.h / 2);
+      }
+      drawInteraction(ctx!, controller, toolView);
+      ctx!.restore();
+    }
     diagnostics?.record(performance.now() - t0, copies);
   }
   const requestDraw = () => {
@@ -248,6 +482,7 @@ function boot(doc: Doc, opts: { fitToScreen: boolean; history?: { undo: Doc[]; r
   // subscribeView: catches both view-only changes (pinch/pan) and full state changes, so the
   // canvas redraws for either — but this loop never touches the DOM itself either way.
   controller.subscribeView(requestDraw);
+  const offUnderlayImage = onUnderlayImage(requestDraw);
   const onVisibility = () => {
     if (!document.hidden && dirty && !scheduled && running) {
       scheduled = true;
@@ -266,7 +501,7 @@ function boot(doc: Doc, opts: { fitToScreen: boolean; history?: { undo: Doc[]; r
     const centre = { x: canvas.clientWidth / 2, y: canvas.clientHeight / 2 };
     if (e.key === '+' || e.key === '=') pointer.zoomAt(centre, KEY_ZOOM_STEP);
     else if (e.key === '-' || e.key === '_' || e.key === '\u2212') pointer.zoomAt(centre, 1 / KEY_ZOOM_STEP);
-    else if (e.key === '0') controller.doc.view.workspace === 'repeat' ? fitRepeatView(controller, canvas, overlay) : fitView(controller, canvas, overlay);
+    else if (e.key === '0') fit();
     else return;
     e.preventDefault();
   };
@@ -282,8 +517,12 @@ function boot(doc: Doc, opts: { fitToScreen: boolean; history?: { undo: Doc[]; r
     process,
     getView,
     fit,
+    savedBase,
+    tracker,
     teardown: () => {
       running = false;
+      setContextProvider(null);
+      offUnderlayImage();
       stopResizing();
       document.removeEventListener('visibilitychange', onVisibility);
       window.removeEventListener('keydown', onKey);
@@ -294,21 +533,62 @@ function boot(doc: Doc, opts: { fitToScreen: boolean; history?: { undo: Doc[]; r
   };
 }
 
-// ---- Phase 5.5 items 3–9: saved artworks ----
+// ---- Phase 5.5 items 3–9: saved artworks · UI-1: saved artworks vs the working draft ----
+//
+// My Artworks lists saved artworks only. A saved artwork's record (and its Undo history) is written
+// only here — on Save or Save As; autosave keeps the working draft instead (persist/draft.ts).
 
-/** Save: the first time, the artwork gets a name; after that it simply writes (autosave keeps
- * writing to the same artwork in between). */
-function saveArtwork(): void {
+/** Writes the open artwork as its saved version — record, Undo history, thumbnail — and records
+ * where its process history stood (Discard rolls back to that). The draft is then clean. */
+async function writeSaved(s: NonNullable<typeof session>): Promise<void> {
+  const doc = s.controller.doc;
+  s.autosave.flush({ thumbnail: true });
+  s.process?.flush();
+  const processMeta = await enqueue(() => loadMeta(doc.id));
+  const { undo, redo } = s.controller.getHistorySnapshot();
+  const now = Date.now();
+  doc.updatedAt = now;
+  await saveDocument({
+    id: doc.id,
+    name: doc.name,
+    named: doc.named,
+    createdAt: doc.createdAt,
+    updatedAt: now,
+    schemaVersion: doc.schemaVersion,
+    thumbnail: s.autosave.thumbnail(),
+    snapshot: doc,
+    ...(processMeta ? { processMeta } : {}),
+  });
+  await saveHistory({ docId: doc.id, undoStack: undo, redoStack: redo });
+  await setMeta('lastOpenDocId', doc.id);
+  s.savedBase = true;
+  s.tracker.rebase(s.tracker.hash(doc), prefsHash(doc));
+  s.autosave.flush(); // the draft now matches the saved artwork
+  s.controller.notify();
+}
+
+/** UI-2 / Sprint S2: drawing preferences (construction, Fair and Fill colours, Fair width, Fill opacity,
+ * Repeat's Fill colour and opacity) are kept with the artwork, but — like everything else — reach its
+ * saved version only through Save or Save As. A change is written to the working draft at once (so a
+ * refresh or closure keeps it, and Recover brings it back); for a saved artwork it counts as unsaved. */
+function persistPrefs(): void {
+  session?.autosave.flush();
+}
+
+/** Save: the first time, the artwork gets a name; after that it simply writes. `then` runs once
+ * it is saved (never if the naming is cancelled). */
+function saveArtwork(then?: () => void): void {
   const s = session;
   if (!s) return;
-  const done = () => {
-    s.autosave.flush({ thumbnail: true });
-    showToast(`Saved “${s.controller.doc.name}”`);
-  };
-  if (s.controller.doc.named) return done();
+  const done = () =>
+    void writeSaved(s).then(() => {
+      showToast(`Saved “${s.controller.doc.name}”`);
+      then?.();
+    });
+  if (s.controller.doc.named && s.savedBase) return done();
   openNameSheet(root!, {
     title: 'Name this artwork',
-    initial: '',
+    initial: s.controller.doc.named ? s.controller.doc.name : '',
     confirmLabel: 'Save',
     onConfirm: (name) => {
       s.controller.doc.name = name;
@@ -332,8 +612,9 @@ function asNewArtwork(doc: Doc, name: string): Doc {
   return copy;
 }
 
-/** Save as new: the current artwork (saved as it stands) is copied into a new artwork with its own
- * id and name, and that copy is what's open afterwards — the original is left exactly as it was. */
+/** Save as new: the work in hand (unsaved changes included) becomes a new saved artwork with its
+ * own id and name, and that copy is what's open afterwards — the original's saved version is left
+ * exactly as it was saved. An artwork never saved has no original: Save As simply saves it. */
 function saveAsNewArtwork(): void {
   const s = session;
   if (!s) return;
@@ -342,38 +623,147 @@ function saveAsNewArtwork(): void {
     initial: s.controller.doc.named ? `${s.controller.doc.name} variant` : '',
     confirmLabel: 'Save',
     onConfirm: (name) => {
+      if (!s.savedBase) {
+        s.controller.doc.name = name;
+        s.controller.doc.named = true;
+        void writeSaved(s).then(() => showToast(`Saved “${name}”`));
+        return;
+      }
       s.autosave.flush({ thumbnail: true });
-      const copy = asNewArtwork(s.controller.doc, name);
-      // vNext Phase 4A: the copy carries the process so far, then continues on its own.
+      const original = s.controller.doc;
+      const copy = asNewArtwork(original, name);
+      const { undo, redo } = s.controller.getHistorySnapshot();
+      // vNext Phase 4A: the copy carries the process so far, then continues on its own; the
+      // original's history goes back to where it was saved (its later moments are the copy's).
       s.process?.flush();
-      void copyProcess(s.controller.doc.id, copy.id);
-      boot(copy, { fitToScreen: false });
-      showToast(`Saved as “${name}”`);
+      void copyProcess(original.id, copy.id);
+      endSession();
+      // The changes in hand are the copy's now: the original's draft goes (the slot is free at once).
+      void clearDraft();
+      void restoreSavedProcess(original.id);
+      boot(copy, { fitToScreen: false, history: { undo, redo } });
+      void writeSaved(session!).then(() => showToast(`Saved as “${name}”`));
     },
   });
 }
 
+/** The process history of a saved artwork goes back to its last Save (a never-saved artwork's is
+ * removed). An artwork saved before UI-1 has no record of that: its history is left as it is. */
+async function restoreSavedProcess(id: string): Promise<void> {
+  const record = await loadDocument(id);
+  if (!record) await deleteProcess(id);
+  else if (record.processMeta) await rollbackProcess(id, record.processMeta);
+}
+
+/** Discards the working draft: the slot is emptied and the process history goes back to the saved
+ * version. The saved artwork itself is never touched. */
+async function discardDraft(docId: string): Promise<void> {
+  await clearDraft();
+  await restoreSavedProcess(docId);
+}
+
+/** UI-1: before the open artwork is replaced (New, Open, recovering the last session) — if it has
+ * unsaved changes, ask: Save, Don't save, or Cancel. If not, go straight on. A draft left by an
+ * earlier session (shown as Recover last session) is asked about too, since going on replaces it. */
+function confirmLeave(proceed: () => void, opts: { recovering?: boolean } = {}): void {
+  const s = session;
+  if (s && isDirty(s)) {
+    const name = s.controller.doc.named ? s.controller.doc.name : 'Untitled artwork';
+    openConfirmSheet({
+      title: `Save changes to “${name}”?`,
+      body: s.savedBase ? 'Your changes since the last save will be lost if you don’t save them.' : 'This artwork has never been saved. It will be lost if you don’t save it.',
+      confirmLabel: 'Save',
+      onConfirm: () => saveArtwork(proceed),
+      secondary: {
+        label: 'Don’t save',
+        danger: true,
+        onSelect: () => {
+          const id = s.controller.doc.id;
+          closeAnyPopover();
+          endSession();
+          void discardDraft(id).then(proceed);
+        },
+      },
+    });
+    return;
+  }
+  const slot = draftSlot();
+  if (!opts.recovering && slot?.dirty && slot.docId !== s?.controller.doc.id) {
+    openConfirmSheet({
+      title: 'Discard the unsaved session?',
+      body: 'Your last session has changes that were never saved. Going on discards them — choose Recover last session to keep them.',
+      confirmLabel: 'Discard',
+      onConfirm: () => void discardDraft(slot.docId).then(proceed),
+    });
+    return;
+  }
+  proceed();
+}
+
+/** Reopens the working draft left by the last session, exactly as it was — unsaved changes, view
+ * and Undo/Redo included. */
+async function recoverDraft(): Promise<void> {
+  const d = await loadDraft();
+  if (!d) {
+    showToast('There is no unsaved session to recover', 2600, 'error');
+    return;
+  }
+  bootDraft(d);
+  showToast(d.savedBase ? 'Recovered · unsaved changes — Save to keep them' : 'Recovered · not saved yet — Save to keep it', 3200);
+}
+
+function bootDraft(d: WorkingDraft): void {
+  upgradeSnapshot(d.snapshot, d.named);
+  d.undo.forEach(migrateLegacyFillKeys);
+  d.redo.forEach(migrateLegacyFillKeys);
+  // A draft from before Sprint S2 carries no `prefsBase`: its preferences were already in the saved
+  // version (written at once then), so they are its base.
+  const prefsBase = d.prefsBase !== undefined ? d.prefsBase : d.savedBase ? prefsHash(d.snapshot) : null;
+  boot(d.snapshot, { fitToScreen: false, history: { undo: d.undo, redo: d.redo }, savedBase: d.savedBase, baseHash: d.baseHash, prefsBase });
+}
+
 // ---- vNext Phase 2: the Start screen (Choose a frame · Beginner Guide · My Artworks) ----
 
-/** New opens the Start screen at its frames, Open… at My Artworks. The artwork that was open is
- * saved as it stands first — so its card is up to date, and nothing chosen next can overwrite it —
- * and stays open underneath until something else is actually chosen. */
+/** New opens the Start screen at its frames, Open… at My Artworks. The artwork that was open stays
+ * open underneath, untouched, until something else is actually chosen — and if it has unsaved
+ * changes, choosing something else asks first (confirmLeave). */
 function showStart(focus: 'frames' | 'artworks'): void {
   closeAnyPopover();
   session?.autosave.flush({ thumbnail: true });
+  const currentId = session?.controller.doc.id ?? null;
   openStartScreen(root!, {
     focus,
     dismissible: session !== null,
-    currentId: session?.controller.doc.id ?? null,
+    currentId,
+    currentUnsaved: isDirty(),
     loadArtworks: () =>
       listArtworks().catch((err) => {
         console.warn('Listing artworks failed:', err);
         return [];
       }),
+    loadRecovery: async () => {
+      const d = await loadDraft().catch(() => null);
+      // The open artwork's own draft is the work on screen, not something to recover.
+      if (!d || !d.dirty || d.docId === currentId) return null;
+      return {
+        name: d.named ? d.name : 'Untitled',
+        thumbnail: d.thumbnail,
+        updatedAt: d.updatedAt,
+        savedBase: d.savedBase,
+        recover: () => confirmLeave(() => void recoverDraft(), { recovering: true }),
+        discard: (done: () => void) =>
+          openConfirmSheet({
+            title: 'Discard the unsaved session?',
+            body: d.savedBase ? 'The saved artwork stays exactly as it was last saved.' : 'This work was never saved. It cannot be recovered afterwards.',
+            confirmLabel: 'Discard',
+            onConfirm: () => void discardDraft(d.docId).then(done),
+          }),
+      };
+    },
     actions: cardActions,
     guide: { onStart: () => startGuide() },
-    onChooseFrame: (k) => armDrawFrame(k),
-    onOpenArtwork: (id) => void openFromStart(id),
+    onChooseFrame: (k) => confirmLeave(() => armDrawFrame(k)),
+    onOpenArtwork: (id) => confirmLeave(() => void openFromStart(id)),
   });
 }
 
@@ -397,7 +787,7 @@ const cardActions: CardActions = {
     });
   },
   remove(a, done) {
-    openConfirmSheet(root!, {
+    openConfirmSheet({
       title: `Delete “${displayName(a)}”?`,
       body: 'This cannot be undone.',
       confirmLabel: 'Delete',
@@ -412,11 +802,11 @@ async function renameArtwork(id: string, name: string): Promise<void> {
   const s = session;
   if (s && s.controller.doc.id === id) {
     // The open artwork: rename the live document, or its own autosave would write the old name back.
+    // UI-1: only the name changes in the saved record — unsaved changes stay unsaved.
     s.controller.doc.name = name;
     s.controller.doc.named = true;
     s.controller.notify();
     s.autosave.flush();
-    return;
   }
   const record = await loadDocument(id);
   if (!record?.snapshot) return;
@@ -427,12 +817,8 @@ async function renameArtwork(id: string, name: string): Promise<void> {
  * the copy is listed rather than opened (Save As opens its copy because it's saving the work in
  * hand). Like Save As, the copy starts with no Undo/Redo of its own. Returns the copy's name. */
 async function duplicateArtwork(a: ArtworkSummary): Promise<string | null> {
-  const s = session;
-  if (s && s.controller.doc.id === a.id) {
-    // The open artwork: copy it as it stands right now, thumbnail and process included.
-    s.autosave.flush({ thumbnail: true });
-    s.process?.flush();
-  }
+  // UI-1: the saved version is what's duplicated (unsaved changes in hand are not saved by it).
+  session?.process?.flush();
   const record = await loadDocument(a.id);
   if (!record?.snapshot) return null;
   const taken = new Set((await listArtworks()).map(displayName));
@@ -455,6 +841,8 @@ async function deleteFromStart(id: string): Promise<void> {
     endSession();
   }
   await deleteArtwork(id);
+  // Its unsaved draft goes with it (the artwork is gone, so there is nothing to recover it into).
+  if (draftSlot()?.docId === id) await clearDraft();
   await enqueue(async () => {}); // its process history is removed through the same queue
   if ((await getMeta<string>('lastOpenDocId')) === id) await setMeta('lastOpenDocId', null);
   if (wasOpen) {
@@ -465,7 +853,7 @@ async function deleteFromStart(id: string): Promise<void> {
 
 async function openFromStart(id: string): Promise<void> {
   if (await openArtwork(id)) return;
-  showToast('That artwork could not be opened');
+  showToast('That artwork could not be opened', 2600, 'error');
   if (!session) showStart('artworks');
 }
 
@@ -481,7 +869,9 @@ async function openArtwork(id: string): Promise<boolean> {
   boot(docRecord.snapshot, {
     fitToScreen: false,
     history: historyRecord ? { undo: historyRecord.undoStack, redo: historyRecord.redoStack } : undefined,
+    savedBase: true,
   });
+  void setMeta('lastOpenDocId', id);
   return true;
 }
 
@@ -519,6 +909,8 @@ function bootPractice(doc: Doc, history?: { undo: Doc[]; redo: Doc[] }, tool?: T
 const guideHost: CoachHost = {
   begin(doc) {
     closeAnyPopover();
+    // UI-1: the work in hand is kept as the working draft (unsaved changes included) and reopened
+    // from it, exactly as it was, when the guide closes.
     session?.autosave.flush({ thumbnail: true });
     guideReturn = { artworkId: session?.controller.doc.id ?? null };
     bootPractice(doc);
@@ -540,7 +932,14 @@ const guideHost: CoachHost = {
     closeAnyPopover();
     endSession();
     root!.innerHTML = '';
-    const reopened = back?.artworkId ? await openArtwork(back.artworkId) : false;
+    let reopened = false;
+    if (back?.artworkId) {
+      const d = await loadDraft().catch(() => null);
+      if (d && d.docId === back.artworkId) {
+        bootDraft(d);
+        reopened = true;
+      } else reopened = await openArtwork(back.artworkId);
+    }
     if (!reopened) showStart('frames');
   },
   controller: () => session?.controller ?? null,
@@ -584,8 +983,22 @@ function upgradeSnapshot(doc: Doc, recordNamed: boolean | undefined): void {
   // Phase 5.6: Space colouring's own next colour.
   if (doc.spaceDefaults === undefined) doc.spaceDefaults = { colour: '#B5502E', opacity: 1 };
   if (!(doc.repeat.gapFills instanceof Map)) doc.repeat.gapFills = new Map();
+  // Repeat's Design | Stroke | Fill views are gone (Repeat always shows the whole design). An artwork
+  // saved in Fill-only view keeps its look as "no outlines"; one in Stroke-only view as "no fills".
+  if (doc.repeatDisplay.artwork === 'fill') {
+    doc.repeatDisplay.strokeWidth = 0;
+    doc.repeatDisplay.artwork = 'design';
+  } else if (doc.repeatDisplay.artwork === 'stroke') {
+    doc.repeatDisplay.fillOpacity = 0;
+    doc.repeatDisplay.artwork = 'design';
+  }
   // Phase 5.5: artworks saved before naming existed were never named by the participant.
   if (doc.named === undefined) doc.named = recordNamed ?? false;
+  // Repeat's Source moved from the display (not history) into the artwork's own setup.
+  if (doc.repeatDisplay.source !== undefined) {
+    if (doc.repeatDisplay.source === 'intersect' && !doc.repeatSetup) doc.repeatSetup = { source: 'intersect' };
+    delete doc.repeatDisplay.source;
+  }
 }
 
 // vNext Phase 4A: development/test access to process histories (no user-facing playback yet).
@@ -608,6 +1021,21 @@ if (import.meta.env.DEV) {
 
 async function launch(): Promise<void> {
   try {
+    // UI-1: an unsaved last session is offered for recovery (above My Artworks), never reopened or
+    // listed as an artwork by itself. A session with nothing unsaved simply reopens as it was.
+    const draft = await loadDraft();
+    if (draft?.dirty) {
+      showStart('artworks');
+      return;
+    }
+    if (draft) {
+      const record = draft.savedBase ? await loadDocument(draft.docId) : null;
+      // Reopen the session (view and Undo included) only while it still matches the saved artwork.
+      if (!draft.savedBase || (record?.snapshot && artworkHash(upgraded(record)) === draft.baseHash)) {
+        bootDraft(draft);
+        return;
+      }
+    }
     const lastId = await getMeta<string>('lastOpenDocId');
     if (lastId && (await openArtwork(lastId))) return;
   } catch (err) {
@@ -616,6 +1044,11 @@ async function launch(): Promise<void> {
     console.warn('Restore failed, starting fresh:', err);
   }
   showStart('frames');
+}
+
+function upgraded(record: { snapshot: Doc; named?: boolean }): Doc {
+  upgradeSnapshot(record.snapshot, record.named);
+  return record.snapshot;
 }
 
 void launch();

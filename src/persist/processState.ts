@@ -2,8 +2,12 @@
 //
 // An ArtworkState is the part of a document that makes up the artwork itself: frame, points,
 // entities, segment states (construction / Fair / trimmed, with strokes), fills, the Repeat system
-// and Repeat's appearance. Never the camera, workspace, guides, tool preferences, name or
-// timestamps — changing those is not a step in the design process.
+// and Repeat's appearance — and, once Intersect has been used, its arrangement of the construction
+// (where each instance is, how it is turned, the Spread, each instance's colour and extensions):
+// one master construction plus how it is laid out, never a copy of the geometry per instance.
+// Never the camera, workspace, guides, tool preferences, name or timestamps — changing those is not
+// a step in the design process. (Which workspace a moment happened in is said by the moment itself:
+// processStore.ts.)
 //
 // History is stored as data about the document, not as gestures: a patch says which values became
 // what, so replaying it never re-runs the geometry engine, and a future engine can't change what an
@@ -14,6 +18,7 @@
 // changed" compactly, while still reproducing the exact order the document had.
 
 import type { Doc } from '../model/types.ts';
+import { repeatSourceOf } from '../geometry/repeatSetup.ts';
 
 export const PROCESS_FORMAT = 1;
 
@@ -36,7 +41,16 @@ export interface ArtworkState {
   symmetrySources: unknown;
   echo: unknown;
   repeat: Record<string, unknown> & { gapFills: Coll };
-  appearance: { artwork: string; constructionOverlay: boolean; background: string; fillOpacity: number };
+  /** Intersect's arrangement (doc.intersection), present only once the document has one — so every
+   * state of an artwork that never used it keeps exactly the shape and fingerprint it always had. */
+  intersect?: unknown;
+  /** strokeColour/strokeWidth appear only once Repeat's Stroke style is set, so every state recorded
+   * before it existed (or with it "as designed") keeps exactly the same shape and fingerprint. */
+  appearance: { artwork: string; constructionOverlay: boolean; background: string; fillOpacity: number; strokeColour?: string; strokeWidth?: number };
+  /** What Repeat repeats and each source's own configuration and colouring (Doc.repeatSetup) —
+   * in every state recorded since it became part of the artwork. A state recorded before has
+   * none: what it repeated then was never recorded, and it is drawn as the artwork is now. */
+  repeatSetup?: unknown;
 }
 
 // A captured state is built with every object's keys already in sorted order, so plain
@@ -92,6 +106,7 @@ function fromMap<V>(m: Map<string, V>, value: (v: V) => unknown = plain): Coll {
 export interface InPlaceParts {
   repeat: Record<string, unknown>;
   appearance: ArtworkState['appearance'];
+  setup: unknown;
 }
 
 export function inPlaceParts(doc: Doc): InPlaceParts {
@@ -99,7 +114,17 @@ export function inPlaceParts(doc: Doc): InPlaceParts {
   const d = doc.repeatDisplay;
   return {
     repeat: plain(repeat) as Record<string, unknown>,
-    appearance: { artwork: d.artwork, background: d.background, constructionOverlay: d.constructionOverlay, fillOpacity: d.fillOpacity },
+    // Repeat no longer has a Construction overlay (a viewing aid, never artwork, never recorded). The
+    // field stays (always false) so every stored state keeps the same shape and fingerprint.
+    appearance: {
+      artwork: d.artwork,
+      background: d.background,
+      constructionOverlay: false,
+      fillOpacity: d.fillOpacity,
+      ...(d.strokeColour != null ? { strokeColour: d.strokeColour } : null),
+      ...(d.strokeWidth != null ? { strokeWidth: d.strokeWidth } : null),
+    },
+    setup: plain(doc.repeatSetup ?? { source: repeatSourceOf(doc) }),
   };
 }
 
@@ -117,8 +142,10 @@ export function captureState(doc: Doc, parts: InPlaceParts = inPlaceParts(doc)):
     fills: fromMap(doc.fills, (faces) => fromMap(faces)),
     format: PROCESS_FORMAT,
     frame: plain(doc.frame),
+    ...(doc.intersection ? { intersect: plain(doc.intersection) } : {}),
     points: byId(doc.points),
     repeat: plain({ ...parts.repeat, gapFills: null }) as Record<string, unknown> & { gapFills: Coll },
+    repeatSetup: structuredClone(parts.setup),
     schemaVersion: doc.schemaVersion,
     segmentStates: fromMap(doc.segmentStates),
     symmetrySources: plain(doc.symmetrySources),
@@ -139,7 +166,8 @@ export function capturedHash(state: ArtworkState): { hash: string; bytes: number
 export function inPlaceFingerprint(doc: Doc): string {
   const { gapFills: _gaps, ...repeat } = doc.repeat;
   const d = doc.repeatDisplay;
-  return JSON.stringify([repeat, d.artwork, d.constructionOverlay, d.background, d.fillOpacity]);
+  const style = d.strokeColour != null || d.strokeWidth != null ? [d.strokeColour ?? null, d.strokeWidth ?? null] : [];
+  return JSON.stringify([repeat, d.artwork, d.background, d.fillOpacity, ...style, doc.repeatSetup ?? null]);
 }
 
 const toList = (c: Coll) => c.$o.map((k) => ({ id: k, ...(structuredClone(c.$v[k]) as object) }));
@@ -161,7 +189,12 @@ export function stateToDoc(state: ArtworkState, base: Doc): Doc {
     symmetrySources: structuredClone(state.symmetrySources) as Doc['symmetrySources'],
     echo: structuredClone(state.echo) as Doc['echo'],
     repeat: { ...(repeat as unknown as Doc['repeat']), gapFills: toMap(state.repeat.gapFills) },
-    repeatDisplay: { ...base.repeatDisplay, ...state.appearance } as Doc['repeatDisplay'],
+    // States recorded before Intersect was part of the history keep the arrangement as it is now.
+    intersection: state.intersect !== undefined ? (structuredClone(state.intersect) as Doc['intersection']) : base.intersection,
+    // A state without a Stroke style was drawn as designed — never with the live artwork's style.
+    repeatDisplay: { ...base.repeatDisplay, strokeColour: null, strokeWidth: null, ...state.appearance } as Doc['repeatDisplay'],
+    // What Repeat repeated at that moment (a state from before it was recorded: as the artwork is now).
+    ...(state.repeatSetup !== undefined ? { repeatSetup: structuredClone(state.repeatSetup) as Doc['repeatSetup'] } : null),
   };
 }
 
@@ -188,6 +221,19 @@ export function fingerprint(text: string): string {
 }
 
 export const stateHash = (s: ArtworkState) => fingerprint(canonical(s));
+
+/** A state as it would have been captured before Intersect's arrangement was part of it. */
+/** `s` as a history recorded before Repeat's setup was part of a state would end. */
+export function withoutRepeatSetup(s: ArtworkState): ArtworkState {
+  const { repeatSetup: _setup, ...rest } = s;
+  return rest;
+}
+
+export function withoutIntersect(s: ArtworkState): ArtworkState {
+  const { intersect: _arrangement, ...rest } = s;
+  if (needsCanonical.has(s)) needsCanonical.add(rest);
+  return rest;
+}
 
 // ---- patches ----
 
@@ -336,9 +382,47 @@ export function describeChange(a: ArtworkState, b: ArtworkState, source: Process
   if (!same(ra.rule, rb.rule)) tags.push('repeat-rule');
   if (!same(ra.gapFills, rb.gapFills)) tags.push('repeat-space');
   if (!same(a.appearance, b.appearance)) tags.push('appearance');
+  // Repeat's setup: only a real change between two recorded setups is a moment of its own — its
+  // first appearance in an older history is not something the participant did.
+  const sa = a.repeatSetup as { source?: string; colour?: unknown; stroke?: unknown } | undefined;
+  const sb = b.repeatSetup as { source?: string; colour?: unknown; stroke?: unknown } | undefined;
+  if (sa && sb) {
+    if (sa.source !== sb.source) tags.push('repeat-source');
+    if (!same(sa.colour, sb.colour)) tags.push('repeat-colour');
+    if (!same(sa.stroke, sb.stroke)) tags.push('repeat-stroke');
+  }
+
+  // Intersect's arrangement: what happened to the instances.
+  if (!same(a.intersect, b.intersect)) {
+    type Piece = { key: string; x: number; y: number; rotation: number };
+    type Layout = { pieces?: Piece[]; spread?: number } | undefined;
+    const la = (a.intersect as { layout?: Layout } | undefined)?.layout;
+    const lb = (b.intersect as { layout?: Layout } | undefined)?.layout;
+    const pa = new Map((la?.pieces ?? []).map((p) => [p.key, p]));
+    const pb = new Map((lb?.pieces ?? []).map((p) => [p.key, p]));
+    // Before its first change the arrangement is the starting one, which isn't stored: the first
+    // stored arrangement is simply "arranged".
+    if (!la && lb) tags.push('intersect-arrange');
+    else {
+      if (la && lb && (pa.size !== pb.size || [...pb.keys()].some((k) => !pa.has(k)))) tags.push('intersect-copies');
+      for (const [k, q] of pb) {
+        const p = pa.get(k);
+        if (!p) continue;
+        if (p.x !== q.x || p.y !== q.y) tags.push('intersect-move');
+        if (p.rotation !== q.rotation) tags.push('intersect-rotate');
+      }
+      if (la && lb && la.spread !== lb.spread) tags.push('intersect-spread');
+    }
+    const ca = (a.intersect as { copies?: Record<string, unknown> } | undefined)?.copies ?? {};
+    const cb = (b.intersect as { copies?: Record<string, unknown> } | undefined)?.copies ?? {};
+    if (!same(ca, cb)) tags.push('intersect-style');
+    // Stage D: the Developed Primary — segments taken into it or out of it.
+    if (!same((a.intersect as { form?: unknown } | undefined)?.form, (b.intersect as { form?: unknown } | undefined)?.form)) tags.push('intersect-primary');
+    if (!tags.some((t) => t.startsWith('intersect-'))) tags.push('intersect');
+  }
 
   const unique = [...new Set(tags)];
   if (source === 'undo' || source === 'redo' || source === 'baseline' || source === 'resync') return { kind: source, tags: unique };
-  const priority = ['arc', 'circle', 'line', 'divide', 'delete', 'trim', 'fair', 'unfair', 'stroke', 'fill', 'edit-point', 'edit', 'repeat-setup', 'repeat-family', 'repeat-spacing', 'repeat-rotation', 'repeat-rule', 'repeat-space', 'appearance', 'segment'];
+  const priority = ['arc', 'circle', 'line', 'divide', 'delete', 'trim', 'fair', 'unfair', 'stroke', 'fill', 'edit-point', 'edit', 'intersect-copies', 'intersect-arrange', 'intersect-move', 'intersect-rotate', 'intersect-spread', 'intersect-primary', 'intersect-style', 'intersect', 'repeat-setup', 'repeat-source', 'repeat-family', 'repeat-spacing', 'repeat-rotation', 'repeat-rule', 'repeat-space', 'repeat-colour', 'repeat-stroke', 'appearance', 'segment'];
   return { kind: priority.find((t) => unique.includes(t)) ?? 'other', tags: unique };
 }

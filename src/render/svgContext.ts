@@ -182,6 +182,16 @@ export class SvgContext {
     this.body.push(`<path d="${d}" fill="${rgb}"${this.opacityAttr('fill', alpha)}${fillRule === 'evenodd' ? ' fill-rule="evenodd"' : ''}/>`);
   }
 
+  /** Release R5: a line of text (export attribution) — fill with an optional halo stroked beneath it
+   * (paint-order), so it reads on any background without a box. */
+  text(x: number, y: number, text: string, o: { size: number; anchor: 'start' | 'end'; fill: string; halo?: string; haloWidth?: number; weight?: number }): void {
+    const esc = text.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
+    const f = parseColour(o.fill);
+    const halo = o.halo ? parseColour(o.halo) : null;
+    const haloAttr = halo ? ` stroke="${halo.rgb}" stroke-width="${n(o.haloWidth ?? 0)}" stroke-linejoin="round" paint-order="stroke"${halo.alpha < 0.999 ? ` stroke-opacity="${Math.round(halo.alpha * 1000) / 1000}"` : ''}` : '';
+    this.body.push(`<text x="${n(x)}" y="${n(y)}" font-family="-apple-system, system-ui, Helvetica, Arial, sans-serif" font-size="${n(o.size)}" font-weight="${o.weight ?? 500}" text-anchor="${o.anchor}" fill="${f.rgb}"${f.alpha < 0.999 ? ` fill-opacity="${Math.round(f.alpha * 1000) / 1000}"` : ''}${haloAttr}>${esc}</text>`);
+  }
+
   private opacityAttr(kind: 'fill' | 'stroke', colourAlpha: number): string {
     const a = Math.max(0, colourAlpha * this.state.globalAlpha);
     return a < 0.999 ? ` ${kind}-opacity="${Math.round(a * 1000) / 1000}"` : '';

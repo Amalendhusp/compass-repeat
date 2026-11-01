@@ -21,8 +21,12 @@ export interface StartScreenOptions {
   dismissible: boolean;
   /** The artwork open behind the page, if any (marked "Open now"). */
   currentId: string | null;
+  /** UI-1: the open artwork has changes not saved (its card says so). */
+  currentUnsaved?: boolean;
   /** The saved artworks, newest first — asked for on opening, and again after a card action. */
   loadArtworks: () => Promise<ArtworkSummary[]>;
+  /** UI-1: the last session's unsaved draft, if there is one to offer (null: no Recover entry). */
+  loadRecovery?: () => Promise<RecoveryEntry | null>;
   /** Each card's ⋮ menu. `done` re-lists the cards (and is harmless if the page has gone). */
   actions: CardActions;
   /** The Beginner Guide card: `onStart` absent shows it disabled; `note` is a small badge on it. */
@@ -30,6 +34,17 @@ export interface StartScreenOptions {
   onChooseFrame: (kind: FrameKind) => void;
   onOpenArtwork: (id: string) => void;
   onClose?: () => void;
+}
+
+export interface RecoveryEntry {
+  name: string;
+  thumbnail?: string;
+  updatedAt: number;
+  /** The draft is a saved artwork, edited (else it was never saved). */
+  savedBase: boolean;
+  recover: () => void;
+  /** `done` removes the entry. */
+  discard: (done: () => void) => void;
 }
 
 export interface CardActions {
@@ -128,6 +143,10 @@ export function openStartScreen(root: HTMLElement, opts: StartScreenOptions): ()
   artworks.className = 'start-section';
   artworks.id = 'start-artworks';
   artworks.innerHTML = '<h2>My Artworks</h2>';
+  // UI-1: Recover last session — the one unsaved working session, above (and apart from) the saved
+  // artworks; absent when there is nothing to recover.
+  const recoverSlot = document.createElement('div');
+  artworks.appendChild(recoverSlot);
   const grid = document.createElement('div');
   grid.className = 'start-artwork-grid';
   grid.setAttribute('aria-busy', 'true');
@@ -238,7 +257,7 @@ export function openStartScreen(root: HTMLElement, opts: StartScreenOptions): ()
       name.textContent = a.named ? a.name : 'Untitled';
       const meta = document.createElement('span');
       meta.className = 'start-artwork-meta';
-      meta.textContent = a.id === opts.currentId ? `Open now · ${edited(a.updatedAt)}` : edited(a.updatedAt);
+      meta.textContent = a.id === opts.currentId ? (opts.currentUnsaved ? 'Open now · unsaved changes' : `Open now · ${edited(a.updatedAt)}`) : edited(a.updatedAt);
       card.appendChild(thumb);
       card.appendChild(name);
       card.appendChild(meta);
@@ -271,8 +290,50 @@ export function openStartScreen(root: HTMLElement, opts: StartScreenOptions): ()
     });
   }
 
-  void opts.loadArtworks().then((list) => {
+  const renderRecovery = (r: RecoveryEntry | null) => {
+    recoverSlot.innerHTML = '';
+    if (!r) return;
+    const box = document.createElement('div');
+    box.className = 'start-recover';
+    const open = document.createElement('button');
+    open.className = 'start-recover-open';
+    const thumb = document.createElement('div');
+    thumb.className = 'start-recover-thumb';
+    if (r.thumbnail) {
+      const img = document.createElement('img');
+      img.alt = '';
+      img.src = r.thumbnail;
+      thumb.appendChild(img);
+    }
+    const text = document.createElement('span');
+    text.className = 'start-recover-text';
+    const title = document.createElement('span');
+    title.className = 'start-recover-title';
+    title.textContent = 'Recover last session';
+    const sub = document.createElement('span');
+    sub.className = 'start-recover-sub';
+    sub.textContent = `${r.name} · ${r.savedBase ? 'unsaved changes' : 'never saved'} · ${edited(r.updatedAt)}`;
+    text.appendChild(title);
+    text.appendChild(sub);
+    open.appendChild(thumb);
+    open.appendChild(text);
+    onTap(open, () => {
+      close();
+      r.recover();
+    });
+    const discard = document.createElement('button');
+    discard.className = 'start-recover-discard';
+    discard.textContent = 'Discard';
+    discard.setAttribute('aria-label', 'Discard the unsaved session');
+    onTap(discard, () => r.discard(() => renderRecovery(null)));
+    box.appendChild(open);
+    box.appendChild(discard);
+    recoverSlot.appendChild(box);
+  };
+
+  void Promise.all([opts.loadArtworks(), opts.loadRecovery?.() ?? Promise.resolve(null)]).then(([list, recovery]) => {
     if (!page.isConnected) return;
+    renderRecovery(recovery);
     renderCards(list);
     // The section grew once the list arrived — keep Open… landing on its heading.
     scrollToFocus();

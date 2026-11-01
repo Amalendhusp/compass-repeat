@@ -103,27 +103,6 @@ body {
   justify-content: flex-end;
 }
 
-/* Phase 3.5 item 5: Point Targets, redesigned down to plain icon-btn weight — visually aligned
- * with menu/eye/export, not a large dark pill competing with Construct/Repeat. The icon itself
- * (a node + a lock badge, open/closed with Free-on-curve) carries the state; `.free-on` adds one
- * small, quiet dot only for the less-common case (Free allowed) — the top bar stays calm
- * otherwise, with no badge at all in the default Free-off state. */
-.point-targets-btn {
-  position: relative;
-  margin-left: 2px;
-}
-.point-targets-btn.free-on::after {
-  content: '';
-  position: absolute;
-  top: 7px;
-  right: 7px;
-  width: 6px;
-  height: 6px;
-  border-radius: 50%;
-  background: var(--ink);
-  box-shadow: 0 0 0 1.5px var(--paper);
-}
-
 .segmented {
   display: flex;
   gap: 2px;
@@ -162,14 +141,41 @@ body {
     padding-left: 2px;
     padding-right: 2px;
   }
-  .point-targets-btn {
-    margin-left: 0;
-  }
   .segmented button {
     width: 66px;
     padding: 0 2px;
     font-size: 13px;
     letter-spacing: 0;
+  }
+}
+@media (max-width: 479px) {
+  /* Three workspace names between the top bar's icons: the switch sizes to its labels, and the
+   * icons give up a little width (never height) so nothing overlaps. */
+  .segmented button {
+    width: auto;
+    padding: 0 6px;
+    font-size: 12.5px;
+    letter-spacing: 0;
+  }
+  .topbar .icon-btn {
+    width: 40px;
+    min-width: 40px;
+  }
+  .segmented .ws-long {
+    display: none;
+  }
+  .segmented .ws-short {
+    display: inline;
+  }
+}
+@media (max-width: 359px) {
+  .segmented button {
+    padding: 0 4px;
+    font-size: 11.5px;
+  }
+  .topbar .icon-btn {
+    width: 36px;
+    min-width: 36px;
   }
 }
 
@@ -206,6 +212,7 @@ canvas.stage {
 }
 
 .util-row {
+  position: relative; /* the status line (.toast) sits just above it */
   display: flex;
   justify-content: space-between;
   align-items: center;
@@ -257,7 +264,7 @@ canvas.stage {
   box-shadow: 0 4px 12px rgba(30, 42, 54, 0.06);
 }
 
-/* Phase 5: Repeat's compact control panel — lattice family, orientation rule, and the transient
+/* Phase 5: Repeat's compact control panel — orientation rule, and the transient
  * contact/rotation status line. Stacks as its own small column, replacing the Construct
  * dock/context-bar while the Repeat workspace is active. */
 .repeat-panel {
@@ -297,6 +304,119 @@ canvas.stage {
 .space-chip.active {
   background: var(--ink);
   color: var(--paper);
+}
+/* Intersection: Spread, and Snapshots. */
+.spread-row {
+  gap: 8px;
+}
+.spread-slider {
+  width: 132px;
+}
+.spread-value {
+  min-width: 38px;
+  padding-left: 0;
+}
+.snapshot-save {
+  font-weight: 600;
+}
+.snapshot-row {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  padding: 2px 6px 2px 10px;
+}
+.snapshot-open {
+  flex: 1;
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  min-height: 44px;
+  border: none;
+  background: transparent;
+  padding: 2px 0;
+  cursor: pointer;
+  text-align: left;
+}
+.snapshot-open img {
+  width: 40px;
+  height: 40px;
+  border-radius: 6px;
+  background: var(--plaster);
+  border: 1px solid var(--hairline);
+}
+.snapshot-delete {
+  width: 36px;
+  height: 36px;
+  border: none;
+  background: transparent;
+  color: var(--muted);
+  cursor: pointer;
+}
+.copy-row .copy-remove {
+  width: 32px;
+  min-width: 32px;
+  height: 32px;
+  border: none;
+  background: transparent;
+  color: var(--muted);
+  cursor: pointer;
+}
+.copy-row .copy-remove:disabled {
+  visibility: hidden;
+}
+.copy-add {
+  font-weight: 600;
+}
+/* A small count on a top-bar icon (Intersection's Snapshots). */
+.badge-host {
+  position: relative;
+}
+.icon-badge {
+  position: absolute;
+  top: 6px;
+  right: 4px;
+  min-width: 15px;
+  height: 15px;
+  padding: 0 4px;
+  border-radius: 8px;
+  background: var(--ink);
+  color: var(--paper);
+  font-size: 10px;
+  font-weight: 600;
+  line-height: 15px;
+  text-align: center;
+  pointer-events: none;
+}
+/* Spread waits for a new Reference after the copies change. */
+.spread-row.stale .spread-value {
+  color: var(--muted);
+  font-size: 11px;
+}
+.copies-header {
+  display: flex;
+  justify-content: space-between;
+}
+.copy-row .copy-colour {
+  width: 22px;
+  height: 22px;
+  min-width: 22px;
+  border-radius: 50%;
+  border: 2px solid var(--paper);
+  box-shadow: 0 0 0 1px var(--hairline);
+  padding: 0;
+  cursor: pointer;
+}
+.copy-row .popover-row-label {
+  flex: 1;
+}
+/* The workspace switch: Intersection's shorter name only where three full names can't fit. */
+.ws-short {
+  display: none;
+}
+/* Repeat Appearance → Stroke: colour and width rest while "As constructed" is on. */
+.panel-stroke-controls.resting {
+  opacity: 0.4;
+  pointer-events: none;
 }
 .repeat-panel > .repeat-status {
   position: absolute;
@@ -353,17 +473,17 @@ canvas.stage {
   touch-action: pan-x;
 }
 /* Phase 3.2 item 5: a plain, noninteractive status readout ("A → B", "Centre → Radius") in
- * place of the old two anonymous progress dots. */
+ * place of the old two anonymous progress dots. An instruction, never a control: plain text with no
+ * fill or box, so it can't be mistaken for the filled, rounded chips beside it. */
 .context-bar .step-badge {
-  font-size: 11px;
-  font-weight: 600;
+  font-size: 12px;
+  font-weight: 500;
   color: var(--muted);
-  background: var(--well);
-  padding: 0 9px;
+  background: none;
+  padding: 0 2px;
   height: 26px;
   display: flex;
   align-items: center;
-  border-radius: 8px;
   flex-shrink: 0;
   white-space: nowrap;
   letter-spacing: 0.01em;
@@ -480,7 +600,7 @@ canvas.stage {
     padding: 0 7px;
   }
   .context-bar.circle-bar .step-badge {
-    padding: 0 6px;
+    padding: 0 1px;
   }
   .context-bar.circle-bar .chip {
     padding: 0 9px;
@@ -942,6 +1062,82 @@ canvas.stage {
 .start-screen ~ .sheet {
   z-index: 10;
 }
+/* UI-1: Recover last session — the one unsaved draft, apart from the saved artworks (dashed brass). */
+.start-recover {
+  display: flex;
+  align-items: stretch;
+  gap: 8px;
+  margin: 0 0 14px;
+  padding: 8px;
+  border: 1.5px dashed var(--brass);
+  border-radius: 16px;
+  background: var(--paper);
+}
+.start-recover-open {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 0;
+  border: 0;
+  background: none;
+  color: var(--ink);
+  text-align: left;
+  font-family: var(--font-ui);
+  cursor: pointer;
+}
+.start-recover-thumb {
+  flex: none;
+  width: 52px;
+  height: 52px;
+  border-radius: 10px;
+  overflow: hidden;
+  background: var(--well);
+}
+.start-recover-thumb img {
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+  display: block;
+}
+.start-recover-text {
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+.start-recover-title {
+  font-size: 15px;
+  font-weight: 600;
+}
+.start-recover-sub {
+  font-size: 12px;
+  color: var(--muted);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.start-recover-discard {
+  flex: none;
+  align-self: center;
+  height: 36px;
+  padding: 0 12px;
+  border: 1px solid var(--hairline);
+  border-radius: 18px;
+  background: var(--plaster);
+  color: var(--muted);
+  font-family: var(--font-ui);
+  font-size: 13px;
+  cursor: pointer;
+}
+.confirm-actions.three button {
+  padding: 0 8px;
+  font-size: 14px;
+}
+.confirm-actions button.danger {
+  color: #a3361c;
+}
 .start-empty {
   grid-column: 1 / -1;
   margin: 0;
@@ -1017,6 +1213,58 @@ canvas.stage {
 .btn-primary:disabled {
   opacity: 0.4;
   cursor: not-allowed;
+}
+
+/* Confirmations: one compact card in its own layer on the page, above every panel and sheet, with a
+ * single backdrop. */
+.confirm-layer {
+  position: fixed;
+  inset: 0;
+  z-index: 60;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 16px;
+}
+.confirm-scrim {
+  position: absolute;
+  inset: 0;
+  background: rgba(30, 42, 54, 0.28);
+}
+.confirm-card {
+  position: relative;
+  width: min(320px, 100%);
+  max-height: calc(100% - 32px);
+  overflow-y: auto;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  padding: 18px 16px 14px;
+  border-radius: 18px;
+  background: var(--paper);
+  box-shadow: 0 12px 36px rgba(30, 42, 54, 0.22);
+}
+.confirm-card h2 {
+  margin: 0;
+  font-family: var(--font-title);
+  font-size: 18px;
+  font-weight: 500;
+  color: var(--ink);
+  overflow-wrap: anywhere;
+}
+.confirm-card p {
+  margin: 0;
+  font-size: 13px;
+  line-height: 1.4;
+  color: var(--muted);
+}
+.confirm-actions {
+  display: flex;
+  gap: 10px;
+  margin-top: 8px;
+}
+.confirm-actions button {
+  height: 44px;
 }
 
 /* ---- Phase 5.5: artwork name prompt + My Artworks ---- */
@@ -1316,12 +1564,57 @@ canvas.stage {
 .swatch-none {
   background: linear-gradient(135deg, transparent 45%, #c6402c 45%, #c6402c 55%, transparent 55%), var(--paper) !important;
 }
+/* C1: "Default" in a construction colour row — the default grey, ringed so it reads as "reset". */
+.swatch-default {
+  box-shadow: inset 0 0 0 3px var(--paper);
+}
 .stroke-chip-dot {
   width: 12px;
   height: 12px;
   border-radius: 50%;
   border: 1px solid rgba(30, 42, 54, 0.25);
   flex-shrink: 0;
+}
+
+/* Intersect: the Lock toggle for the selected construction — an icon chip. */
+.space-chip.lock-chip {
+  padding: 0 10px;
+  flex: 0 0 auto;
+}
+
+/* Repeat Appearance: Fill | Stroke | Background, one at a time. */
+.appearance-panel {
+  width: min(330px, calc(100vw - 16px)) !important;
+}
+.appearance-panel > .popover-segmented {
+  margin: 4px 8px 2px;
+}
+.stroke-layer-row {
+  gap: 8px !important;
+}
+.stroke-layer-name {
+  width: 44px;
+  flex: 0 0 auto;
+}
+.stroke-layer-row .width-slider {
+  flex: 1 1 auto;
+  min-width: 0;
+}
+.stroke-layer-dot {
+  flex: 0 0 auto;
+  width: 26px;
+  height: 26px;
+  border-radius: 50%;
+  border: 2px solid var(--paper);
+  box-shadow: 0 0 0 1px rgba(30, 42, 54, 0.3);
+  cursor: pointer;
+  padding: 0;
+}
+.stroke-layer-dot.open {
+  box-shadow: 0 0 0 2px var(--ink);
+}
+.stroke-layer-swatches {
+  padding: 0 10px 6px;
 }
 
 /* ---- toast ---- */
@@ -1342,13 +1635,29 @@ canvas.stage {
   pointer-events: none;
   opacity: 0;
   transition: opacity 0.15s ease;
-  white-space: nowrap;
-  max-width: calc(100% - 32px);
-  overflow: hidden;
-  text-overflow: ellipsis;
+  /* Wraps rather than run off a narrow screen; never wider than it. */
+  width: max-content;
+  max-width: calc(100vw - 24px);
+  text-align: center;
+  line-height: 1.35;
 }
 .toast.show {
   opacity: 1;
+}
+/* The status line in its place: just above the canvas's control row (Undo/Redo · canvas buttons),
+ * centred, compact — clear of the drawing where the finger is, and of every control. */
+.util-row > .toast {
+  bottom: calc(100% + 8px);
+  font-size: 12.5px;
+  padding: 7px 12px;
+  border-radius: 10px;
+}
+/* Restrained colours for what kind of message it is. */
+.toast[data-kind='warning'] {
+  background: #6a5424;
+}
+.toast[data-kind='error'] {
+  background: #7d3226;
 }
 
 /* ---- Phase 5.3 items 2–6: top-bar panels — one compact, light grammar for Construct and Repeat.
@@ -1753,4 +2062,596 @@ canvas.stage {
   font: 10px/1.35 ui-monospace, 'JetBrains Mono', monospace;
   pointer-events: none;
   white-space: pre;
+}
+/* Intersection: the Snap row, shown only once a line or point is picked — a quiet status line over
+ * the Line | Point switch and the operations it allows. */
+.snap-row {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 4px;
+}
+/* An instruction over the canvas: plain text, kept legible over the drawing by a soft paper halo
+ * rather than a box (a box reads as a control). */
+.snap-status {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  max-width: calc(100vw - 24px);
+  padding: 0 2px;
+  font-size: 12px;
+  color: var(--ink);
+  text-shadow: 0 0 3px var(--plaster), 0 0 3px var(--plaster), 0 0 6px var(--plaster);
+}
+.snap-kind button {
+  padding: 6px 10px;
+}
+.snap-text {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.snap-dot {
+  width: 10px;
+  height: 10px;
+  min-width: 10px;
+  border-radius: 50%;
+}
+.snap-op:disabled {
+  opacity: 0.38;
+  cursor: default;
+}
+.snap-clear {
+  padding: 0 10px;
+  color: var(--muted);
+}
+/* The reference: a quick Show/Hide and the Reference panel, beside Fit. */
+.util-right {
+  display: flex;
+  gap: 8px;
+  pointer-events: none;
+}
+.util-right > * {
+  pointer-events: auto;
+}
+.fit-btn.has-reference {
+  color: var(--ink);
+  box-shadow: 0 0 0 1.5px var(--ink) inset, 0 4px 12px rgba(30, 42, 54, 0.06);
+}
+.reference-panel {
+  width: min(300px, calc(100vw - 16px)) !important;
+}
+.reference-active {
+  gap: 10px;
+}
+.reference-active .popover-row-label {
+  flex: 1;
+}
+.reference-active-thumb {
+  width: 36px;
+  height: 36px;
+  border-radius: 6px;
+  object-fit: cover;
+  border: 1px solid var(--hairline);
+}
+.reference-grid {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  gap: 6px;
+  padding: 4px 10px 6px;
+  max-height: 40vh;
+  overflow-y: auto;
+  touch-action: pan-y;
+}
+.reference-thumb {
+  aspect-ratio: 1;
+  padding: 0;
+  border: 1.5px solid var(--hairline);
+  border-radius: 8px;
+  background: var(--plaster);
+  overflow: hidden;
+  cursor: pointer;
+}
+.reference-thumb img {
+  display: block;
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+}
+.reference-thumb.active {
+  border-color: var(--ink);
+  box-shadow: 0 0 0 1.5px var(--ink);
+}
+.popover-menu.panel .reference-add {
+  font-weight: 600;
+}
+.popover-menu.panel .reference-remove {
+  color: var(--muted);
+}
+/* Reference Transform: announced plainly while the canvas's fingers move the reference. */
+.transform-bar {
+  position: relative;
+  align-self: flex-end;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 4px;
+  background: var(--paper);
+  border: 1px solid var(--ink);
+  border-radius: 14px;
+  box-shadow: 0 6px 18px rgba(30, 42, 54, 0.14);
+  max-width: calc(100vw - 16px);
+}
+.transform-mode button {
+  height: 34px;
+  padding: 0 11px;
+  white-space: nowrap;
+}
+.transform-remove-anchor {
+  height: 34px;
+  white-space: nowrap;
+}
+/* What the fingers do: shown briefly above the row when Transform begins or the mode changes. */
+.transform-hint {
+  position: absolute;
+  right: 0;
+  bottom: calc(100% + 6px);
+  width: max-content;
+  max-width: calc(100vw - 24px);
+  padding: 5px 10px;
+  border-radius: 10px;
+  background: var(--ink);
+  color: var(--paper);
+  font-size: 12px;
+  line-height: 1.35;
+  opacity: 0;
+  transform: translateY(4px);
+  transition: opacity 0.25s ease, transform 0.25s ease;
+  pointer-events: none;
+}
+.transform-hint.show {
+  opacity: 1;
+  transform: none;
+}
+.transform-done {
+  height: 34px;
+  padding: 0 16px;
+  font-weight: 600;
+}
+/* The opacity eye, while its sliders are out; Repeat's handles button, while they are off. */
+.fit-btn.reference-eye.active {
+  box-shadow: 0 0 0 1.5px var(--ink) inset, 0 4px 12px rgba(30, 42, 54, 0.06);
+}
+.fit-btn.handles-btn.off {
+  color: var(--muted);
+}
+/* Quick opacity: two quiet vertical sliders on the canvas's right edge, high enough to keep clear
+ * of the bottom controls; only the sliders themselves take touches. */
+.opacity-column {
+  position: absolute;
+  top: 12px;
+  right: 8px;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 10px;
+  padding: 8px 2px;
+  border-radius: 18px;
+  background: color-mix(in srgb, var(--paper) 78%, transparent);
+  border: 1px solid var(--hairline);
+  box-shadow: 0 4px 12px rgba(30, 42, 54, 0.06);
+  z-index: 2;
+}
+.vslider {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 4px;
+  color: var(--muted);
+}
+.vslider-icon {
+  display: flex;
+  height: 16px;
+}
+.vslider-track {
+  position: relative;
+  width: 36px;
+  height: 124px;
+  touch-action: none;
+  cursor: ns-resize;
+  outline: none;
+}
+.vslider-track::before {
+  content: '';
+  position: absolute;
+  left: 50%;
+  top: 9px;
+  bottom: 9px;
+  width: 4px;
+  margin-left: -2px;
+  border-radius: 2px;
+  background: var(--well);
+}
+.vslider-fill {
+  position: absolute;
+  left: 50%;
+  bottom: 0;
+  clip-path: inset(0 0 9px 0);
+  width: 4px;
+  margin-left: -2px;
+  border-radius: 2px;
+  background: var(--ink);
+  opacity: 0.55;
+}
+.vslider-thumb {
+  position: absolute;
+  left: 50%;
+  width: 18px;
+  height: 18px;
+  margin-left: -9px;
+  border-radius: 50%;
+  background: var(--paper);
+  border: 1.5px solid var(--ink);
+  box-shadow: 0 1px 3px rgba(30, 42, 54, 0.2);
+}
+.vslider-track:focus-visible .vslider-thumb {
+  box-shadow: 0 0 0 3px var(--well);
+}
+.vslider-value {
+  font: 500 11px/1 var(--font-ui);
+  font-variant-numeric: tabular-nums;
+}
+
+.fit-btn.transforming {
+  background: var(--ink);
+  color: var(--paper);
+}
+.reference-library-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding-right: 6px;
+}
+.reference-edit {
+  border: none;
+  background: transparent;
+  color: var(--ink);
+  font-size: 12.5px;
+  font-weight: 600;
+  padding: 6px 8px;
+  cursor: pointer;
+}
+.reference-thumb {
+  position: relative;
+}
+.reference-thumb.editing img {
+  opacity: 0.7;
+}
+.reference-delete-badge {
+  position: absolute;
+  top: 3px;
+  right: 3px;
+  width: 18px;
+  height: 18px;
+  border-radius: 50%;
+  background: #a3341f;
+  color: #fff;
+  display: grid;
+  place-items: center;
+  box-shadow: 0 0 0 1.5px var(--paper);
+}
+.popover-menu.panel .reference-transform {
+  font-weight: 600;
+}
+/* A turned camera: the angle, quietly, only while two fingers are turning the view. */
+.turn-readout {
+  position: absolute;
+  top: 10px;
+  left: 50%;
+  transform: translateX(-50%);
+  padding: 3px 9px;
+  border-radius: 9px;
+  background: rgba(251, 249, 245, 0.85);
+  color: var(--muted);
+  font-size: 12px;
+  font-weight: 600;
+  font-variant-numeric: tabular-nums;
+  pointer-events: none;
+  opacity: 0;
+  transition: opacity 0.4s ease;
+}
+.turn-readout.show {
+  opacity: 1;
+  transition: opacity 0.1s ease;
+}
+/* Line → Free | Parallel | Perpendicular: a compact strip over the ribbon, only while Line is the tool. */
+.line-strip {
+  align-self: flex-start;
+  box-shadow: 0 4px 12px rgba(30, 42, 54, 0.08);
+}
+.line-strip button {
+  padding: 6px 11px;
+}
+/* Repeat → Source (Motif | Intersect): at the end of Space's row. */
+.source-group {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  margin-left: 6px;
+  padding-left: 10px;
+  border-radius: 11px;
+  background: var(--well);
+  font-size: 12.5px;
+  color: var(--muted);
+}
+.source-group .segmented-mini button {
+  padding: 6px 10px;
+}
+.source-group.pattern-group {
+  margin-left: 0;
+}
+.space-chip:disabled {
+  opacity: 0.4;
+  cursor: default;
+}
+
+/* Stage A: the construction colour swatch beside the menu (Construct). Ringed in the selection blue
+   while it would recolour the selected construction rather than set the drawing colour. */
+.cc-btn .cc-dot {
+  width: 20px;
+  height: 20px;
+  border-radius: 50%;
+  border: 1.5px solid rgba(30, 42, 54, 0.28);
+  box-sizing: border-box;
+}
+.cc-btn.recolour .cc-dot {
+  box-shadow: 0 0 0 2px var(--paper), 0 0 0 4px var(--signal);
+}
+
+/* Stage C: Close Gap's row in the Repeat panel. */
+.close-gap-row {
+  flex-wrap: wrap;
+}
+.close-gap-cue {
+  font-size: 13px;
+  color: var(--ink);
+  padding: 0 4px;
+  white-space: nowrap;
+}
+
+/* Stage D: who a tool in Intersect edits — Construct source (every copy follows) or the Developed
+ * Primary. Top centre of the canvas, quiet, never in the way of a touch. */
+.owner-tag {
+  position: absolute;
+  top: 10px;
+  left: 50%;
+  transform: translateX(-50%);
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  max-width: calc(100% - 24px);
+  padding: 5px 11px 5px 9px;
+  border-radius: 999px;
+  background: rgba(255, 255, 255, 0.86);
+  box-shadow: 0 2px 8px rgba(30, 42, 54, 0.12);
+  color: var(--ink);
+  font-size: 12px;
+  font-weight: 600;
+  white-space: nowrap;
+  pointer-events: none;
+  z-index: 3;
+}
+.owner-tag > span:last-child {
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.owner-mark {
+  flex: none;
+  width: 14px;
+  height: 0;
+  border-radius: 2px;
+}
+/* Construct source: the thin, light construction line. */
+.owner-tag[data-owner='construct'] .owner-mark {
+  border-top: 1.5px solid rgba(30, 42, 54, 0.45);
+}
+.owner-tag[data-owner='construct'] {
+  color: rgba(30, 42, 54, 0.78);
+  font-weight: 500;
+}
+/* Developed Primary: the Primary stroke itself — ink, heavy, opaque. */
+.owner-tag[data-owner='primary'] .owner-mark {
+  border-top: 3.2px solid var(--ink);
+}
+
+/* Stage D: the Copies panel's three columns — the copy, In Repeat (Primary-copy), Extensions. */
+.copies-header > .popover-section-label:first-child {
+  flex: 1;
+}
+.copies-header > .popover-section-label:not(:first-child) {
+  width: 64px;
+  text-align: center;
+}
+.copies-header > .popover-section-label:last-child {
+  margin-right: 32px; /* over the switch, clear of the remove button */
+}
+.copy-row .toggle-switch {
+  margin: 0 12px;
+}
+
+/* Stage D (D10): Repeat from an empty Intersect composition — what is missing, and the ways on. */
+.empty-composition {
+  position: absolute;
+  top: 38%;
+  left: 50%;
+  transform: translate(-50%, -50%);
+  width: min(320px, calc(100% - 32px));
+  padding: 16px 16px 14px;
+  border-radius: 16px;
+  background: var(--paper);
+  box-shadow: 0 6px 22px rgba(30, 42, 54, 0.16);
+  color: var(--ink);
+  z-index: 4;
+}
+.empty-composition-title {
+  font-size: 15px;
+  font-weight: 650;
+  margin-bottom: 6px;
+}
+.empty-composition p {
+  margin: 0 0 12px;
+  font-size: 13px;
+  line-height: 1.4;
+  color: var(--muted);
+}
+.empty-composition-actions {
+  display: flex;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+
+/* Repeat Fill: ● [Space | Motif | Pattern] · Done — the dot shows the Fill colour and opens
+   Appearance → Fill, where colour and opacity are chosen. */
+.space-chip.fill-dot-btn {
+  padding: 0;
+  width: 32px;
+  justify-content: center;
+  flex: 0 0 auto;
+}
+.fill-dot-btn .stroke-chip-dot {
+  width: 18px;
+  height: 18px;
+}
+.fill-row {
+  flex-wrap: nowrap;
+}
+
+/* UI-2: the contextual Appearance panel (top right) — each colour row on one line at phone width. */
+.popover-menu.appearance-panel {
+  max-width: min(360px, calc(100vw - 16px));
+}
+.appearance-panel .swatch-row {
+  flex-wrap: nowrap;
+  gap: 5px;
+}
+.appearance-panel .swatch {
+  width: 32px;
+  height: 32px;
+}
+
+/* UI-3: which strength each eye slider sets — the reference image's or the artwork's over it. */
+.vslider-caption {
+  font-size: 9.5px;
+  line-height: 1;
+  letter-spacing: 0.02em;
+  color: var(--muted);
+}
+
+/* UI-4: Repeat. Fill is an action of its own (not a rule): an outlined chip with its icon, apart from
+ * the Construct | Intersect choice on the same row. */
+/* Release R4: off, Fill reads as a plain button (never as a chosen option); on, it is filled ink. It sits at
+ * the far end of the lowest row, apart from the rules and the source. */
+.space-chip.fill-action {
+  margin-left: auto;
+  background: var(--paper);
+  box-shadow: 0 1px 3px rgba(30, 42, 54, 0.18);
+  font-weight: 500;
+  gap: 5px;
+  padding: 0 12px 0 10px;
+}
+.space-row .space-chip.fill-action:not(.active) {
+  color: var(--ink);
+}
+/* Apart from the source choice: a clear gap and a hairline before it. */
+.space-row > .source-group + .space-chip.fill-action {
+  margin-left: 14px;
+  position: relative;
+}
+.space-row > .source-group + .space-chip.fill-action::before {
+  content: '';
+  position: absolute;
+  left: -8px;
+  top: 7px;
+  bottom: 7px;
+  width: 1px;
+  background: var(--line, rgba(30, 42, 54, 0.2));
+}
+.space-chip.fill-action svg {
+  flex: none;
+}
+/* Final sprint: while filling, Fill (on) — tap to finish — and the colour it applies (tap: Appearance → Fill). */
+.fill-row .space-chip.fill-action {
+  margin-left: 0;
+}
+.space-chip.fill-action.active {
+  background: var(--ink);
+  color: var(--paper);
+}
+.fill-swatch-btn {
+  width: 40px;
+  height: 40px;
+  flex: none;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  border: 0;
+  padding: 0;
+  margin-left: 2px;
+  border-radius: 50%;
+  background: transparent;
+  cursor: pointer;
+}
+.fill-on-dot {
+  width: 24px;
+  height: 24px;
+  border-radius: 50%;
+  box-shadow: 0 0 0 2px var(--paper), 0 0 0 3.5px var(--ink);
+}
+.fill-on-dot.none {
+  background: linear-gradient(135deg, transparent 45%, #c6402c 45%, #c6402c 55%, transparent 55%), var(--paper) !important;
+}
+.fill-row .fill-cue {
+  margin-left: 2px;
+  padding: 5px 10px;
+  border-radius: 11px;
+  background: var(--paper);
+  box-shadow: 0 1px 4px rgba(0, 0, 0, 0.12);
+}
+/* The contextual control (Construct): no colour. */
+.cc-btn .cc-dot.none {
+  background: linear-gradient(135deg, transparent 45%, #c6402c 45%, #c6402c 55%, transparent 55%), var(--paper) !important;
+}
+/* The master show / hide for handles and guides: muted while everything is hidden. */
+.icon-btn.guides-master.off {
+  color: var(--muted);
+  opacity: 0.7;
+}
+
+/* Release R5: Participant & attribution sheet — labelled optional fields, one switch. */
+.participant-sheet {
+  gap: 10px;
+  max-height: 88vh;
+  overflow-y: auto;
+}
+.sheet-field {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  font-size: 12.5px;
+  color: var(--muted);
+}
+.sheet-note {
+  margin: 0;
+  font-size: 12.5px;
+  line-height: 1.35;
+  color: var(--muted);
+}
+.sheet-toggle-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 4px 0;
+  font-size: 14px;
+  color: var(--ink);
 }

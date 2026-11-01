@@ -7,103 +7,36 @@
 import type { Vec2 } from '../../model/types.ts';
 import type { AppController, ViewTransform } from '../../app/controller.ts';
 import { screenToWorld, worldToScreen } from '../../app/controller.ts';
-import { contactModel, motifRadius, snapRotation, type ContactModel } from '../../geometry/lattice.ts';
+import { motifRadius, snapRotation } from '../../geometry/lattice.ts';
 import { dist } from '../../geometry/vec.ts';
-import { computeSpaces, spaceAt } from '../../geometry/spaces.ts';
+import { computeSpaces } from '../../geometry/spaces.ts';
+import { fillOpeningsAt } from '../../geometry/repeatGaps.ts';
 import { withAlpha } from '../../model/colour.ts';
+import { fillTargetAt, patternGroup, toggleRegion } from '../../geometry/repeatColour.ts';
+import { repeatSourceOf } from '../../geometry/repeatSetup.ts';
 import { showToast } from '../../ui/toast.ts';
+import { gapsAtTap } from '../closeGapMode.ts';
+import { crossingNear, weaveNetwork } from '../../geometry/weave.ts';
+import { withFlip } from '../../geometry/repeatStroke.ts';
 import type { Gesture, ToolModule } from './types.ts';
 
 const HANDLE_HIT_RADIUS = 26; // px — generous, these are the only two draggable points
 const RING_HIT_BAND = 22; // px either side of the ring's own radius
 
-// Phase 5.1 item 1: contact hysteresis, in screen px so it feels the same at any zoom. Entering a
-// snap needs the finger close; leaving needs a deliberate pull well past that, so finger jitter
-// inside the band can never flip snapped → free → snapped.
-const DETENT_ENTER = 12;
-const DETENT_RELEASE = 32;
-const CONTOUR_ENTER = 9;
-const CONTOUR_RELEASE = 28;
-const ATTRACT_RADIUS = 36; // magnetic approach begins here…
-const ATTRACT_MAX = 0.55; // …pulling at most this fraction of the way toward the detent before it snaps
 // vNext Phase 1: a press that stays within this of where it went down moves nothing — so a tap or
 // a resting finger never nudges the lattice — and beyond it, whatever is shown is what is kept.
 const DRAG_SLOP_PX = 6;
-
-type Snap = { kind: 'detent'; index: number } | { kind: 'contour' } | null;
-
-function sameSnap(a: Snap, b: Snap): boolean {
-  if (!a || !b) return a === b;
-  if (a.kind === 'detent' && b.kind === 'detent') return a.index === b.index;
-  return a.kind === b.kind;
-}
-
-function attraction(distPx: number, enterPx: number): number {
-  if (distPx >= ATTRACT_RADIUS) return 0;
-  const t = (ATTRACT_RADIUS - distPx) / (ATTRACT_RADIUS - enterPx);
-  return Math.min(1, t) ** 2 * ATTRACT_MAX;
-}
-
-interface SnapResult {
-  snap: Snap;
-  shown: Vec2;
-}
+/** Close Gap: how near a tap must be to a gap (px) — a fingertip. */
+const CLOSE_GAP_REACH_PX = 28;
 
 /**
- * One step of the free → magnetic approach → snapped → deliberate pull-away → free machine.
- * Detents (exact edge-to-edge / corner-to-corner placements) outrank the contact contour (any
- * touching position along the current drag direction); while on the contour, sliding toward a
- * detent is what captures it, so the neighbour can glide round the reference into alignment.
+ * Phase 1.2: dragging a lattice handle moves its arm exactly with the finger — no snapping, no
+ * attraction, nothing to pull free of. (Exact arrangements come from stored coordinates, Reset
+ * lattice, and explicit operations.)
  */
-function stepSnap(model: ContactModel, prev: Snap, raw: Vec2, zoom: number, lastUnit: Vec2): SnapResult & { unit: Vec2 } {
-  const len = Math.hypot(raw.x, raw.y);
-  const unit = len > 1e-9 ? { x: raw.x / len, y: raw.y / len } : lastUnit;
-  const contactLen = model.contactDistance(unit);
-  const contourPos = { x: unit.x * contactLen, y: unit.y * contactLen };
-  const radialPx = Math.abs(len - contactLen) * zoom;
-  // Measured along the contact (not straight from the finger) once the neighbour is touching, so
-  // gliding round the reference reaches — and leaves — a detent by sliding. Entering uses the
-  // tight contour band, releasing the loose one: the same asymmetry as everything else here.
-  const onContour = prev?.kind === 'contour' || radialPx <= CONTOUR_ENTER;
-  const enterProbe = onContour ? contourPos : raw;
-  const releaseProbe = radialPx <= CONTOUR_RELEASE ? contourPos : raw;
-
-  let nearest = -1;
-  let nearestPx = Infinity;
-  model.detents.forEach((d, i) => {
-    const px = dist(enterProbe, d.translate) * zoom;
-    if (px < nearestPx) {
-      nearestPx = px;
-      nearest = i;
-    }
-  });
-
-  let snap: Snap = prev;
-  if (snap?.kind === 'detent' && dist(releaseProbe, model.detents[snap.index]!.translate) * zoom > DETENT_RELEASE) snap = null;
-  if (snap?.kind === 'contour' && radialPx > CONTOUR_RELEASE) snap = null;
-  if (snap?.kind !== 'detent' && nearest >= 0 && nearestPx <= DETENT_ENTER) snap = { kind: 'detent', index: nearest };
-  if (!snap && radialPx <= CONTOUR_ENTER) snap = { kind: 'contour' };
-
-  if (snap?.kind === 'detent') return { snap, shown: model.detents[snap.index]!.translate, unit };
-  if (snap?.kind === 'contour') return { snap, shown: contourPos, unit };
-
-  // Free: a soft pull toward whichever detent/contour is closest, never all the way.
-  const wDetent = nearest >= 0 ? attraction(dist(raw, model.detents[nearest]!.translate) * zoom, DETENT_ENTER) : 0;
-  const wContour = attraction(radialPx, CONTOUR_ENTER);
-  const target = wDetent >= wContour && nearest >= 0 ? model.detents[nearest]!.translate : contourPos;
-  const w = Math.max(wDetent, wContour);
-  return { snap: null, shown: { x: raw.x + (target.x - raw.x) * w, y: raw.y + (target.y - raw.y) * w }, unit };
-}
-
-function contactLabel(model: ContactModel, t: Vec2): string | null {
-  const state = model.classify(t);
-  return state === 'edges-meet' ? 'Edges meet' : state === 'tips-touch' ? 'Tips touch' : null;
-}
-
 function dragHandleGesture(controller: AppController, view: ViewTransform, dir: 'a' | 'b', downScreen: Vec2): Gesture {
   const pivot = controller.doc.frame.origin;
   const start = controller.doc.repeat[dir];
-  const model = contactModel(controller.doc, dir);
   // Keep the handle where it was relative to the finger rather than jumping it under the fingertip.
   const downWorld = screenToWorld(view, downScreen);
   const grab = { x: start.x - (downWorld.x - pivot.x), y: start.y - (downWorld.y - pivot.y) };
@@ -111,37 +44,18 @@ function dragHandleGesture(controller: AppController, view: ViewTransform, dir: 
     const w = screenToWorld(view, sp);
     return { x: w.x - pivot.x + grab.x, y: w.y - pivot.y + grab.y };
   };
-
-  // A neighbour already resting on a detent starts snapped, so picking it up doesn't re-announce it.
-  const initial = stepSnap(model, null, start, view.zoom, { x: 1, y: 0 });
-  let snap: Snap = initial.snap;
-  let lastUnit = initial.unit;
   let moving = false;
 
   return {
     onMove(sp) {
       if (!moving && dist(sp, downScreen) <= DRAG_SLOP_PX) return;
       moving = true;
-      const step = stepSnap(model, snap, rawAt(sp), view.zoom, lastUnit);
-      lastUnit = step.unit;
-      if (step.snap && !sameSnap(step.snap, snap)) {
-        const label = contactLabel(model, step.shown);
-        if (label && (snap === null || step.snap.kind === 'detent')) {
-          controller.flashRepeatContact(label);
-          // A tactile tick where supported (Android); iOS Safari has no vibrate API at all.
-          if (navigator.userActivation?.hasBeenActive) navigator.vibrate?.(8);
-        }
-      }
-      snap = step.snap;
-      controller.repeatDrag = { dir, translate: step.shown, snapped: snap !== null };
+      controller.repeatDrag = { dir, translate: rawAt(sp) };
       controller.notifyView();
     },
     onUp() {
-      // vNext Phase 1: what was on screen when the finger lifted is exactly what's kept — the snapped
-      // (or freely dragged) translation itself, never recomputed from where the pointer came up,
-      // and kept however short the drag was: a small final push into contact is a real move, not a
-      // tap. (The pointer layer's tap/drag distinction used to throw such pushes away, springing the
-      // neighbour back to where it started.)
+      // vNext Phase 1: what was on screen when the finger lifted is exactly what's kept, never
+      // recomputed from where the pointer came up; a press that never moved changes nothing.
       const shown = controller.repeatDrag?.translate;
       controller.repeatDrag = null;
       if (!shown || (shown.x === start.x && shown.y === start.y)) {
@@ -194,31 +108,116 @@ function rotateRingGesture(controller: AppController, view: ViewTransform, downS
   };
 }
 
-/** Phase 5.6 items 19–23: with Space on, a tap colours the enclosed gap under it — and with it
- * every equivalent gap across the tessellation (its whole class) — or, if already coloured, clears
- * that class. Only `repeat.gapFills` changes: never Construct geometry, its fills, or the lattice. */
-function spaceTapGesture(controller: AppController, view: ViewTransform): Gesture {
+/** The colour Repeat Fill applies next, #rrggbb (null = unfilled). */
+export const REPEAT_PAINT_DEFAULT = '#1E3A6E';
+export function repeatPaint(controller: AppController): string | null {
+  const p = controller.doc.repeatPaint;
+  return p ? p.colour : REPEAT_PAINT_DEFAULT;
+}
+/** The Fill opacity applied next (0–1). */
+export function repeatPaintOpacity(controller: AppController): number {
+  return controller.doc.repeatPaint?.opacity ?? 1;
+}
+/** The fill a tap applies next: the colour carrying its opacity (#rrggbbaa below 100%), or null. */
+export function repeatFill(controller: AppController): string | null {
+  const c = repeatPaint(controller);
+  return c ? withAlpha(c, repeatPaintOpacity(controller)) : null;
+}
+
+/** Final sprint, Stage 1 — one Fill: a tap fills whatever enclosed region is under it, and the app
+ * decides what kind it is (repeatColour.ts `fillTargetAt`): a region of the design — the motif's, or
+ * the Intersect unit's, bounded by any of its members and the Developed Primary together — in every
+ * copy (or, in Pattern, in every copy of the tapped copy's group); or an enclosed space between copies,
+ * with every space like it. A region that already has exactly this colour returns to as designed (a
+ * space: unfilled). One Undo step; never the construction, its fills or the lattice. A tap in no
+ * enclosed region marks where it is open (repeatGaps.ts), changing nothing. */
+function fillTapGesture(controller: AppController, view: ViewTransform): Gesture {
   return {
     onMove() {},
     onUp(sp, wasDrag) {
       if (wasDrag) return;
       const doc = controller.doc;
-      const topology = computeSpaces(doc);
-      const hit = spaceAt(topology, screenToWorld(view, sp));
-      if (!hit) {
-        showToast(topology.classes.length > 0 ? 'Not an enclosed space' : 'No enclosed spaces yet');
+      controller.repeatGapMarks = null;
+      const target = fillTargetAt(doc, view, sp);
+      if (!target) {
+        const marks = fillOpeningsAt(doc, screenToWorld(view, sp));
+        if (marks) {
+          controller.repeatGapMarks = { ...marks, doc };
+          showToast(marks.ends.length ? 'Not closed · its open ends are marked' : 'Not closed · the lines miss where marked', 2600, 'warning');
+        } else showToast('Not an enclosed region', 2200, 'warning');
+        controller.notifyView();
         return;
       }
-      const keys = (topology.groups.get(hit.group) ?? [hit]).map((c) => c.key);
-      const coloured = doc.repeat.gapFills.has(hit.key);
-      const pref = doc.spaceDefaults;
-      if (!coloured && !pref.colour) return; // "No fill" only ever clears
+      const paint = repeatFill(controller);
+      if (target.kind === 'space') {
+        const hit = target.space;
+        const keys = (computeSpaces(doc).groups.get(hit.group) ?? [hit]).map((c) => c.key);
+        const now = doc.repeat.gapFills.get(hit.key);
+        if (!now && !paint) return; // "No fill" on an empty space: nothing to clear
+        const clear = !paint || now === paint;
+        controller.commit((d) => {
+          for (const k of keys) {
+            if (clear) d.repeat.gapFills.delete(k);
+            else d.repeat.gapFills.set(k, paint!);
+          }
+        });
+        // A space closed only across a hair-line gap: said once, plainly, so it is never a surprise.
+        if (!clear && hit.gap > 0) showToast(`Filled · its copies miss by ${Number(hit.gap.toFixed(2))} — under the line`, 2600);
+        return;
+      }
+      const colour = doc.repeatSetup?.colour;
+      const group = controller.repeatColourMode === 'pattern' ? patternGroup(colour, target.i, target.j) : 0;
       controller.commit((d) => {
-        for (const k of keys) {
-          if (coloured) d.repeat.gapFills.delete(k);
-          else d.repeat.gapFills.set(k, withAlpha(pref.colour!, pref.opacity));
-        }
+        d.repeatSetup = { ...(d.repeatSetup ?? { source: repeatSourceOf(d) }), colour: toggleRegion(d.repeatSetup?.colour, target.key, paint, group) };
       });
+      // Overlapping copies are not regions of their own: say plainly which one was coloured.
+      if (target.overlapped) showToast('Overlap · the region on top was coloured');
+    },
+    onCancel() {},
+  };
+}
+
+/** Sprint S3 — Interlaced: a tap on a crossing swaps which band passes over there (in every copy of it),
+ * one Undo step; the construction is never touched. */
+function weaveTapGesture(controller: AppController, view: ViewTransform): Gesture {
+  return {
+    onMove() {},
+    onUp(sp, wasDrag) {
+      if (wasDrag) return;
+      const doc = controller.doc;
+      const stroke = doc.repeatSetup?.stroke;
+      if (!stroke) return;
+      const hit = crossingNear(weaveNetwork(doc), screenToWorld(view, sp), CROSSING_REACH_PX / view.zoom);
+      if (!hit) {
+        showToast('No crossing here · tap where two bands cross', 2200);
+        return;
+      }
+      controller.commit((d) => {
+        d.repeatSetup = { ...d.repeatSetup!, stroke: withFlip(d.repeatSetup!.stroke!, hit.crossing.key) };
+      });
+    },
+    onCancel() {},
+  };
+}
+/** How near a tap must be to a crossing (px). */
+const CROSSING_REACH_PX = 24;
+
+/** Close Gap's tap (interaction/closeGapMode.ts): the valid gaps near the tap — the nearest previewed
+ * at once, up to two more offered — or, if none, a plain word on why. Never changes the artwork. */
+function closeGapTapGesture(controller: AppController, view: ViewTransform): Gesture {
+  return {
+    onMove() {},
+    onUp(sp, wasDrag) {
+      if (wasDrag) return;
+      const { local, rejected } = gapsAtTap(controller.doc, screenToWorld(view, sp), CLOSE_GAP_REACH_PX / view.zoom);
+      if (local.length > 0) {
+        controller.closeGap = { phase: 'preview', local, index: 0 };
+      } else {
+        controller.closeGap = { phase: 'pick' };
+        if (rejected.length > 0) showToast(`Can't close this gap · ${rejected[0]}`, 3400, 'warning');
+        else showToast('No small gap here · tap right beside one', 2400);
+      }
+      controller.notify();
     },
     onCancel() {},
   };
@@ -230,7 +229,22 @@ export const repeatTool: ToolModule = {
     return 'Drag a neighbour to set spacing, or the ring to rotate';
   },
   beginGesture(controller, view, screenPos): Gesture | null {
-    if (controller.spaceMode) return spaceTapGesture(controller, view);
+    if (controller.closeGap) {
+      // The lattice handles stay completely free: dragging one leaves any preview and goes on picking.
+      if (controller.doc.repeatDisplay.handles) {
+        const pivot = controller.doc.frame.origin;
+        for (const dir of ['a', 'b'] as const) {
+          const vec = controller.doc.repeat[dir];
+          if (dist(screenPos, worldToScreen(view, { x: pivot.x + vec.x, y: pivot.y + vec.y })) <= HANDLE_HIT_RADIUS) {
+            controller.closeGap = { phase: 'pick' };
+            return dragHandleGesture(controller, view, dir, screenPos);
+          }
+        }
+      }
+      return closeGapTapGesture(controller, view);
+    }
+    if (controller.repeatColourMode || controller.spaceMode) return fillTapGesture(controller, view);
+    if (controller.weaveEdit) return weaveTapGesture(controller, view);
     if (!controller.doc.repeatDisplay.handles) return null; // hidden handles are not interactive
     const doc = controller.doc;
     const pivot = doc.frame.origin;

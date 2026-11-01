@@ -4,6 +4,7 @@
 // (ui/tap.ts), like the confirm sheet.
 
 import type { ArtworkSummary } from '../persist/db.ts';
+import type { ParticipantInfo } from '../model/types.ts';
 import { onTap } from './tap.ts';
 import { openConfirmSheet } from './confirmsheet.ts';
 
@@ -74,6 +75,99 @@ export function openNameSheet(root: HTMLElement, opts: { title: string; initial:
     input.focus();
     input.select();
   }, 50);
+}
+
+/**
+ * Release R5 — optional participant information and export attribution. Every field is optional; nothing
+ * is required, registered, uploaded or analysed. Kept with this artwork on this device (in the working
+ * draft; in the saved artwork through Save / Save As). Attribution is off unless switched on, and only
+ * its own short text ever appears in an export — never the email or phone.
+ */
+export function openParticipantSheet(root: HTMLElement, current: ParticipantInfo | undefined, onDone: (next: ParticipantInfo | undefined) => void): void {
+  const { sheet, close } = mountSheet(root);
+  sheet.classList.add('participant-sheet');
+  const head = document.createElement('div');
+  head.className = 'sheet-head';
+  head.innerHTML = '<h2>Participant &amp; attribution</h2>';
+  const note = document.createElement('p');
+  note.className = 'sheet-note';
+  note.textContent = 'All optional. Kept with this artwork on this device only — never sent anywhere.';
+  const field = (label: string, value: string | undefined, type: string, placeholder: string, autocomplete: string) => {
+    const wrap = document.createElement('label');
+    wrap.className = 'sheet-field';
+    const span = document.createElement('span');
+    span.textContent = label;
+    const input = document.createElement('input');
+    input.type = type;
+    input.className = 'name-input';
+    input.maxLength = 80;
+    input.placeholder = placeholder;
+    input.value = value ?? '';
+    input.autocomplete = autocomplete as AutoFill;
+    input.setAttribute('aria-label', label);
+    wrap.appendChild(span);
+    wrap.appendChild(input);
+    return { wrap, input };
+  };
+  const name = field('Name or participant code', current?.name, 'text', 'e.g. Amalendhu or P07', 'off');
+  const email = field('Email', current?.email, 'email', 'Optional', 'off');
+  const phone = field('Phone', current?.phone, 'tel', 'Optional', 'off');
+
+  // Attribution: off by default; its own text (suggested from the name), never the email or phone.
+  let on = current?.attribution?.on ?? false;
+  const toggleRow = document.createElement('div');
+  toggleRow.className = 'sheet-toggle-row';
+  const toggleLabel = document.createElement('span');
+  toggleLabel.textContent = 'Include attribution in export';
+  const toggle = document.createElement('button');
+  toggle.className = 'toggle-switch';
+  toggle.innerHTML = '<span class="toggle-knob"></span>';
+  toggleRow.appendChild(toggleLabel);
+  toggleRow.appendChild(toggle);
+  const credit = field('Attribution text', current?.attribution?.text, 'text', 'e.g. Created by P07', 'off');
+  const hint = document.createElement('p');
+  hint.className = 'sheet-note';
+  hint.textContent = 'Shown small in a corner of PNG, SVG and the Timelapse’s last frame. Email and phone are never shown.';
+  const suggest = () => {
+    if (on && !credit.input.value.trim() && name.input.value.trim()) credit.input.value = `Created by ${name.input.value.trim()}`;
+  };
+  const refresh = () => {
+    toggle.classList.toggle('on', on);
+    toggle.setAttribute('aria-pressed', String(on));
+    toggle.setAttribute('aria-label', `Include attribution in export: ${on ? 'on' : 'off'}`);
+    credit.wrap.style.display = on ? '' : 'none';
+    hint.style.display = on ? '' : 'none';
+  };
+  onTap(toggle, () => {
+    on = !on;
+    suggest();
+    refresh();
+  });
+
+  const actions = document.createElement('div');
+  actions.className = 'sheet-actions';
+  const cancel = document.createElement('button');
+  cancel.className = 'btn-secondary';
+  cancel.textContent = 'Cancel';
+  const done = document.createElement('button');
+  done.className = 'btn-primary';
+  done.textContent = 'Done';
+  onTap(cancel, close);
+  onTap(done, () => {
+    const clean = (v: string) => v.trim().slice(0, 80);
+    const next: ParticipantInfo = {};
+    if (clean(name.input.value)) next.name = clean(name.input.value);
+    if (clean(email.input.value)) next.email = clean(email.input.value);
+    if (clean(phone.input.value)) next.phone = clean(phone.input.value);
+    const text = clean(credit.input.value);
+    if (on || text) next.attribution = { on, text };
+    close();
+    onDone(Object.keys(next).length ? next : undefined);
+  });
+  actions.appendChild(cancel);
+  actions.appendChild(done);
+  for (const el of [head, note, name.wrap, email.wrap, phone.wrap, toggleRow, credit.wrap, hint, actions]) sheet.appendChild(el);
+  refresh();
 }
 
 function edited(ts: number): string {
@@ -219,7 +313,7 @@ export function openArtworksSheet(
     onTap(del, () => {
       if (offset < REVEAL_PX) return;
       const shown = a.named ? a.name : 'Untitled';
-      openConfirmSheet(root, {
+      openConfirmSheet({
         title: `Delete “${shown}”?`,
         body: 'This removes the editable artwork from this device.',
         confirmLabel: 'Delete',

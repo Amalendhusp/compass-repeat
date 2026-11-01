@@ -13,8 +13,8 @@
 // the gesture's own work, in short steps that let the screen keep drawing in between.
 
 import type { AppController } from '../app/controller.ts';
-import type { Doc } from '../model/types.ts';
-import { PROCESS_FORMAT, capturedHash, captureState, describeChange, diffStates, inPlaceFingerprint, inPlaceParts, type ArtworkState, type InPlaceParts, type ProcessSource } from './processState.ts';
+import type { Doc, Workspace } from '../model/types.ts';
+import { PROCESS_FORMAT, capturedHash, captureState, describeChange, diffStates, inPlaceFingerprint, inPlaceParts, withoutIntersect, withoutRepeatSetup, type ArtworkState, type InPlaceParts, type ProcessSource } from './processState.ts';
 import { enqueue, loadMeta, writeEvents, type ProcessEvent, type ProcessMeta } from './processStore.ts';
 
 /** A settled in-place change (Appearance, Repeat's first lattice) waits this long before it counts. */
@@ -29,16 +29,19 @@ export interface ProcessHandle {
   detach(): void;
 }
 
-/** One moment, as taken at the time: cheap, and complete once captured in the queue. */
+/** One moment, as taken at the time: cheap, and complete once captured in the queue — with the
+ * workspace it happened in. */
 interface Moment {
   doc: Doc;
   parts: InPlaceParts;
+  workspace: Workspace;
 }
-const moment = (doc: Doc): Moment => ({ doc, parts: inPlaceParts(doc) });
 /** Lets rendering and input run between the steps of one queued recording. */
 const breathe = () => new Promise<void>((resolve) => setTimeout(resolve, 0));
 
 export function attachProcessRecorder(controller: AppController, opts: { fresh: boolean }): ProcessHandle {
+  // The workspace showing when the moment happened (the document's own view may be a snapshot's).
+  const moment = (doc: Doc): Moment => ({ doc, parts: inPlaceParts(doc), workspace: controller.doc.view.workspace });
   const docId = controller.doc.id;
   let lastRef = controller.doc;
   let lastPrint = inPlaceFingerprint(lastRef);
@@ -50,7 +53,7 @@ export function attachProcessRecorder(controller: AppController, opts: { fresh: 
   let prev!: ArtworkState;
   let prevHash = '';
 
-  const event = (seq: number, at: number, source: ProcessSource, kind: string, tags: string[], hash: string, body: Pick<ProcessEvent, 'patch' | 'keyframe'>): ProcessEvent => ({ docId, seq, at, source, kind, tags, hash, ...body });
+  const event = (seq: number, at: number, source: ProcessSource, kind: string, tags: string[], hash: string, body: Pick<ProcessEvent, 'patch' | 'keyframe'>, workspace?: Workspace): ProcessEvent => ({ docId, seq, at, source, kind, tags, hash, ...(workspace ? { workspace } : {}), ...body });
 
   /** The first moment of a history: a keyframe of the artwork as it stands. */
   async function start(origin: ProcessMeta['origin'], at: number): Promise<void> {
@@ -70,7 +73,7 @@ export function attachProcessRecorder(controller: AppController, opts: { fresh: 
       bytes,
       gaps: 0,
     };
-    await writeEvents(meta, [event(0, at, 'baseline', 'baseline', [], prevHash, { keyframe: prev })]);
+    await writeEvents(meta, [event(0, at, 'baseline', 'baseline', [], prevHash, { keyframe: prev }, opened.workspace)]);
   }
 
   enqueue(async () => {
@@ -85,18 +88,32 @@ export function attachProcessRecorder(controller: AppController, opts: { fresh: 
       await breathe();
       const state = captureState(taken.doc, taken.parts);
       await breathe();
-      const ops = diffStates(prev, state);
+      let ops = diffStates(prev, state);
       if (ops.length === 0) return;
       if (!meta) {
         await start('existing', at);
       } else if (!prevHash) {
         // First change since opening: does the saved artwork still match where its history ended?
-        const opened = capturedHash(prev);
+        let opened = capturedHash(prev);
+        // A history recorded before Intersect's arrangement (or Repeat's setup) was part of a state
+        // ends on the same artwork without it: carry on from there (it then arrives as this
+        // moment's change), rather than calling it a gap.
+        if (opened.hash !== meta.headHash) {
+          const older = [withoutRepeatSetup(prev), ...(prev.intersect !== undefined ? [withoutIntersect(prev), withoutRepeatSetup(withoutIntersect(prev))] : [])];
+          for (const earlier of older) {
+            const before = capturedHash(earlier);
+            if (before.hash !== meta.headHash) continue;
+            prev = earlier;
+            opened = before;
+            ops = diffStates(prev, state); // so this moment's patch brings it in
+            break;
+          }
+        }
         prevHash = opened.hash;
         if (prevHash !== meta.headHash) {
           const seq = meta.headSeq + 1;
           meta = { ...meta, headSeq: seq, headHash: prevHash, keyframeSeq: seq, keyframeBytes: opened.bytes, sinceKeyframe: { events: 0, bytes: 0 }, events: meta.events + 1, bytes: meta.bytes + opened.bytes, gaps: meta.gaps + 1 };
-          await writeEvents(meta, [event(seq, at, 'resync', 'resync', [], prevHash, { keyframe: prev })]);
+          await writeEvents(meta, [event(seq, at, 'resync', 'resync', [], prevHash, { keyframe: prev }, taken.workspace)]);
         }
       }
       await breathe();
@@ -117,7 +134,7 @@ export function attachProcessRecorder(controller: AppController, opts: { fresh: 
       };
       prev = state;
       prevHash = hash;
-      await writeEvents(meta, [event(seq, at, source, kind, tags, hash, keyframe ? { keyframe: state } : { patch: ops })]);
+      await writeEvents(meta, [event(seq, at, source, kind, tags, hash, keyframe ? { keyframe: state } : { patch: ops }, taken.workspace)]);
     });
   }
 

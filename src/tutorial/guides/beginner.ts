@@ -128,14 +128,14 @@ const repeat: CoachStep = {
     const c = ctx.controller;
     const doc = c.doc;
     if (doc.view.workspace !== 'repeat') return { text: 'Turn your design into a pattern. Tap Repeat.', targets: [ctx.find('.topbar button', 'Repeat')] };
-    // What "moved" is measured from: the spacing as Repeat first showed it — and again after any
-    // lattice switch (Square / Triangle / Hexagon), which resets the spacing itself. Only the
-    // handles change the spacing within one lattice.
+    // What "moved" is measured from: the spacing as Repeat first showed it — and again whenever the
+    // stored lattice family changes (Reset lattice on an older artwork), which resets the spacing
+    // itself. Only the handles change the spacing within one lattice.
     if (ctx.memo.family !== doc.repeat.family) {
       ctx.memo.family = doc.repeat.family;
       ctx.memo.base = spacing(doc);
     }
-    if (!doc.repeatDisplay.handles) return { text: 'Show the handles: Grid and guides → Handles.', targets: [ctx.find('[aria-label="Grid and guides"]')] };
+    if (!doc.repeatDisplay.handles) return { text: 'Show the handles. Tap the handles button.', targets: [ctx.find('[aria-label="Handles"]')] };
     const o = doc.frame.origin;
     const handles = [doc.repeat.a, doc.repeat.b].map((v) => ({ x: o.x + v.x, y: o.y + v.y }));
     return { text: 'Drag a handle to space the copies — they lock where edges meet.', spots: c.repeatDrag ? [] : handles };

@@ -1,9 +1,11 @@
-import type { Doc, EntityId, FaceSig, PointId, SegmentKey, SegmentState, Vec2 } from '../model/types.ts';
+import type { Doc, EntityId, FaceSig, PointId, SegmentKey, SegmentState, Underlay, Vec2 } from '../model/types.ts';
 import type { PointDependent } from '../model/doc.ts';
 import { cloneDoc } from '../model/doc.ts';
 import { invalidatePointFacts } from '../geometry/usage.ts';
+import { carryAppearanceAcross } from '../geometry/repeatSetup.ts';
 import type { PointRef } from '../interaction/pointref.ts';
 import type { EdgeCircle } from '../geometry/incircle.ts';
+import type { IntersectionPick, PickKind } from '../geometry/intersectionSnap.ts';
 
 /** Phase 5.2 item 1: Polygon is no longer a creation tool (connected Lines make any polygon);
  * existing polygon groups stay fully supported as data and as Select targets. */
@@ -215,6 +217,8 @@ export interface NoPointHint {
   at: Vec2;
   divide: { label: 'Segment'; scope: 'segment'; entityId: EntityId; kind: 'segment'; from: PointId; to: PointId; fromParam: number; toParam: number } | null;
   midAt: Vec2 | null;
+  /** What the bubble says, when not the default "No point here yet". */
+  text?: string;
   until: number;
 }
 
@@ -231,6 +235,8 @@ export interface FairRun {
   ends: Vec2[];
   /** A world point on the run, near the tap, where its number badge is anchored. */
   badgeAt: Vec2;
+  /** Fair in Intersect (Stage D4): the candidate's own exact geometry — it is not a Construct run. */
+  shape?: import('../geometry/fairGeometry.ts').Prim;
 }
 
 export interface LineChoice {
@@ -268,8 +274,8 @@ type GestureTransientKey =
   | 'fillPreview'
   | 'fillDiagnostic'
   | 'repeatDrag'
-  | 'repeatContactFlash'
   | 'repeatRotateDrag'
+  | 'intersectionDrag'
   | 'incircle'
   | 'copyRadius';
 export interface GestureSnapshot {
@@ -299,17 +305,46 @@ export class AppController {
   /** Phase 5.8/5.9: "No point here yet" feedback; the advanced "Which line?" chooser (Fair
    * long-press only); a brief canvas cue such as "Trace the line you want". Never history. */
   noPoint: NoPointHint | null = null;
+  /** An existing line briefly marked on the canvas — the one a refused Line duplicates. Never history. */
+  lineFlash: { entityId: EntityId; until: number } | null = null;
   /** Phase 5.10: the segment under a finger that is still down (Select) — emphasised before release. */
   pressHighlight: SegmentKey[] | null = null;
   lineChoice: LineChoice | null = null;
+  /** Fair in Intersect (Stage D4): what a finger still down would add to or remove from the Developed
+   * Primary — and, held in a crowded spot, the loupe it is choosing in. Never history. */
+  formPress: import('../interaction/formPick.ts').FormPress | null = null;
   cue: { at: Vec2; text: string; until: number } | null = null;
   /** Phase 3.4 item 2: Line's own creation mode — every new line commits as either a finite
    * Construction line or a through-both-points Extension line (spec's extension-line logic,
    * dashed/subdued). Sticky across gestures, like Fair's old stroke default was. */
   lineMode: 'construction' | 'extension' = 'construction';
+  /** Line: how its direction is given — freely (A → B), or exactly parallel / perpendicular to a
+   * reference line, through one point. A tool mode like `lineMode`. */
+  lineGuide: 'free' | 'parallel' | 'perpendicular' = 'free';
+  /** Line → Parallel / Perpendicular: the reference line chosen (its two ends, in the
+   * construction's coordinates), until another is chosen or the mode is left. */
+  lineReference: { a: Vec2; b: Vec2 } | null = null;
   /** Phase 5.6 item 19: Repeat's Space action — while on, a one-finger tap colours negative-space
    * classes instead of reaching the lattice handles. Session state, never saved. */
   spaceMode = false;
+  /** Repeat Colouring (geometry/repeatColour.ts): while on, a tap in Repeat colours a region —
+   * of every copy ('motif'), or of the second group of copies ('pattern'). Session state. */
+  repeatColourMode: 'motif' | 'pattern' | null = null;
+  /** Release R2 — what Intersect Fair offers to develop the Primary from: Fair only (default), or also
+   * Construction, or also Extensions. Session state. */
+  formLayer: import('../geometry/formSegments.ts').FormLayer = 'fair';
+  /** Interlaced (Sprint S3): while on, a tap in Repeat reverses the over/under of the crossing under it.
+   * Session state. */
+  weaveEdit = false;
+  /** Fill (final sprint): where the region under the last Fill tap is open — marked on screen until the
+   * next tap, leaving Fill, or any change to the artwork (`doc`). Session state, never saved. */
+  repeatGapMarks: (import('../geometry/repeatGaps.ts').GapMarks & { doc: import('../model/types.ts').Doc }) | null = null;
+  /** Close Gap (Stage C, interaction/closeGapMode.ts): picking a gap, or previewing one. Session state —
+   * nothing reaches the artwork before Apply. */
+  closeGap: import('../interaction/closeGapMode.ts').CloseGapState | null = null;
+  /** Repeat's outline style while a width slider is being dragged — shown live, committed (one Undo
+   * step) on release. Session state. */
+  repeatStrokeDraft: import('../model/types.ts').RepeatStroke | null = null;
   /** Mobile performance: true while two fingers pan/zoom — renderers may draw a lighter version and
    * restore full quality on release. Session state only. */
   viewGesture = false;
@@ -332,8 +367,13 @@ export class AppController {
   /** Phase 5.2 item 11: non-null while a long-press has started collecting regions of one type. */
   multiRegion: { fair: boolean } | null = null;
   pointEdit: PointEditState | null = null;
-  /** Phase 5.2 item 21: the current Divide target and N, shown in the compact ribbon. */
-  divide: { target: DivideTarget; n: number } | null = null;
+  /** Phase 5.2 item 21: the current Divide target and N, shown in the compact ribbon. `angle` is
+   * where a whole circle's first point goes (radians, 0 = its rightmost point): turned by dragging
+   * a preview point (tools/divide.ts), used by Apply, never stored anywhere else. */
+  divide: { target: DivideTarget; n: number; angle: number } | null = null;
+  /** While a finger is turning a whole circle's preview: which preview point it holds, and the
+   * places already on the circle that preview points have met exactly — read only by the renderer. */
+  divideTurn: { index: number; met: Vec2[] } | null = null;
   /** Phase 1.2a: true while the active tool's current touch is over a curve that Point Lock is
    * blocking from becoming a point — drives the "Point Lock · choose an existing point" hint. */
   pointLockHint = false;
@@ -361,14 +401,43 @@ export class AppController {
    * and its likely open ends, shown briefly. Interaction feedback only: never part of the doc. */
   fillDiagnostic: { keys: SegmentKey[]; endpoints: PointId[]; until: number } | null = null;
   private diagnosticTimer: ReturnType<typeof setInterval> | null = null;
-  /** Phase 5 item 4/6: non-null while a lattice-arm handle is being dragged. Phase 5.1: `translate`
-   * is what is shown (finger position after magnetic attraction/hysteresis snapping), and exactly
-   * what gets committed on release; `snapped` says whether it currently sits on a contact detent. */
-  repeatDrag: { dir: 'a' | 'b'; translate: Vec2; snapped: boolean } | null = null;
-  repeatContactFlash: { label: string } | null = null;
+  /** Phase 5 item 4/6: non-null while a lattice-arm handle is being dragged. Phase 1.2: `translate`
+   * is exactly the arm under the finger (no snapping), and exactly what gets committed on release. */
+  repeatDrag: { dir: 'a' | 'b'; translate: Vec2 } | null = null;
   /** Phase 5 item 7: non-null while the rotation ring is being dragged — same draft/commit split
    * as `repeatDrag`. */
   repeatRotateDrag: { rawRotation: number } | null = null;
+  /** Intersection: the construction being moved or turned, as shown (un-committed) — and the one
+   * selected (its rotation ring is shown). Session state, never saved. */
+  intersectionDrag: { key: string; x: number; y: number; rotation: number; mode: 'move' | 'turn' } | null = null;
+  intersectionSelected: string | null = null;
+  /** Intersection: the Spread slider while it is being dragged (un-committed). */
+  intersectionSpreadDraft: number | null = null;
+  /** Intersection: the lines or points picked for Snap — the reference first, then the moving one.
+   * Identities only (never positions), worked out again from the copies whenever used. Session
+   * state, never saved. */
+  intersectionPicks: IntersectionPick[] = [];
+  /** Intersection: whether a tap picks lines or points (the Snap row's switch). */
+  intersectionPickKind: PickKind = 'instance';
+  /** While a two-finger camera gesture is under way (for the brief turn readout). */
+  cameraTurning = false;
+  /** Reference Transform mode: while on, the canvas's fingers move, scale and turn the reference
+   * (interaction/referenceTransform.ts) instead of reaching the tools or the camera. Session state. */
+  referenceTransform = false;
+  /** Within Transform: placing and refining reference anchors (reference/anchors.ts) instead of
+   * moving the image. Session state. */
+  referenceAnchorMode = false;
+  /** The anchor last placed or tapped — the one "Remove anchor" removes. */
+  anchorSelected: string | null = null;
+  /** An anchor being dragged, shown before it is committed. */
+  anchorDraft: { id: string; u: number; v: number } | null = null;
+  /** While a finger places or drags an anchor: where that finger is (paper px) — the anchor loupe
+   * (reference/anchors.ts drawAnchorLoupe) shows the exact spot magnified, clear of it. */
+  anchorLoupe: Vec2 | null = null;
+  /** While the image is moved: the construction point now drawing an anchor onto it (soft snapping). */
+  snapPulling: { anchorId: string; at: Vec2 } | null = null;
+  /** The reference as a Transform touch is moving it, shown live; committed when the touch ends. */
+  underlayDraft: Underlay | null = null;
 
   private undoStack: Doc[] = [];
   private redoStack: Doc[] = [];
@@ -479,8 +548,8 @@ export class AppController {
         fillPreview: this.fillPreview,
         fillDiagnostic: this.fillDiagnostic,
         repeatDrag: this.repeatDrag,
-        repeatContactFlash: this.repeatContactFlash,
         repeatRotateDrag: this.repeatRotateDrag,
+        intersectionDrag: this.intersectionDrag,
         incircle: this.incircle,
         copyRadius: this.copyRadius,
       },
@@ -523,14 +592,22 @@ export class AppController {
 
   /** Camera and Repeat display preferences are not history — carry the live ones across. */
   private swapTo(snapshot: Doc): void {
-    const { view, repeatView, repeatDisplay, toolPrefs, dividePrefs, fillDefaults, fairDefaults, pointTargets, name, named, spaceDefaults } = this.doc;
+    const { view, repeatView, intersectionView, intersectionSnapshots, underlayView, repeatDisplay, toolPrefs, dividePrefs, fillDefaults, fairDefaults, pointTargets, name, named, spaceDefaults, repeatPaint, participant } = this.doc;
+    const leaving = this.doc;
     this.doc = snapshot;
     // The artwork's name is not history either (Phase 5.5).
     this.doc.name = name;
     this.doc.named = named;
     this.doc.view = view;
     this.doc.repeatView = repeatView;
-    this.doc.repeatDisplay = repeatDisplay;
+    this.doc.intersectionView = intersectionView;
+    this.doc.intersectionSnapshots = intersectionSnapshots;
+    this.doc.underlayView = underlayView;
+    // Each Repeat source has its own appearance: across a change of source it goes with its source.
+    this.doc.repeatDisplay = carryAppearanceAcross(leaving, snapshot, repeatDisplay);
+    this.doc.repeatPaint = repeatPaint;
+    // Release R5: participant information is not history either.
+    this.doc.participant = participant;
     // Tool preferences aren't history either (Phase 5.2: the remembered radius/N survive undo).
     this.doc.toolPrefs = toolPrefs;
     this.doc.dividePrefs = dividePrefs;
@@ -539,10 +616,17 @@ export class AppController {
     this.doc.pointTargets = pointTargets;
     this.doc.spaceDefaults = spaceDefaults;
     this.pending = null;
+    this.underlayDraft = null;
     this.pointEdit = null;
     this.divide = null;
     this.dividePreview = null;
+    this.divideTurn = null;
     this.lineChoice = null;
+    this.formPress = null;
+    // An unfinished Parallel / Perpendicular ends with an Undo or Redo: its reference may not exist
+    // in the other snapshot, and the Line tool goes back to Connect.
+    this.lineGuide = 'free';
+    this.lineReference = null;
     // Phase 5.12b: chosen lines may not exist in the other snapshot — choose again.
     this.incircle = null;
     // Phase 5.12d: keep copying the same radius after an Undo.
@@ -572,23 +656,16 @@ export class AppController {
     this.notifyView();
   }
 
-  /** Phase 5.1 item 1: a brief label on first reaching a contact — never left on screen. */
-  flashRepeatContact(label: string): void {
-    const record = { label };
-    this.repeatContactFlash = record;
-    this.notifyView();
-    setTimeout(() => {
-      if (this.repeatContactFlash === record) {
-        this.repeatContactFlash = null;
-        this.notifyView();
-      }
-    }, 1100);
-  }
-
   /** §1.3: tapping the lit tool, or Select, returns to Select. */
   setTool(tool: ToolId): void {
     if (!LIVE_TOOLS.has(tool)) return;
+    // Release R1 — point first: one point selected (Select, Construct), then a tool — exactly as if the
+    // tool had been chosen first and the point tapped.
+    const was = this.tool;
+    const sel = this.selection;
+    const pointFirst = was === 'select' && sel.length === 1 && sel[0]!.kind === 'point' && this.doc.view.workspace === 'construct' && this.doc.points.some((p) => p.id === (sel[0] as { id: string }).id) ? (sel[0] as { kind: 'point'; id: string }).id : null;
     this.lineChoice = null;
+    this.formPress = null;
     this.incircle = null;
     this.copyRadius = null;
     this.noPoint = null;
@@ -604,6 +681,7 @@ export class AppController {
     this.precision = null;
     this.divide = null;
     this.dividePreview = null;
+    this.divideTurn = null;
     this.fairTrace = null;
     this.fillPreview = null;
     this.sweep = null;
@@ -611,7 +689,19 @@ export class AppController {
     this.pointEdit = null;
     this.clearFillDiagnostic();
     this.tool = tool === this.tool || tool === 'select' ? 'select' : tool;
+    // Line always starts Free: Parallel / Perpendicular last only for the Line session they were
+    // chosen in (Construction / Extension — lineMode — is kept, as ever).
+    this.lineGuide = 'free';
+    this.lineReference = null;
     if (this.tool !== 'select') this.selection = [];
+    if (pointFirst && this.tool !== 'select') {
+      // Line: the point is A. Circle (By radius): the point is the centre. Nothing is made until the
+      // second input, as ever. Any other tool (Divide's first input is a curve): the point simply stays
+      // selected — no operation is started.
+      if (this.tool === 'line') this.pending = { kind: 'line', a: { kind: 'existing', id: pointFirst } };
+      else if (this.tool === 'circle' && this.circleVariant === 'centre-radius') this.pending = { kind: 'circle', centre: { kind: 'existing', id: pointFirst } };
+      else if (this.tool === 'divide') this.selection = sel;
+    }
     this.notify();
   }
 
@@ -662,11 +752,63 @@ export class AppController {
   }
 }
 
+/**
+ * How the artwork's coordinates are drawn: `worldToScreen` maps them into this frame. Without
+ * `screen` that frame is the canvas itself. With it, the workspace camera is turned: the frame is
+ * the "paper" — the unturned view, large enough (w × h) to cover the whole canvas once turned —
+ * and the canvas shows it turned by `screen.turn` about the canvas centre. Every tool, hit test
+ * and renderer works in the paper frame exactly as with an unturned camera; only the canvas
+ * drawing (main.ts) and the pointer (interaction/pointer.ts) turn it — and anything placed in the
+ * page itself (paperToScreen).
+ */
 export interface ViewTransform {
   zoom: number;
   pan: Vec2;
   w: number;
   h: number;
+  /** The canvas's own size and the camera's turn, when turned. */
+  screen?: { w: number; h: number; turn: number };
+}
+
+/** The view for a workspace camera on a canvas of w × h (CSS px). */
+export function cameraView(camera: { zoom: number; pan: Vec2; rotation?: number }, w: number, h: number): ViewTransform {
+  const turn = camera.rotation ?? 0;
+  if (!turn) return { zoom: camera.zoom, pan: camera.pan, w, h };
+  const c = Math.abs(Math.cos(turn));
+  const n = Math.abs(Math.sin(turn));
+  return { zoom: camera.zoom, pan: camera.pan, w: w * c + h * n, h: w * n + h * c, screen: { w, h, turn } };
+}
+
+/** A point in the paper frame, on the canvas itself (canvas px). */
+export function paperToScreen(v: ViewTransform, p: Vec2): Vec2 {
+  const s = v.screen;
+  if (!s) return p;
+  const dx = p.x - v.w / 2;
+  const dy = p.y - v.h / 2;
+  const c = Math.cos(s.turn);
+  const n = Math.sin(s.turn);
+  return { x: s.w / 2 + dx * c - dy * n, y: s.h / 2 + dx * n + dy * c };
+}
+
+/** A canvas point (canvas px), in the paper frame. */
+export function screenToPaper(v: ViewTransform, p: Vec2): Vec2 {
+  const s = v.screen;
+  if (!s) return p;
+  const dx = p.x - s.w / 2;
+  const dy = p.y - s.h / 2;
+  const c = Math.cos(s.turn);
+  const n = Math.sin(s.turn);
+  return { x: v.w / 2 + dx * c + dy * n, y: v.h / 2 - dx * n + dy * c };
+}
+
+/** The same pan and zoom on the canvas, unturned — what exports and Timelapse frame. */
+export function unturned(v: ViewTransform): ViewTransform {
+  return v.screen ? { zoom: v.zoom, pan: v.pan, w: v.screen.w, h: v.screen.h } : v;
+}
+
+/** The camera's turn on screen (radians), for what must stay upright on screen (text). */
+export function screenTurn(v: ViewTransform): number {
+  return v.screen?.turn ?? 0;
 }
 
 export function worldToScreen(v: ViewTransform, p: Vec2): Vec2 {

@@ -62,7 +62,6 @@ export function placeFrame(doc: Doc, origin: Vec2, radius: number, rotation: num
 export function defaultRepeatDisplay(legacyGuide = true): RepeatDisplay {
   return {
     artwork: 'design',
-    constructionOverlay: false,
     background: color.plaster,
     fillOpacity: 1,
     grid: false,
@@ -147,8 +146,15 @@ function mergeOrCreatePoint(doc: Doc, at: Vec2, build: (id: PointId) => Point): 
  * points — migrating segment state on every entity a new intersection lands on (§Phase 2B).
  * Phase 2.1 item 4 (true Trim): a location inside an already-trimmed segment of an existing
  * entity is skipped — a removed arc/line piece must not generate new intersections. */
+/** Stage A: a new element takes the active construction colour, if one is set. */
+function withActiveColour<E extends Entity>(doc: Doc, entity: E): E {
+  const colour = doc.toolPrefs?.constructionColour;
+  if (colour && !entity.colour) entity.colour = colour;
+  return entity;
+}
+
 export function addEntity(doc: Doc, build: (id: EntityId) => Entity): Entity {
-  const entity = build(genId('en'));
+  const entity = withActiveColour(doc, build(genId('en')));
   const others = doc.entities.slice();
   withSegmentMigration(doc, [...others.map((e) => e.id), entity.id], () => {
     doc.entities.push(entity);
@@ -231,8 +237,8 @@ export function addSegmentDivisionPoints(doc: Doc, seg: SegmentSpan, of: number)
   return created;
 }
 
-/** Phase 2C: divides a whole closed circle into `of` equal parts, anchored at `anchorAngle`
- * (the nearest existing point on the circle, or the frame's −90° alignment — spec §4.5). */
+/** Phase 2C: divides a whole closed circle into `of` equal parts, the first at `anchorAngle` —
+ * the angle Divide's preview was showing (0, the circle's rightmost point, unless turned by hand). */
 export function addCircleDivision(doc: Doc, hostId: EntityId, of: number, anchorAngle: number): PointId[] {
   const host = doc.entities.find((e) => e.id === hostId);
   if (!host || host.kind !== 'circle') return [];
@@ -310,6 +316,23 @@ export function setSegmentStroke(doc: Doc, key: SegmentKey, colour: string, widt
  * own FaceSig — a stable identity recomputed from its current Fair boundary (geometry/regions.ts),
  * never chosen by the caller. Undo-tracked normally through commit(), same as any other
  * segmentStates-style write. */
+/**
+ * C1: colours whole construction elements — every Construction / Extension piece of each line or
+ * circle in `ids` — or, with `colour` null, returns them to the default grey. The construction frame
+ * is never coloured (V1). Fair pieces are unaffected (they keep their own stroke).
+ */
+export function setEntityColour(doc: Doc, ids: Iterable<EntityId>, colour: string | null): void {
+  const frame = new Set(doc.frame.entityIds);
+  for (const id of ids) {
+    if (frame.has(id)) continue;
+    const e = doc.entities.find((x) => x.id === id);
+    if (!e) continue;
+    if (colour === null) delete e.colour;
+    else e.colour = colour;
+  }
+  doc.updatedAt = Date.now();
+}
+
 export function setRegionFill(doc: Doc, sig: FaceSig, colour: string): void {
   let m = doc.fills.get(doc.activeColourway);
   if (!m) {
@@ -333,6 +356,9 @@ export interface DeletionPlan {
   rootEntityId: EntityId;
   entityIds: Set<EntityId>;
   pointIds: Set<PointId>;
+  /** Points kept although something they were defined by goes: deleting an axis extension leaves
+   * its crossings in place (as points on the other curve, or free), so nothing built on them goes. */
+  detach?: Map<PointId, Point>;
 }
 
 /** Phase 2G / Phase 5.2: everything that stops being constructible once `entityIds` and
@@ -340,12 +366,23 @@ export interface DeletionPlan {
  * every entity that in turn depends on one of those points — grown in place. Frame entities and
  * points are never included. Also takes each removed circle's hidden radius handle, which has no
  * other role. */
-function growDependencyClosure(doc: Doc, entityIds: Set<EntityId>, pointIds: Set<PointId>): void {
+function growDependencyClosure(doc: Doc, entityIds: Set<EntityId>, pointIds: Set<PointId>, detach?: Map<PointId, Point>): void {
+  // Axis extensions being deleted: a point defined only by one of them (and something that stays)
+  // is kept where it is instead of going — see DeletionPlan.detach.
+  const axes = new Set(doc.entities.filter((e) => entityIds.has(e.id) && e.kind === 'line' && e.axis).map((e) => e.id));
   let changed = true;
   while (changed) {
     changed = false;
     for (const p of doc.points) {
-      if (pointIds.has(p.id)) continue;
+      if (pointIds.has(p.id) || detach?.has(p.id)) continue;
+      if (detach && axes.size) {
+        const kept = detachFromAxes(doc, p, entityIds, pointIds, axes);
+        if (kept) {
+          detach.set(p.id, kept);
+          changed = true;
+          continue;
+        }
+      }
       const isFrame = (doc.frame.centreId === p.id && p.kind === 'centre') || p.kind === 'frame-vertex';
       if (isFrame) continue;
       let depends = false;
@@ -374,13 +411,44 @@ function growDependencyClosure(doc: Doc, entityIds: Set<EntityId>, pointIds: Set
     const sharedElsewhere = doc.entities.some((o) => !entityIds.has(o.id) && o.kind === 'circle' && o.through === e.through);
     if (handle?.kind === 'free' && handle.hidden && !sharedElsewhere) pointIds.add(handle.id);
   }
+  // …and each removed axis extension's hidden direction point.
+  for (const e of doc.entities) {
+    if (!entityIds.has(e.id) || e.kind !== 'line' || !e.axis) continue;
+    const handle = doc.points.find((p) => p.id === e.b);
+    const sharedElsewhere = doc.entities.some((o) => !entityIds.has(o.id) && (o.kind === 'line' ? o.a === e.b || o.b === e.b : o.centre === e.b || o.through === e.b));
+    if (handle?.kind === 'free' && handle.hidden && !sharedElsewhere) pointIds.add(handle.id);
+  }
+}
+
+/** A point that would go only because axis extensions in `axes` go — kept instead: a crossing of an
+ * axis with a curve that stays becomes a point on that curve (same id, same place, so the curve's
+ * pieces and their Fair states are untouched); a point on an axis becomes a free point there. */
+function detachFromAxes(doc: Doc, p: Point, entityIds: Set<EntityId>, pointIds: Set<PointId>, axes: Set<EntityId>): Point | null {
+  if (p.kind === 'intersection') {
+    const [e0, e1] = p.entities;
+    const gone0 = entityIds.has(e0);
+    const gone1 = entityIds.has(e1);
+    if (gone0 === gone1) return null; // neither (it stays anyway) or both (it goes)
+    const [axis, other] = gone0 ? [e0, e1] : [e1, e0];
+    if (!axes.has(axis)) return null;
+    const host = doc.entities.find((e) => e.id === other);
+    if (!host) return null;
+    const at = resolvePoint(doc, p.id);
+    return { id: p.id, kind: 'on-curve', host: other, param: projectOntoEntity(doc, host, at).param };
+  }
+  if ((p.kind === 'on-curve' || p.kind === 'division') && axes.has(p.host) && !(p.kind === 'division' && p.span && (pointIds.has(p.span[0]) || pointIds.has(p.span[1])))) {
+    const at = resolvePoint(doc, p.id);
+    return { id: p.id, kind: 'free', x: at.x, y: at.y };
+  }
+  return null;
 }
 
 export function computeDeletionPlan(doc: Doc, rootEntityId: EntityId): DeletionPlan {
   const entityIds = new Set<EntityId>([rootEntityId]);
   const pointIds = new Set<PointId>();
-  growDependencyClosure(doc, entityIds, pointIds);
-  return { rootEntityId, entityIds, pointIds };
+  const detach = new Map<PointId, Point>();
+  growDependencyClosure(doc, entityIds, pointIds, detach);
+  return { rootEntityId, entityIds, pointIds, ...(detach.size ? { detach } : {}) };
 }
 
 /** Phase 5.2: Delete for any selection — the union over every selected shape. The frame is never
@@ -390,8 +458,9 @@ export function computeEntitiesDeletionPlan(doc: Doc, ids: EntityId[]): Deletion
   if (roots.length === 0) return null;
   const entityIds = new Set<EntityId>(roots);
   const pointIds = new Set<PointId>();
-  growDependencyClosure(doc, entityIds, pointIds);
-  return { rootEntityId: roots[0]!, entityIds, pointIds };
+  const detach = new Map<PointId, Point>();
+  growDependencyClosure(doc, entityIds, pointIds, detach);
+  return { rootEntityId: roots[0]!, entityIds, pointIds, ...(detach.size ? { detach } : {}) };
 }
 
 /** Every OTHER entity sharing a group with `entityId` (Polygon's edges), if any. */
@@ -418,7 +487,7 @@ export function computeGroupDeletionPlan(doc: Doc, entityId: EntityId): Deletion
 
 export function applyDeletionPlan(doc: Doc, plan: DeletionPlan): void {
   doc.entities = doc.entities.filter((e) => !plan.entityIds.has(e.id));
-  doc.points = doc.points.filter((p) => !plan.pointIds.has(p.id));
+  doc.points = doc.points.filter((p) => !plan.pointIds.has(p.id)).map((p) => plan.detach?.get(p.id) ?? p);
   for (const key of [...doc.segmentStates.keys()]) {
     const entityId = key.split(':')[0];
     if (entityId && plan.entityIds.has(entityId)) doc.segmentStates.delete(key);
@@ -545,6 +614,9 @@ export function cloneDoc(doc: Doc): Doc {
       gapFills: new Map(doc.repeat.gapFills),
     },
     view: { ...doc.view, pan: { ...doc.view.pan } },
+    ...(doc.intersection ? { intersection: structuredClone(doc.intersection) } : null),
+    ...(doc.underlay ? { underlay: structuredClone(doc.underlay) } : null),
+    ...(doc.repeatSetup ? { repeatSetup: structuredClone(doc.repeatSetup) } : null),
   };
 }
 
@@ -713,7 +785,7 @@ export function addArc(doc: Doc, centreId: PointId, radius: number, startAngle: 
   const span = Math.min(Math.abs(sweep), Math.PI * 2);
   if (span >= Math.PI * 2 - 1e-3) return addCircleEntity(doc, centreId, addRadiusHandle(doc, c, radius, startAngle)).id;
   const from = sweep >= 0 ? startAngle : startAngle + sweep; // counter-clockwise start
-  const circle: Entity = { id: genId('en'), kind: 'circle', centre: centreId, through: addRadiusHandle(doc, c, radius, from) };
+  const circle: Entity = withActiveColour(doc, { id: genId('en'), kind: 'circle', centre: centreId, through: addRadiusHandle(doc, c, radius, from) });
   const others = doc.entities.slice();
   withSegmentMigration(doc, [...others.map((e) => e.id), circle.id], () => {
     doc.entities.push(circle);

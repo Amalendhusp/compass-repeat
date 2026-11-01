@@ -1,3 +1,4 @@
+import { drawArtworkLayer, type ScreenLayers } from './underlay.ts';
 import type { Doc, Entity, Point, PointId, SegmentKey, SegmentState, Vec2 } from '../model/types.ts';
 import type { AppController, SelectCandidate, ViewTransform } from '../app/controller.ts';
 import { resolveEntityGeom, resolvePoint } from '../geometry/kernel.ts';
@@ -7,7 +8,7 @@ import { isFramePoint, isPointOrphanedByTrim, isPointUsed, pointById } from '../
 import { dist } from '../geometry/vec.ts';
 import { refLocation } from '../interaction/pointref.ts';
 import { color, font, stroke } from './tokens.ts';
-import { worldToScreen } from '../app/controller.ts';
+import { paperToScreen, screenToPaper, worldToScreen } from '../app/controller.ts';
 import { makePath } from './svgContext.ts';
 import { MARKER_R } from '../interaction/precision.ts';
 
@@ -73,7 +74,7 @@ function wholeEntityPath(ctx: CanvasRenderingContext2D, doc: Doc, view: ViewTran
 
 /** The dashed tails of an extended line beyond its outermost derived point — extension isn't a
  * segment of its own (spec keeps it on the entity), so it's drawn once per line, not per-piece. */
-function drawExtensionTails(ctx: CanvasRenderingContext2D, doc: Doc, view: ViewTransform, entity: Entity, segs: DerivedSegment[]): void {
+function drawExtensionTails(ctx: CanvasRenderingContext2D, doc: Doc, view: ViewTransform, entity: Entity, segs: DerivedSegment[], alpha = 1): void {
   const g = resolveEntityGeom(doc, entity);
   if (g.kind !== 'line' || segs.length === 0) return;
   const minParam = Math.min(...segs.map((s) => s.fromParam));
@@ -82,9 +83,10 @@ function drawExtensionTails(ctx: CanvasRenderingContext2D, doc: Doc, view: ViewT
   const end = { x: g.a.x + (g.b.x - g.a.x) * maxParam, y: g.a.y + (g.b.y - g.a.y) * maxParam };
   const farStart = { x: start.x - g.dir.x * FAR, y: start.y - g.dir.y * FAR };
   const farEnd = { x: end.x + g.dir.x * FAR, y: end.y + g.dir.y * FAR };
-  ctx.strokeStyle = color.construction;
+  ctx.strokeStyle = constructionColour(entity);
   ctx.lineWidth = view.zoom < 0.6 ? 0.6 : stroke.construction;
   ctx.setLineDash(stroke.extensionDash);
+  ctx.globalAlpha = alpha;
   ctx.beginPath();
   const s1 = worldToScreen(view, farStart);
   const s2 = worldToScreen(view, start);
@@ -96,6 +98,7 @@ function drawExtensionTails(ctx: CanvasRenderingContext2D, doc: Doc, view: ViewT
   ctx.lineTo(s4.x, s4.y);
   ctx.stroke();
   ctx.setLineDash([]);
+  ctx.globalAlpha = 1;
 }
 
 /**
@@ -174,7 +177,7 @@ function drawEntities(ctx: CanvasRenderingContext2D, controller: AppController, 
     if (segs.length === 0) {
       if (!showConstruction) continue;
       wholeEntityPath(ctx, doc, view, e);
-      ctx.strokeStyle = color.construction;
+      ctx.strokeStyle = constructionColour(e);
       ctx.lineWidth = baseWidth;
       ctx.setLineDash([]);
       ctx.globalAlpha = (quiet ? quietAlpha : 1) * (focus && g ? focusAlpha(focus, g, 0, g.kind === 'circle' ? Math.PI * 2 : 1, view.zoom) : 1);
@@ -187,16 +190,17 @@ function drawEntities(ctx: CanvasRenderingContext2D, controller: AppController, 
       // Phase 5.6: an extended line's pieces beyond its own span default to dashed Extension.
       const kind = st?.state ?? defaultSegmentKind(e, seg);
       if (kind === 'trimmed' || (kind !== 'fair' && !showConstruction)) continue;
+      if (kind === 'fair' && exp?.fairStroke?.width === 0) continue;
       segmentPath(ctx, doc, view, e, seg.fromParam, seg.toParam);
       if (kind === 'fair') {
-        ctx.strokeStyle = st?.stroke?.colour ?? color.ink;
-        ctx.lineWidth = st?.stroke?.width ?? stroke.fairDefault;
+        ctx.strokeStyle = exp?.fairStroke?.colour ?? st?.stroke?.colour ?? color.ink;
+        ctx.lineWidth = exp?.fairStroke?.width ?? st?.stroke?.width ?? stroke.fairDefault;
         ctx.lineCap = 'round';
         ctx.lineJoin = 'round';
         ctx.setLineDash([]);
         ctx.globalAlpha = 1;
       } else {
-        ctx.strokeStyle = color.construction;
+        ctx.strokeStyle = constructionColour(e);
         ctx.lineWidth = baseWidth;
         ctx.lineCap = 'butt';
         ctx.lineJoin = 'miter';
@@ -209,7 +213,8 @@ function drawEntities(ctx: CanvasRenderingContext2D, controller: AppController, 
       ctx.lineCap = 'butt';
       ctx.lineJoin = 'miter';
     }
-    if (e.kind === 'line' && e.extended && showConstruction) drawExtensionTails(ctx, doc, view, e, segs);
+    // The tails beyond an extended line's own span are construction too: they fade with it.
+    if (e.kind === 'line' && e.extended && showConstruction) drawExtensionTails(ctx, doc, view, e, segs, quiet ? quietAlpha : 1);
   }
 }
 
@@ -266,6 +271,29 @@ function drawFills(ctx: CanvasRenderingContext2D, controller: AppController, vie
   }
 }
 
+/** C1: a construction element's colour — its own, or the default construction grey. In Intersect
+ * (`doc` showing that workspace) the instances keep their identification colours, and the
+ * magnifiers drawn through an instance stay the plain construction grey they always were. */
+function constructionColour(e: Entity, doc?: Doc): string {
+  if (doc?.view.workspace === 'intersection') return color.construction;
+  return e.colour ?? color.construction;
+}
+
+/** C1: strokes the current path (or `path`) as a selection — first a thin light halo just wider than
+ * the stroke, then the stroke itself — so the selection reads over any construction colour, dark or
+ * light. */
+function strokeSelected(ctx: CanvasRenderingContext2D, path?: Path2D): void {
+  ctx.save();
+  ctx.strokeStyle = color.paper;
+  ctx.globalAlpha = 0.9;
+  ctx.lineWidth = ctx.lineWidth + 3;
+  if (path) ctx.stroke(path);
+  else ctx.stroke();
+  ctx.restore();
+  if (path) ctx.stroke(path);
+  else ctx.stroke();
+}
+
 /** Phase 1.2 item 3 / Phase 2A: a bold signal overlay for the segment/entity/group a Select
  * candidate refers to — a 'group' (Polygon) highlights every edge that shares its groupId.
  * Phase 2.1 item 4: a whole-entity/group highlight is drawn live-segment-by-live-segment too, so
@@ -288,7 +316,7 @@ function drawSelectionHighlights(ctx: CanvasRenderingContext2D, doc: Doc, view: 
           const seg = entity ? deriveSegments(doc, entity).find((s) => s.key === key) : undefined;
           if (!entity || !seg) continue;
           segmentPath(ctx, doc, view, entity, seg.fromParam, seg.toParam);
-          ctx.stroke();
+          strokeSelected(ctx);
         }
         continue;
       }
@@ -299,7 +327,7 @@ function drawSelectionHighlights(ctx: CanvasRenderingContext2D, doc: Doc, view: 
         ctx.globalAlpha = 0.35;
         ctx.fill(path);
         ctx.globalAlpha = 1;
-        ctx.stroke(path);
+        strokeSelected(ctx, path);
       }
       continue;
     }
@@ -330,7 +358,7 @@ function drawSelectionHighlights(ctx: CanvasRenderingContext2D, doc: Doc, view: 
         ctx.lineCap = 'round';
         for (const seg of pieces) {
           segmentPath(ctx, doc, view, entity, seg.fromParam, seg.toParam);
-          ctx.stroke();
+          strokeSelected(ctx);
         }
         for (const id of [cand.from, cand.to]) {
           const e = worldToScreen(view, resolvePoint(doc, id));
@@ -347,7 +375,7 @@ function drawSelectionHighlights(ctx: CanvasRenderingContext2D, doc: Doc, view: 
       const segs = deriveSegments(doc, entity);
       if (segs.length === 0) {
         wholeEntityPath(ctx, doc, view, entity);
-        ctx.stroke();
+        strokeSelected(ctx);
         continue;
       }
       // Phase 5.10: the whole shape — a wide soft halo over its full length, then the stroke.
@@ -359,7 +387,8 @@ function drawSelectionHighlights(ctx: CanvasRenderingContext2D, doc: Doc, view: 
         for (const seg of segs) {
           if ((doc.segmentStates.get(seg.key)?.state ?? 'construction') === 'trimmed') continue;
           segmentPath(ctx, doc, view, entity, seg.fromParam, seg.toParam);
-          ctx.stroke();
+          if (pass === 0) ctx.stroke();
+          else strokeSelected(ctx);
         }
         ctx.restore();
       }
@@ -395,10 +424,41 @@ const LOUPE_OFFSET = 86; // px above (or below) the target
 const LOUPE_MARGIN = 56; // keep clear of the top bar / canvas edges
 
 function loupeCenter(anchorScreen: Vec2, radius: number, view: ViewTransform): Vec2 {
-  let cy = anchorScreen.y - LOUPE_OFFSET;
-  if (cy - radius < LOUPE_MARGIN) cy = anchorScreen.y + LOUPE_OFFSET;
-  const cx = Math.min(Math.max(anchorScreen.x, LOUPE_MARGIN), view.w - LOUPE_MARGIN);
-  return { x: cx, y: cy };
+  // Above the finger as the screen shows it (and on it), however the camera is turned.
+  const a = paperToScreen(view, anchorScreen);
+  let cy = a.y - LOUPE_OFFSET;
+  if (cy - radius < LOUPE_MARGIN) cy = a.y + LOUPE_OFFSET;
+  const cx = Math.min(Math.max(a.x, LOUPE_MARGIN), (view.screen?.w ?? view.w) - LOUPE_MARGIN);
+  return screenToPaper(view, { x: cx, y: cy });
+}
+
+/** Draws `draw` in canvas px — upright on screen, however the camera is turned (the paper frame
+ * otherwise: ViewTransform). */
+function inScreenFrame(ctx: CanvasRenderingContext2D, view: ViewTransform, draw: () => void): void {
+  ctx.save();
+  if (view.screen) {
+    ctx.translate(view.w / 2, view.h / 2);
+    ctx.rotate(-view.screen.turn);
+    ctx.translate(-view.screen.w / 2, -view.screen.h / 2);
+  }
+  draw();
+  ctx.restore();
+}
+
+/** Text at `at`, upright on screen however the camera is turned (read off the canvas's own
+ * transform) — `dy` px below it on screen. */
+function uprightText(ctx: CanvasRenderingContext2D, text: string, at: Vec2, dy = 0): void {
+  const m = ctx.getTransform();
+  const t = Math.atan2(m.b, m.a);
+  if (Math.abs(t) < 1e-12) {
+    ctx.fillText(text, at.x, at.y + dy);
+    return;
+  }
+  ctx.save();
+  ctx.translate(at.x, at.y);
+  ctx.rotate(-t);
+  ctx.fillText(text, 0, dy);
+  ctx.restore();
 }
 
 const NODE_INSET_RADIUS = 46;
@@ -481,7 +541,7 @@ function drawNodeInset(ctx: CanvasRenderingContext2D, controller: AppController,
         ctx.moveTo(lf.x, lf.y);
         ctx.lineTo(lt.x, lt.y);
       }
-      ctx.strokeStyle = isFair ? (st?.stroke?.colour ?? color.ink) : color.construction;
+      ctx.strokeStyle = isFair ? (st?.stroke?.colour ?? color.ink) : constructionColour(e, doc);
       ctx.lineWidth = isFair ? 2 : 1.2;
       ctx.globalAlpha = isFair ? 1 : 0.6;
       ctx.stroke();
@@ -581,7 +641,14 @@ function drawNodeInset(ctx: CanvasRenderingContext2D, controller: AppController,
 }
 
 /** A small rounded label, centred on `at` and kept on screen. First line Signal, the rest muted. */
-function drawLabelPill(ctx: CanvasRenderingContext2D, at: Vec2, lines: string[], view: ViewTransform, alpha = 1): void {
+export function drawLabelPill(ctx: CanvasRenderingContext2D, at: Vec2, lines: string[], view: ViewTransform, alpha = 1): void {
+  // Upright, and kept on the canvas itself, however the camera is turned.
+  if (view.screen) {
+    const screenAt = paperToScreen(view, at);
+    const flat: ViewTransform = { zoom: view.zoom, pan: view.pan, w: view.screen.w, h: view.screen.h };
+    inScreenFrame(ctx, view, () => drawLabelPill(ctx, screenAt, lines, flat, alpha));
+    return;
+  }
   ctx.save();
   ctx.globalAlpha = alpha;
   ctx.font = `600 11px ${font.ui}`;
@@ -613,8 +680,9 @@ function drawLabelPill(ctx: CanvasRenderingContext2D, at: Vec2, lines: string[],
   ctx.restore();
 }
 
-/** Smart Snap: the point just used says what it was, briefly (Phase 5.9: with a hint line after a
- * crowded tap); and any brief canvas cue ("Trace the line you want"). */
+/** Smart Snap: the point just used is ringed, briefly — what it was (and, after a crowded tap, that
+ * holding chooses) is said in the status line (ui/toast.ts), as are brief cues ("Trace the line you
+ * want"), so nothing is written over the drawing. */
 function drawSnapFeedback(ctx: CanvasRenderingContext2D, controller: AppController, view: ViewTransform): void {
   const conf = controller.snapConfirm;
   if (conf && performance.now() < conf.until) {
@@ -626,22 +694,16 @@ function drawSnapFeedback(ctx: CanvasRenderingContext2D, controller: AppControll
     ctx.lineWidth = 2;
     ctx.stroke();
     ctx.restore();
-    drawLabelPill(ctx, { x: s.x, y: s.y - (conf.hint ? 34 : 26) }, conf.hint ? [conf.label, conf.hint] : [conf.label], view, 0.95);
-  }
-  const cue = controller.cue;
-  if (cue && performance.now() < cue.until) {
-    const s = worldToScreen(view, cue.at);
-    drawLabelPill(ctx, { x: s.x, y: s.y - 44 }, [cue.text], view, 0.97);
   }
   drawNoPoint(ctx, controller, view);
 }
 
 // ---- Phase 5.8/5.9: magnified local views, spread markers ----
 
-const CHOICE_MARKER_R = 11;
+export const CHOICE_MARKER_R = 11;
 
 /** Circled-number markers placed beside each candidate, pushed apart until none overlap. */
-function fanMarkers(points: Vec2[], centre: Vec2, spread: number, bound: { c: Vec2; r: number } | null): Vec2[] {
+export function fanMarkers(points: Vec2[], centre: Vec2, spread: number, bound: { c: Vec2; r: number } | null): Vec2[] {
   const n = points.length;
   const pos = points.map((p, i) => {
     let dx = p.x - centre.x;
@@ -693,7 +755,7 @@ function fanMarkers(points: Vec2[], centre: Vec2, spread: number, bound: { c: Ve
   return pos;
 }
 
-function drawNumberBadge(ctx: CanvasRenderingContext2D, at: Vec2, n: number, fill: string, strong: boolean, alpha: number): void {
+export function drawNumberBadge(ctx: CanvasRenderingContext2D, at: Vec2, n: number, fill: string, strong: boolean, alpha: number): void {
   ctx.save();
   ctx.globalAlpha = alpha;
   ctx.beginPath();
@@ -707,7 +769,7 @@ function drawNumberBadge(ctx: CanvasRenderingContext2D, at: Vec2, n: number, fil
   ctx.font = `700 12px ${font.ui}`;
   ctx.textAlign = 'center';
   ctx.textBaseline = 'middle';
-  ctx.fillText(String(n), at.x, at.y + 0.5);
+  uprightText(ctx, String(n), at, 0.5);
   ctx.restore();
 }
 
@@ -736,7 +798,7 @@ function drawMagnified(ctx: CanvasRenderingContext2D, controller: AppController,
         ctx.lineTo(b.x, b.y);
       }
       const isFair = st?.state === 'fair';
-      ctx.strokeStyle = isFair ? (st?.stroke?.colour ?? color.ink) : color.construction;
+      ctx.strokeStyle = isFair ? (st?.stroke?.colour ?? color.ink) : constructionColour(e, doc);
       ctx.lineWidth = isFair ? 2.2 : 1.2;
       ctx.globalAlpha = isFair ? 1 : 0.7;
       ctx.stroke();
@@ -781,8 +843,8 @@ function drawNoPoint(ctx: CanvasRenderingContext2D, controller: AppController, v
 
 // ---- Phase 5.8: Fair Preview → Confirm, and "Which line?" ----
 
-const RUN_COLOURS = [color.signal, color.brass, '#2E8B57', '#8A4FD1'];
-const RUN_DASHES: number[][] = [[], [10, 5], [2, 5], [12, 4, 2, 4]];
+export const RUN_COLOURS = [color.signal, color.brass, '#2E8B57', '#8A4FD1'];
+export const RUN_DASHES: number[][] = [[], [10, 5], [2, 5], [12, 4, 2, 4]];
 
 function keyPiece(doc: Doc, key: SegmentKey): { entity: Entity; seg: DerivedSegment } | null {
   const entity = doc.entities.find((e) => key.startsWith(`${e.id}:`));
@@ -1122,7 +1184,7 @@ function drawArcMeasure(ctx: CanvasRenderingContext2D, controller: AppController
     ctx.font = `600 11px ${font.ui}`;
     ctx.textAlign = 'center';
     ctx.textBaseline = 'middle';
-    ctx.fillText(label, p.x, p.y - 15);
+    uprightText(ctx, label, p, -15);
   }
   ctx.restore();
 }
@@ -1400,7 +1462,7 @@ function drawPendingAnchor(ctx: CanvasRenderingContext2D, controller: AppControl
       ctx.font = `600 12px ${font.ui}`;
       ctx.textAlign = 'center';
       ctx.textBaseline = 'middle';
-      ctx.fillText('A', s.x, s.y - 22);
+      uprightText(ctx, 'A', s, -22);
     }
   });
 }
@@ -1719,10 +1781,21 @@ function drawFairTracePreview(ctx: CanvasRenderingContext2D, controller: AppCont
 function drawDividePreview(ctx: CanvasRenderingContext2D, controller: AppController, view: ViewTransform): void {
   const preview = controller.dividePreview;
   if (!preview) return;
-  for (const at of preview.points) {
+  // While a finger turns a whole circle's preview: the point it holds stands out, and each place
+  // already on the circle that a preview point has landed on exactly is ringed.
+  const turn = controller.divideTurn;
+  for (const met of turn?.met ?? []) {
+    const m = worldToScreen(view, met);
+    ctx.beginPath();
+    ctx.arc(m.x, m.y, 10, 0, Math.PI * 2);
+    ctx.strokeStyle = color.signal;
+    ctx.lineWidth = 1.6;
+    ctx.stroke();
+  }
+  preview.points.forEach((at, i) => {
     const s = worldToScreen(view, at);
     ctx.beginPath();
-    ctx.arc(s.x, s.y, 4, 0, Math.PI * 2);
+    ctx.arc(s.x, s.y, turn?.index === i ? 6.5 : 4, 0, Math.PI * 2);
     ctx.fillStyle = color.signal;
     ctx.globalAlpha = 0.85;
     ctx.fill();
@@ -1730,41 +1803,64 @@ function drawDividePreview(ctx: CanvasRenderingContext2D, controller: AppControl
     ctx.strokeStyle = color.paper;
     ctx.lineWidth = 1.2;
     ctx.stroke();
-  }
+  });
 }
 
 /** Phase 5.3: what an export asks the renderers for — artwork layers only, never app UI. */
 export interface ArtworkExport {
   background: boolean;
+  /** Construct only — Repeat never draws construction. */
   construction: boolean;
   /** Repeat only: the lattice grid, basis directions and motif boundary, as currently shown. */
   guides: boolean;
+  /** The thumbnail only: Repeat's Stroke style for the Fair strokes (null = as designed; width 0 =
+   * none), so My Artworks shows the artwork's outlines as styled. Construct itself never uses it. */
+  fairStroke?: { colour: string | null; width: number | null };
 }
 
 /** On screen, `exp` is absent and everything draws. With `exp` (Phase 5.3 export), only the
  * artwork at the current zoom/pan: background (optional), fills, Fair strokes, and — when
  * included — Construction/Extension at exactly their on-screen grade. No selection, previews,
  * points, node inset or any other interaction feedback. */
-export function render(ctx: CanvasRenderingContext2D, controller: AppController, view: ViewTransform, exp?: ArtworkExport): void {
+export function render(ctx: CanvasRenderingContext2D, controller: AppController, view: ViewTransform, exp?: ArtworkExport, layers?: ScreenLayers): void {
   ctx.save();
   ctx.clearRect(0, 0, view.w, view.h);
   if (!exp || exp.background) {
     ctx.fillStyle = color.plaster;
     ctx.fillRect(0, 0, view.w, view.h);
   }
-  drawFills(ctx, controller, view, !exp);
-  if (!exp) drawFairRunHalo(ctx, controller, view);
-  drawEntities(ctx, controller, view, exp);
+  // On screen only: the reference just above the background, and the artwork at its viewing
+  // strength over it (underlay.ts). Without them this draws exactly as it always has.
+  layers?.underlay(ctx, view);
+  if (layers && layers.artworkOpacity < 1) {
+    // The Fair-run halo is an aid: it stays at full strength, under the fainter artwork.
+    drawFairRunHalo(ctx, controller, view);
+    drawArtworkLayer(ctx, layers, (c) => {
+      drawFills(c, controller, view, true);
+      drawEntities(c, controller, view, undefined);
+    });
+  } else {
+    drawFills(ctx, controller, view, !exp);
+    if (!exp) drawFairRunHalo(ctx, controller, view);
+    drawEntities(ctx, controller, view, exp);
+  }
   if (exp) {
     ctx.restore();
     return;
   }
+  drawInteractionLayers(ctx, controller, view);
+  ctx.restore();
+}
+
+function drawInteractionLayers(ctx: CanvasRenderingContext2D, controller: AppController, view: ViewTransform): void {
   drawSelectionHighlights(ctx, controller.doc, view, controller.selection);
   drawPressHighlight(ctx, controller, view);
   drawIncircle(ctx, controller, view);
   drawCopyRadius(ctx, controller, view);
   drawFairTracePreview(ctx, controller, view);
   drawArcMeasure(ctx, controller, view);
+  drawLineGuide(ctx, controller, view);
+  drawLineFlash(ctx, controller, view);
   drawPreview(ctx, controller, view);
   drawDividePreview(ctx, controller, view);
   drawSweep(ctx, controller);
@@ -1777,5 +1873,65 @@ export function render(ctx: CanvasRenderingContext2D, controller: AppController,
   drawSnapFeedback(ctx, controller, view);
   drawNodeInset(ctx, controller, view);
   drawPrecisionLoupe(ctx, controller, view);
+}
+
+/**
+ * The construction tools' own feedback alone — previews, points, snap marks, loupes — with no
+ * background and no geometry: for Intersect, where the instances are already drawn and the tools
+ * work on the active one through its own view (geometry/intersectionLink.ts — instanceCamera).
+ */
+export function drawInteraction(ctx: CanvasRenderingContext2D, controller: AppController, view: ViewTransform): void {
+  ctx.save();
+  drawFairRunHalo(ctx, controller, view);
+  drawInteractionLayers(ctx, controller, view);
+  ctx.restore();
+}
+
+/** The existing line a refused Line duplicates, briefly marked (its own span; an extended line
+ * through the view) — so "This line already exists" shows which one. */
+function drawLineFlash(ctx: CanvasRenderingContext2D, controller: AppController, view: ViewTransform): void {
+  const flash = controller.lineFlash;
+  if (!flash || performance.now() > flash.until) return;
+  const entity = controller.doc.entities.find((e) => e.id === flash.entityId);
+  if (entity?.kind !== 'line') return;
+  const g = resolveEntityGeom(controller.doc, entity);
+  if (g.kind !== 'line') return;
+  const from = entity.extended ? { x: g.a.x - g.dir.x * FAR, y: g.a.y - g.dir.y * FAR } : g.a;
+  const to = entity.extended ? { x: g.b.x + g.dir.x * FAR, y: g.b.y + g.dir.y * FAR } : g.b;
+  const a = worldToScreen(view, from);
+  const b = worldToScreen(view, to);
+  ctx.save();
+  ctx.lineCap = 'round';
+  ctx.strokeStyle = color.signal;
+  ctx.globalAlpha = 0.3;
+  ctx.lineWidth = 9;
+  ctx.beginPath();
+  ctx.moveTo(a.x, a.y);
+  ctx.lineTo(b.x, b.y);
+  ctx.stroke();
+  ctx.globalAlpha = 1;
+  ctx.lineWidth = 2;
+  ctx.stroke();
+  ctx.restore();
+}
+
+/** Line → Parallel / Perpendicular: the reference line chosen, quietly marked. */
+function drawLineGuide(ctx: CanvasRenderingContext2D, controller: AppController, view: ViewTransform): void {
+  const ref = controller.lineReference;
+  if (!ref || controller.tool !== 'line' || controller.lineGuide === 'free') return;
+  const a = worldToScreen(view, ref.a);
+  const b = worldToScreen(view, ref.b);
+  ctx.save();
+  ctx.lineCap = 'round';
+  ctx.strokeStyle = color.signal;
+  ctx.globalAlpha = 0.28;
+  ctx.lineWidth = 7;
+  ctx.beginPath();
+  ctx.moveTo(a.x, a.y);
+  ctx.lineTo(b.x, b.y);
+  ctx.stroke();
+  ctx.globalAlpha = 1;
+  ctx.lineWidth = 1.6;
+  ctx.stroke();
   ctx.restore();
 }

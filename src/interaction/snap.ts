@@ -26,8 +26,10 @@ import { deriveSelectableGroups, groupContainingParam } from '../geometry/segmen
 import { isCrossingPoint, isPointOrphanedByTrim } from '../geometry/usage.ts';
 import { dist } from '../geometry/vec.ts';
 import type { Gesture } from './tools/types.ts';
-import { curveCandidatesAt, isPointTargetEligibleIn, pickPointTarget, POINT_HIT_RADIUS, type PointHit } from './hittest.ts';
+import { CONTEXT_YIELD_PX, curveCandidatesAt, isPointTargetEligibleIn, pickPointTarget, POINT_HIT_RADIUS, type PointHit } from './hittest.ts';
+import { contextPointAt } from './context.ts';
 import { closePrecision, movePrecision, openPrecision } from './precision.ts';
+import { showToast } from '../ui/toast.ts';
 
 export const SWITCH_PX = 6;
 export const AMBIGUITY_PX = 7;
@@ -164,6 +166,15 @@ export class SnapTracker {
   pick(view: ViewTransform, screenPos: Vec2): SnapHit | null {
     let cands = snapCandidates(this.doc, view, screenPos);
     this.noPoint = null;
+    // A contextual place (Intersect: another instance's point, or a crossing between instances —
+    // context.ts) is taken when it is plainly the nearest thing under the finger; a point of the
+    // construction itself wins a near-tie. Never one of the loupe's candidates.
+    const ctx = contextPointAt(view, screenPos);
+    if (ctx && (!cands[0] || ctx.screenD + CONTEXT_YIELD_PX < cands[0].screenD)) {
+      this.candidates = [];
+      this.current = null;
+      return { id: null, at: ctx.at, screenD: ctx.screenD, label: ctx.label, context: true };
+    }
     const onCurve = this.onCurveWithoutPoint(view, screenPos, cands[0]);
     if (onCurve) {
       cands = [];
@@ -288,10 +299,12 @@ export function noPointGesture(controller: AppController, info: Omit<NoPointHint
 export function confirmSnap(controller: AppController, hit: SnapHit | null, hint?: string): void {
   if (!hit) return;
   const p = hit.id ? controller.doc.points.find((q) => q.id === hit.id) : undefined;
-  const label = hit.label ?? (p ? snapLabel(p) : 'New point on curve');
+  const label = hit.label ?? (p ? snapLabel(p) : hit.context ? 'Crossing' : 'New point on curve');
   const ms = hint ? CONFIRM_WITH_HINT_MS : CONFIRM_MS;
   const record = { at: hit.at, label, hint, until: performance.now() + ms };
   controller.snapConfirm = record;
+  // What was taken is said in the status line (the point itself is only ringed on the canvas).
+  showToast(hint ? `Crowded ${label.toLowerCase()} · ${hint}` : label, ms);
   controller.notifyView();
   setTimeout(() => {
     if (controller.snapConfirm === record) {
@@ -301,17 +314,18 @@ export function confirmSnap(controller: AppController, hit: SnapHit | null, hint
   }, ms + 20);
 }
 
-const CONFIRM_WITH_HINT_MS = 2200;
+const CONFIRM_WITH_HINT_MS = 2600;
 
 /**
  * A released tap. Phase 5.9: never a list — the nearest location is used at once. When other
  * distinct points were about as close, the confirmation says what was taken and that holding
  * the finger there would have opened the precision loupe.
  */
-export function resolveTap(controller: AppController, tracker: SnapTracker, hit: SnapHit | null, use: (hit: PointHit) => void): void {
+export function resolveTap(controller: AppController, tracker: SnapTracker, hit: SnapHit | null, use: (hit: PointHit) => void | boolean): void {
   if (!hit) return;
-  use(hit);
-  confirmSnap(controller, hit, hit.id && tracker.ambiguous() ? 'Crowded here · hold to choose' : undefined);
+  // `use` answering false means nothing was made with the point: then it is not announced either.
+  if (use(hit) === false) return;
+  confirmSnap(controller, hit, hit.id && tracker.ambiguous() ? 'Hold to choose' : undefined);
 }
 
 // ---- Phase 5.9: press and hold on crowded points opens the precision loupe ----
