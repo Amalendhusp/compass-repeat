@@ -8,6 +8,7 @@ import type { AppController, ViewTransform } from '../app/controller.ts';
 import { render, type ArtworkExport } from './renderer.ts';
 import { renderRepeat } from './repeatRenderer.ts';
 import { SvgContext } from './svgContext.ts';
+import { attributionOf, drawAttribution, exportBackground } from './attribution.ts';
 
 export interface ExportSettings {
   format: 'png' | 'svg';
@@ -21,6 +22,9 @@ function drawArtwork(ctx: CanvasRenderingContext2D, controller: AppController, v
   const exp: ArtworkExport = { background: !s.transparent, construction: s.construction, guides: s.guides };
   if (controller.doc.view.workspace === 'repeat') renderRepeat(ctx, controller, view, exp);
   else render(ctx, controller, view, exp);
+  // Release R5: the participant's chosen attribution, if any — small, in the corner, no box.
+  const text = attributionOf(controller.doc);
+  if (text) drawAttribution(ctx, view.w, view.h, text, exportBackground(controller.doc, s.transparent));
 }
 
 export function exportPng(controller: AppController, view: ViewTransform, s: ExportSettings): Promise<Blob> {

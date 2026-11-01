@@ -31,7 +31,7 @@ Keep this short and current. It is a starting point, not a substitute for readin
 | R2 | Intersect Fair: develop from construction and extension segments too (Fair only · Construction · Extensions) | done — "Release R2" |
 | R3 | Intersect: Spread / Reference / Save arrangement / bookmarks in the bookmark popover | done — "Release R3" |
 | R4 | Repeat: Fill on the lower row; grid/handle icon = back to geometry | done — "Release R4" |
-| R5 | Optional participant info; export attribution (default off) | next |
+| R5 | Optional participant info; export attribution (default off) | done — "Release R5" |
 
 ## Protected — never modify, merge into, push or deploy
 
@@ -501,6 +501,25 @@ Keep this short and current. It is a starting point, not a substitute for readin
 - Tests (`scratchpad/r4-app.js`, 375 px): Fill off look (paper, pressed false); Fill on (ink, icon off); a fill; icon
   → Fill off, handles on, chip off; icon → all hidden, Undo depth unchanged; icon → handles back; Fill chip still
   ends Fill.
+
+## Release R5: participant information and export attribution
+
+- Data: `Doc.participant?: { name?, email?, phone?, attribution?: { on, text } }` (types.ts `ParticipantInfo`). Not
+  artwork (not in `captureState`, never Undo — carried across Undo in `controller.swapTo`); counted in `prefsHash`
+  (draft.ts), so for a saved artwork a change is an unsaved change: kept in the working draft, saved only by Save /
+  Save As. Absent in every older artwork. No analytics, no upload, no sharing.
+- UI: Menu → **Participant & attribution…** (`ui/artworks.ts` `openParticipantSheet`, a bottom sheet): Name or
+  participant code · Email · Phone (all optional), **Include attribution in export** (off by default) and, when on,
+  **Attribution text** (suggested "Created by <name>"). Done applies (toast), Cancel changes nothing.
+- Drawing (`render/attribution.ts`): only `attribution.text`, only when on; bottom-right, 9–15 px, text with a thin
+  opposite-tone halo (no box) — light/dark by the ground; transparent exports keep a transparent ground. PNG/SVG:
+  `export.ts drawArtwork` (SVG: `SvgContext.text`, `paint-order="stroke"`). Timelapse: on the final frame only
+  (`frameRenderer().attribution`), held `CREDIT_HOLD` 1.25 s longer.
+- Tests (`scratchpad/r5-app.js`): sheet fields; attribution off by default; suggestion "Created by P07"; after Done
+  the artwork is "· unsaved" and the saved record unchanged; SVG has `<text>Created by P07</text>`, no email, no
+  phone, no `<rect>` when transparent; transparent PNG corner: only glyphs + halo opaque (24 % of the box, 0 % when
+  off); Undo keeps it; Timelapse playable (9 frames, 5.8 s); Save writes it; off again → no text, details kept;
+  sheet fits at 375 px.
 
 ## Exact next step
 

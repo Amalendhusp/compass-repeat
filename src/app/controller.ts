@@ -592,7 +592,7 @@ export class AppController {
 
   /** Camera and Repeat display preferences are not history — carry the live ones across. */
   private swapTo(snapshot: Doc): void {
-    const { view, repeatView, intersectionView, intersectionSnapshots, underlayView, repeatDisplay, toolPrefs, dividePrefs, fillDefaults, fairDefaults, pointTargets, name, named, spaceDefaults, repeatPaint } = this.doc;
+    const { view, repeatView, intersectionView, intersectionSnapshots, underlayView, repeatDisplay, toolPrefs, dividePrefs, fillDefaults, fairDefaults, pointTargets, name, named, spaceDefaults, repeatPaint, participant } = this.doc;
     const leaving = this.doc;
     this.doc = snapshot;
     // The artwork's name is not history either (Phase 5.5).
@@ -606,6 +606,8 @@ export class AppController {
     // Each Repeat source has its own appearance: across a change of source it goes with its source.
     this.doc.repeatDisplay = carryAppearanceAcross(leaving, snapshot, repeatDisplay);
     this.doc.repeatPaint = repeatPaint;
+    // Release R5: participant information is not history either.
+    this.doc.participant = participant;
     // Tool preferences aren't history either (Phase 5.2: the remembered radius/N survive undo).
     this.doc.toolPrefs = toolPrefs;
     this.doc.dividePrefs = dividePrefs;

@@ -240,6 +240,15 @@ export interface RepeatColouring {
 
 /** One layer of Repeat's outline style: a colour and a width along every line — in the artwork's own
  * units (px at 100% zoom), so it scales with the pattern. */
+export interface ParticipantInfo {
+  /** Display name or participant code. */
+  name?: string;
+  email?: string;
+  phone?: string;
+  /** Visible attribution in PNG / SVG / Timelapse — off unless chosen. */
+  attribution?: { on: boolean; text: string };
+}
+
 export interface RepeatStrokeLayer {
   colour: string;
   width: number;
@@ -379,6 +388,11 @@ export interface Doc {
   /** Repeat Fill's next colour (null = unfilled / "No fill") and opacity (absent = 100%) — one
    * choice for Space, Motif and Pattern alike. A tool preference like `fillDefaults`, never history. */
   repeatPaint?: { colour: string | null; opacity?: number };
+  /** Release R5 — optional participant information, all fields optional, kept on this device with the
+   * artwork only (no account, no upload, no analytics). Not artwork and never history: like the
+   * drawing preferences it reaches the saved artwork only through Save / Save As. Email and phone
+   * never appear in any export; only `attribution.text`, and only when `attribution.on`. */
+  participant?: ParticipantInfo;
   /** Intersection's own camera — like repeatView, never history. Absent until Intersection is first
    * entered. */
   intersectionView?: Camera;

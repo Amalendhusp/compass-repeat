@@ -32,6 +32,8 @@ import { render, type ArtworkExport } from './renderer.ts';
 import { renderRepeat } from './repeatRenderer.ts';
 import { renderIntersection } from './intersectionRenderer.ts';
 import { shareFilename } from './export.ts';
+import { attributionOf, drawAttribution } from './attribution.ts';
+import { color } from './tokens.ts';
 import { loadEvents, loadMeta, type ProcessEvent } from '../persist/processStore.ts';
 import { walkProcess } from '../persist/processReplay.ts';
 import { captureState, stateHash, stateToDoc, type ArtworkState } from '../persist/processState.ts';
@@ -44,6 +46,8 @@ const FPS = 30;
 const BITS_PER_SECOND = 6_000_000;
 export const START_HOLD = 750; // ms on the first state
 export const END_HOLD = 1750; // ms on the finished artwork
+/** Release R5: extra time on the final frame when it carries an attribution, so it can be read. */
+export const CREDIT_HOLD = 1250;
 /** Each change: 24 s shared between them, but never shorter than 60 ms or longer than 250 ms. */
 export const stepMs = (changes: number): number => Math.min(250, Math.max(60, 24_000 / Math.max(changes, 1)));
 
@@ -256,6 +260,11 @@ export function frameRenderer(liveDoc: Doc, view: ViewTransform, settings: { con
     modeOf(state: ArtworkState, workspace?: Workspace): 'construct' | 'intersect' | 'repeat' {
       return modeFor(asRepeat, state, workspace);
     },
+    /** Release R5: the participant's attribution over the frame as drawn (the final one). */
+    attribution(text: string, mode: 'construct' | 'intersect' | 'repeat'): void {
+      ctx.setTransform(W / view.w, 0, 0, H / view.h, 0, 0);
+      drawAttribution(ctx, view.w, view.h, text, mode === 'repeat' ? liveDoc.repeatDisplay.background : color.plaster);
+    },
     draw(state: ArtworkState, workspace?: Workspace): void {
       drawer.doc = stateToDoc(state, liveDoc);
       ctx.setTransform(W / view.w, 0, 0, H / view.h, 0, 0);
@@ -332,11 +341,13 @@ export async function createTimelapse(
     }, 1000 / FPS);
 
     let due = t0 + START_HOLD;
+    let lastMode = frames.modeOf(first.state, first.event.workspace);
     for (const { event, state } of walk) {
       if (!plan.keep(event)) continue;
       await sleepUntil(due);
       if (stop()) return null;
       frames.draw(state, event.workspace);
+      lastMode = frames.modeOf(state, event.workspace);
       copy();
       due += plan.stepMs;
     }
@@ -347,7 +358,16 @@ export async function createTimelapse(
       copy();
       due += plan.stepMs;
     }
-    await sleepUntil(due + END_HOLD);
+    // Release R5: the attribution, if chosen, on the finished artwork only — held a little longer to read.
+    const credit = attributionOf(liveDoc);
+    if (credit) {
+      await sleepUntil(due);
+      if (stop()) return null;
+      const lastState = plan.appendCurrent ?? null;
+      frames.attribution(credit, lastState ? frames.modeOf(lastState, liveDoc.view.workspace) : lastMode);
+      copy();
+    }
+    await sleepUntil(due + END_HOLD + (credit ? CREDIT_HOLD : 0));
     if (stop()) return null;
     onProgress(1);
     const durationMs = performance.now() - t0;

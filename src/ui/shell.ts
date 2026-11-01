@@ -44,6 +44,7 @@ import { repeatComposition } from '../geometry/repeatComposition.ts';
 import { repeatFill, repeatPaint, repeatPaintOpacity } from '../interaction/tools/repeatTool.ts';
 import { editableStroke, MAX_STROKE_PX, strokeKind, weaves, withBands, withColour, withKind, withWidth } from '../geometry/repeatStroke.ts';
 import { weaveNetwork } from '../geometry/weave.ts';
+import { openParticipantSheet } from './artworks.ts';
 import type { PatternBy } from '../geometry/repeatColour.ts';
 import { artworksUsing, deleteReference, inLibrary, listReferences, setReferenceScope, type ReferenceRecord } from '../persist/referenceStore.ts';
 import { importReference, ReferenceImportError } from '../reference/importReference.ts';
@@ -1885,6 +1886,20 @@ export function buildShell(
         // UI-3: the reference image (Reference Library, import, Transform, Lock, Remove, this
         // workspace's visibility and strength) — formerly the image button on the canvas row.
         { label: 'Reference image…', divided: true, onSelect: () => openReferencePanel() },
+        // Release R5: optional participant information and export attribution (off by default).
+        {
+          label: 'Participant & attribution…',
+          onSelect: () =>
+            openParticipantSheet(root, controller.doc.participant, (next) => {
+              if (JSON.stringify(next ?? null) === JSON.stringify(controller.doc.participant ?? null)) return;
+              // Not artwork and never an Undo step; kept in the working draft, saved by Save (like preferences).
+              if (next) controller.doc.participant = next;
+              else delete controller.doc.participant;
+              controller.notify();
+              opts.onPrefs?.();
+              showToast(next?.attribution?.on ? 'Saved for this artwork · attribution on' : 'Saved for this artwork');
+            }),
+        },
         // UI-1: the point settings are kept (with their saved values) but not offered to ordinary
         // users — only with ?dev in the address, for internal testing.
         ...(controller.doc.view.workspace === 'repeat' || !DEV_MENU

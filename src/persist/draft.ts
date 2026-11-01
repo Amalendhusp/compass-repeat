@@ -67,7 +67,9 @@ export function artworkHash(doc: Doc): string {
  * process history), but part of what a Save keeps: a saved artwork's change to them is an unsaved change,
  * kept in the working draft until Save or Save As. */
 export function prefsHash(doc: Doc): string {
-  return JSON.stringify([doc.toolPrefs?.constructionColour ?? null, doc.fairDefaults ?? null, doc.fillDefaults ?? null, doc.repeatPaint ?? null]);
+  // Release R5: participant information and attribution count the same way (absent: as before).
+  const base = [doc.toolPrefs?.constructionColour ?? null, doc.fairDefaults ?? null, doc.fillDefaults ?? null, doc.repeatPaint ?? null];
+  return JSON.stringify(doc.participant ? [...base, doc.participant] : base);
 }
 
 /** Answers "does this document differ from `base`?" cheaply: the hash is recomputed only after the
