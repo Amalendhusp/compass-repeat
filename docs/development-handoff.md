@@ -24,7 +24,7 @@ Keep this short and current. It is a starting point, not a substitute for readin
 | S1 | One Fill: Intersect-unit regions, no Motif/Space choice, gap marks | done — "Sprint S1" |
 | S2 | Top-left Appearance (Fill · Stroke · Background), Fill toggle, preferences in the draft | done — "Sprint S2" |
 | S3 | Interlaced strokes (Single · Banded · Interlaced, over-under, crossing reversal) | done — "Sprint S3" |
-| S4 | Integration, regression, iPhone release candidate | next |
+| S4 | Integration, regression, iPhone release candidate | done — "Sprint S4" (features frozen) |
 
 ## Protected — never modify, merge into, push or deploy
 
@@ -415,11 +415,32 @@ Keep this short and current. It is a starting point, not a substitute for readin
   exists are kept in the data and ignored; the network is rebuilt after each lattice change (~0.2 s on Plate 113 on
   desktop — expect more on a phone).
 
+## Sprint S4: integration and iPhone release candidate
+
+- Chain in the app (`scratchpad/s4-app.js`). Intersect source: two-square star in Form Development → Intersect Fair,
+  16 outline taps → 16 developed segments, 16 Undo steps, owner tag "Developed Primary" → Repeat (Intersect), spacing
+  170 (copies overlap) → one Fill: a developed star tip (`face:` key) and the centre (the Original's own key) →
+  Interlaced from the panel: 12 crossings, alternating → PNG / SVG, Undo/Redo, Timelapse (23 frames) → Save → an
+  unsaved Background change → reload → Recover: change, weave, fills, Developed Primary, 20 Undo steps all back;
+  saved record still has the old background. Construct source: Fair star, spacing 160 → Fill tip + centre →
+  Interlaced (20 crossings) → exports, Undo/Redo, Timelapse (6 frames). Close Gap ('square, small gap along A') with
+  every guide hidden: preview → Apply moves A 144.42 → 141.42, Undo exact.
+- Regression after each stage (S1–S3) and at S4: Plate 113 / legacy Intersect-source / coloured construction
+  fingerprints identical; cancel 16/0; smoke all true; Guide baseline; digest of every stored artwork record identical
+  before and after the suite (142–144 records). Fill tests 20/20, weave tests 14/14. Type-check and production build
+  clean.
+- 375 px: top bar Menu · Appearance | guides · Share; Appearance panel 8–338 px, Stroke segments all fit; Fill row and
+  Crossings row fit; nothing clipped.
+- iPhone build (temp dir, `index-BXXhE8eU.js` / `index-DrX1Jkwo.css`); fixtures unchanged (`2350b02c56`, `5d4b82fd7d`);
+  phone-preview on 5189 → http://192.168.1.5:5189/compass-repeat/ (HTTP 200, new assets, no console errors).
+- Not tested on a physical iPhone (simulated touch and 375 px emulation only).
+
 ## Exact next step
 
-Final sprint: S1–S3 done. Next S4: integration (Construct → Fair → Intersect → Repeat → Fill → Interlace → Export, both
-sources, existing artworks untouched), full regression, 375 px check, fresh iPhone build (temp dir), final report;
-then freeze features and stop for the user's iPhone review. Do not merge, push or deploy.
+Final sprint S1–S4 done on `feature/final-sprint`; features frozen; release candidate on the phone-preview server.
+Stop for the user's physical iPhone review. Do not merge, push or deploy. Review questions: the Interlaced default
+(edged cream band on ink, 6 / 3 units); whether conflicts in dense patterns (e.g. Plate 113: 16 of 197) need more than
+manual reversal; one-band gaps use the Background colour.
 
 ## Commands
 
