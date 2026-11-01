@@ -29,8 +29,8 @@ Keep this short and current. It is a starting point, not a substitute for readin
 | S4 | Integration, regression, iPhone release candidate | done — "Sprint S4" (features frozen) |
 | R1 | Point first: a selected point feeds Line (A) / Circle (centre); Divide keeps it selected | done — "Release R1" |
 | R2 | Intersect Fair: develop from construction and extension segments too (Fair only · Construction · Extensions) | done — "Release R2" |
-| R3 | Intersect: Spread / Reference / Save arrangement / bookmarks in the bookmark popover | next |
-| R4 | Repeat: Fill on the lower row; grid/handle icon = back to geometry | — |
+| R3 | Intersect: Spread / Reference / Save arrangement / bookmarks in the bookmark popover | done — "Release R3" |
+| R4 | Repeat: Fill on the lower row; grid/handle icon = back to geometry | next |
 | R5 | Optional participant info; export attribution (default off) | — |
 
 ## Protected — never modify, merge into, push or deploy
@@ -477,6 +477,17 @@ Keep this short and current. It is a starting point, not a substitute for readin
 - Limits: the frame circle counts as Construction (offered too); extension pieces are those between points on the
   extended line (never an unbounded tail); a construction piece is not split at Fair it merely touches inside a copy
   unless a point is there.
+
+## Release R3: Intersect arrangement controls in the bookmark popover
+
+- The Spread row (`ixSpreadRow`: Spread slider · value · Reference) is no longer on the canvas; the top-right bookmark
+  button opens `showIntersectionSnapshotsPanel(…, { spreadRow, refresh })` (`.arrangement-panel`): **Arrangement**
+  (the same Spread row element, with its stale / "Set ref." behaviour; a hint "Reference: this arrangement becomes
+  Spread 100 %"), **Reference image** Show switch (Intersect's own visibility; only when the artwork has a
+  reference image; a view, never Undo), then **Snapshots** (Save this arrangement, list, restore, delete) unchanged.
+  The popover closes when leaving Intersect. Bookmark data model and D8 (no Developed Primary in bookmarks) unchanged.
+- Tests (`scratchpad/r3-app.js`, 375 px): no Spread on the canvas; popover 14–367 px; Spread 150 % (1 Undo, label
+  150 %); Reference → 100 %; Save → 1 bookmark, popover stays open; change → restore → spread back.
 
 ## Exact next step
 

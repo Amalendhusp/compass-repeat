@@ -919,12 +919,45 @@ function showRepeatAppearancePanel(anchor: HTMLElement, controller: AppControlle
  */
 const MAX_SNAPSHOTS = 24;
 
-function showIntersectionSnapshotsPanel(anchor: HTMLElement, controller: AppController): void {
+function showIntersectionSnapshotsPanel(anchor: HTMLElement, controller: AppController, arrangement?: { spreadRow: HTMLElement; refresh: () => void }): void {
   mountPopover(
     anchor,
     (menu, close) => {
+      menu.classList.add('arrangement-panel');
       const build = () => {
         menu.replaceChildren();
+        // Release R3: the arrangement's own controls live here (not on the canvas): Spread with its
+        // Reference (what 100 % means), the reference image's visibility in Intersect, then bookmarks.
+        if (arrangement) {
+          popoverSectionLabel(menu, 'Arrangement');
+          arrangement.refresh();
+          arrangement.spreadRow.style.display = '';
+          menu.appendChild(arrangement.spreadRow);
+          panelHint(menu, 'Reference: this arrangement becomes Spread 100 %.');
+        }
+        if (controller.doc.underlay) {
+          const v = underlayViewOf(controller.doc, 'intersection');
+          const row = document.createElement('div');
+          row.className = 'popover-toggle-row';
+          const label = document.createElement('span');
+          label.className = 'popover-row-label';
+          label.textContent = 'Reference image';
+          const sw = document.createElement('button');
+          sw.className = 'toggle-switch' + (v.visible ? ' on' : '');
+          sw.innerHTML = '<span class="toggle-knob"></span>';
+          sw.setAttribute('aria-label', `Reference image ${v.visible ? 'shown' : 'hidden'}`);
+          sw.setAttribute('aria-pressed', String(v.visible));
+          sw.addEventListener('click', (e) => {
+            e.stopPropagation();
+            // A view, like the camera: never an Undo step (as in Menu → Reference image…).
+            controller.doc.underlayView = withUnderlayView(controller.doc, 'intersection', { visible: !v.visible });
+            controller.notify();
+            build();
+          });
+          row.appendChild(label);
+          row.appendChild(sw);
+          menu.appendChild(row);
+        }
         popoverSectionLabel(menu, 'Snapshots');
         const list = controller.doc.intersectionSnapshots ?? [];
         const save = document.createElement('button');
@@ -2084,7 +2117,7 @@ export function buildShell(
   const ixSnapshotsBadge = document.createElement('span');
   ixSnapshotsBadge.className = 'icon-badge';
   ixSnapshotsBtn.appendChild(ixSnapshotsBadge);
-  onTap(ixSnapshotsBtn, () => togglePanel(ixSnapshotsBtn, () => showIntersectionSnapshotsPanel(ixSnapshotsBtn, controller)));
+  onTap(ixSnapshotsBtn, () => togglePanel(ixSnapshotsBtn, () => showIntersectionSnapshotsPanel(ixSnapshotsBtn, controller, { spreadRow: ixSpreadRow, refresh: () => refreshIntersectionRows() })));
   function refreshIxSnapshotsBtn(): void {
     const n = controller.doc.intersectionSnapshots?.length ?? 0;
     ixSnapshotsBadge.textContent = n ? String(n) : '';
@@ -2840,7 +2873,7 @@ export function buildShell(
   ixSnapRow.appendChild(alignRow);
   repeatPanel.appendChild(ixSnapRow);
 
-  repeatPanel.appendChild(ixSpreadRow);
+  // Release R3: Spread lives in the bookmark popover (showIntersectionSnapshotsPanel), not on the canvas.
 
   /** The Snap row for the current picks — after first dropping any pick that no longer exists
    * (never kept at an old position). */
@@ -3626,7 +3659,7 @@ export function buildShell(
     // Spread arranges the instances: it belongs to Select's instance arranging — never under a
     // construction tool's ribbon, nor while an alignment (Parallel · Join, Point Snap, Match Edge)
     // is being picked.
-    ixSpreadRow.style.display = inIntersection && !building && controller.intersectionPickKind === 'instance' ? '' : 'none';
+    if (ixSpreadRow.isConnected && !inIntersection) closeAnyPopover();
     if (!inIntersection) ixSnapRow.style.display = 'none';
     ixCopiesBtn.style.display = inIntersection ? '' : 'none';
     ixSnapshotsBtn.style.display = inIntersection ? '' : 'none';
