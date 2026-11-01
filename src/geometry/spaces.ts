@@ -136,7 +136,7 @@ const usesParityPeriod = (rule: RepeatSystem['rule']) => rule.kind === 'alternat
 
 // ---- a small planar arrangement over straight pieces ----
 
-interface Source {
+export interface Source {
   i: number;
   j: number;
   entityId: string;
@@ -146,7 +146,7 @@ interface Source {
 
 const BRIDGE: Source = { i: 0, j: 0, entityId: '', bridge: true };
 
-interface Edge {
+export interface Edge {
   a: number;
   b: number;
   src: Source;
@@ -194,9 +194,18 @@ interface Face {
   gap: number;
 }
 
-/** Every bounded face of the arrangement of `edges` (pieces a→b in their curve's direction).
- * `bridgeGap` > 0: hair-line gaps between different lattice copies up to that wide are bridged. */
-function traceFaces(arr: Arrangement, edges: Edge[], tol: number, cell: number, bridgeGap = 0, outers?: Vec2[][]): Face[] {
+/** A piece of the planar arrangement: between two consecutive split points of one stroke piece (or a
+ * bridge), kept once however many copies drew it. */
+export interface Sub {
+  from: number;
+  to: number;
+  src: Source;
+}
+
+/** The arrangement of `edges` (pieces a→b in their curve's direction) split where pieces of different
+ * copies cross, where a point lies on a piece, and (`bridgeGap` > 0) across hair-line gaps between
+ * different lattice copies; coincident pieces kept once. Shared by Space / Fill and the weave. */
+export function planarSubs(arr: Arrangement, edges: Edge[], tol: number, cell: number, bridgeGap = 0): Sub[] {
   const { xs, ys } = arr;
   // Index pieces by grid cell (bbox inflated by tol).
   const cellsOf = (e: { a: number; b: number }) => {
@@ -264,11 +273,6 @@ function traceFaces(arr: Arrangement, edges: Edge[], tol: number, cell: number, 
   const bridges = bridgeGap > 0 ? findBridges(arr, edges, splits, grid, cell, tol, bridgeGap) : [];
 
   // Pieces between consecutive split points; a piece already present (from any copy) is kept once.
-  interface Sub {
-    from: number;
-    to: number;
-    src: Source;
-  }
   const subs: Sub[] = [];
   const seen = new Set<number>();
   const BIG = 67108864;
@@ -290,6 +294,14 @@ function traceFaces(arr: Arrangement, edges: Edge[], tol: number, cell: number, 
     seen.add(key);
     subs.push({ from, to, src: BRIDGE });
   }
+  return subs;
+}
+
+/** Every bounded face of the arrangement of `edges` (pieces a→b in their curve's direction).
+ * `bridgeGap` > 0: hair-line gaps between different lattice copies up to that wide are bridged. */
+function traceFaces(arr: Arrangement, edges: Edge[], tol: number, cell: number, bridgeGap = 0, outers?: Vec2[][]): Face[] {
+  const { xs, ys } = arr;
+  const subs = planarSubs(arr, edges, tol, cell, bridgeGap);
 
   interface HE {
     sub: Sub;
@@ -874,6 +886,14 @@ export function unitRegionAt(regions: UnitRegion[], p: Vec2): UnitRegion | null 
 }
 
 /** What Repeat repeats as polylines (exported for the Fill gap diagnosis). */
-export function repeatStrokes(doc: Doc): { id: string; pts: Vec2[] }[] {
-  return strokesOf(doc, motifRadius(doc) * 0.003).map((s) => ({ id: s.entityId, pts: s.pts }));
+export function repeatStrokes(doc: Doc): { id: string; pts: Vec2[]; member: number }[] {
+  return strokesOf(doc, motifRadius(doc) * 0.003).map((s) => ({ id: s.entityId, pts: s.pts, member: s.member }));
+}
+
+/** The period of the whole pattern (what maps it onto itself): the lattice for Same; the every-other-copy
+ * sub-lattice for Alternate / Mirror — as Space classes use. */
+export function patternPeriod(repeat: RepeatSystem): { u: Vec2; v: Vec2; parity: boolean } {
+  const { a, b } = repeat;
+  const parity = usesParityPeriod(repeat.rule);
+  return { u: parity ? { x: a.x + b.x, y: a.y + b.y } : a, v: parity ? { x: a.x - b.x, y: a.y - b.y } : b, parity };
 }

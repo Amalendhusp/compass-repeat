@@ -251,6 +251,11 @@ export interface RepeatStrokeLayer {
  */
 export interface RepeatStroke {
   layers: RepeatStrokeLayer[];
+  /** Sprint S3 — Interlaced: the bands weave over and under one another where the design's lines
+   * genuinely cross (geometry/weave.ts). Rendered only: no line is cut or changed. `on` false keeps the
+   * reversals for when Interlaced is chosen again. `flips`: crossings (stable ids) whose automatic
+   * over/under is reversed. Absent in every artwork made before it. */
+  weave?: { on: boolean; flips: string[] };
 }
 
 /** One source's whole Repeat configuration, kept while the other source is showing. */

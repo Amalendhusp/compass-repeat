@@ -42,7 +42,8 @@ import { repeatSource, type RepeatSource } from '../geometry/repeatUnit.ts';
 import { repeatSourceOf, suggestForFamily, switchRepeatSource } from '../geometry/repeatSetup.ts';
 import { repeatComposition } from '../geometry/repeatComposition.ts';
 import { repeatFill, repeatPaint, repeatPaintOpacity } from '../interaction/tools/repeatTool.ts';
-import { editableStroke, MAX_STROKE_PX, strokeKind, withColour, withKind, withWidth } from '../geometry/repeatStroke.ts';
+import { editableStroke, MAX_STROKE_PX, strokeKind, weaves, withBands, withColour, withKind, withWidth } from '../geometry/repeatStroke.ts';
+import { weaveNetwork } from '../geometry/weave.ts';
 import type { PatternBy } from '../geometry/repeatColour.ts';
 import { artworksUsing, deleteReference, inLibrary, listReferences, setReferenceScope, type ReferenceRecord } from '../persist/referenceStore.ts';
 import { importReference, ReferenceImportError } from '../reference/importReference.ts';
@@ -582,7 +583,7 @@ let strokeSwatchesOpen: number | null = null;
 /** Sprint S2: Repeat's Appearance, at the top left again — the one place for how the repeated design
  * looks: Fill (the colour and opacity Fill applies next, Clear), Stroke (the lines), Background (behind
  * the pattern — not a region, never filled). `tab` opens a given part (the Fill row's swatch opens Fill). */
-function showRepeatAppearancePanel(anchor: HTMLElement, controller: AppController, tab?: 'fill' | 'stroke' | 'background'): void {
+function showRepeatAppearancePanel(anchor: HTMLElement, controller: AppController, tab?: 'fill' | 'stroke' | 'background', hooks: { reverseCrossings?: () => void } = {}): void {
   const display = (): RepeatDisplay => controller.doc.repeatDisplay;
   const changed = () => controller.notifyView();
   if (tab) appearanceTab = tab;
@@ -629,25 +630,64 @@ function showRepeatAppearancePanel(anchor: HTMLElement, controller: AppControlle
             d.repeatSetup = { ...(d.repeatSetup ?? { source: repeatSource(d) }), stroke: next };
           });
         };
+        // Sprint S3: As designed · Single · Banded (two or three nested colour bands along each line) ·
+        // Interlaced (bands weaving over and under where lines cross — geometry/weave.ts).
+        type Mode = 'designed' | 'single' | 'banded' | 'interlaced';
+        const modeOf = (k: ReturnType<typeof strokeKind>): Mode => (k === 'double' || k === 'triple' ? 'banded' : k);
         panelSegmented(
           menu,
           [
             { id: 'designed' as const, label: 'As designed' },
             { id: 'single' as const, label: 'Single' },
-            { id: 'double' as const, label: 'Double' },
-            { id: 'triple' as const, label: 'Triple' },
+            { id: 'banded' as const, label: 'Banded' },
+            { id: 'interlaced' as const, label: 'Interlaced' },
           ],
-          () => strokeKind(current()),
-          (kind) => {
-            if (kind === strokeKind(current())) return;
+          () => modeOf(strokeKind(current())),
+          (mode: Mode) => {
+            if (mode === modeOf(strokeKind(current()))) return;
             strokeSwatchesOpen = null;
-            commitStroke(withKind(current(), kind, design));
+            commitStroke(withKind(current(), mode === 'banded' ? (current().layers.length === 3 ? 'triple' : 'double') : mode, design));
             build();
           },
           'Stroke style',
         );
+        const mode = modeOf(strokeKind(current()));
+        if (mode === 'banded' || mode === 'interlaced') {
+          // How many nested bands: Banded 2 or 3; Interlaced 1 (a plain band), 2 (edged) or 3 (and a centre line).
+          const row = document.createElement('div');
+          row.className = 'popover-toggle-row bands-row';
+          const label = document.createElement('span');
+          label.className = 'popover-row-label';
+          label.textContent = 'Bands';
+          row.appendChild(label);
+          menu.appendChild(row);
+          const counts = (mode === 'interlaced' ? ['1', '2', '3'] : ['2', '3']) as ('1' | '2' | '3')[];
+          panelSegmented(
+            row,
+            counts.map((n) => ({ id: n, label: n })),
+            () => String(current().layers.length) as '1' | '2' | '3',
+            (n) => {
+              if (Number(n) === current().layers.length) return;
+              strokeSwatchesOpen = null;
+              commitStroke(mode === 'interlaced' ? withBands(current(), Number(n) as 1 | 2 | 3, design) : withKind(current(), n === '3' ? 'triple' : 'double', design));
+              build();
+            },
+            'Bands',
+          );
+        }
         const style = current();
-        const names = style.layers.length === 1 ? ['Line'] : style.layers.length === 2 ? ['Outer', 'Inner'] : ['Outer', 'Inner', 'Centre'];
+        const names =
+          mode === 'interlaced'
+            ? style.layers.length === 1
+              ? ['Band']
+              : style.layers.length === 2
+                ? ['Edge', 'Band']
+                : ['Edge', 'Band', 'Centre']
+            : style.layers.length === 1
+              ? ['Line']
+              : style.layers.length === 2
+                ? ['Outer', 'Inner']
+                : ['Outer', 'Inner', 'Centre'];
         // Widths are the design's own (they scale with the pattern): shown as plain numbers — px at
         // 100% zoom.
         const fmt = (v: number) => (v === 0 ? 'None' : `${Number(v.toFixed(2))}`);
@@ -737,6 +777,26 @@ function showRepeatAppearancePanel(anchor: HTMLElement, controller: AppControlle
             menu.appendChild(swatches);
           }
         });
+        if (mode === 'interlaced') {
+          // The weave: alternating automatically; where a cycle of crossings cannot alternate, said plainly.
+          const net = weaveNetwork(controller.doc);
+          const flips = new Set(style.weave?.flips ?? []);
+          const reversed = net.crossings.filter((c) => flips.has(c.key)).length;
+          panelHint(
+            menu,
+            net.crossings.length === 0
+              ? 'No crossings yet — bands weave where lines cross.'
+              : `${net.crossings.length} crossing${net.crossings.length === 1 ? '' : 's'} · ${net.conflicts ? `${net.conflicts} can’t alternate` : 'alternating over and under'}${reversed ? ` · ${reversed} reversed` : ''}`,
+          );
+          if (net.crossings.length && hooks.reverseCrossings) {
+            const rev = document.createElement('button');
+            rev.className = 'popover-row appearance-regions';
+            rev.textContent = 'Reverse crossings…';
+            rev.title = 'Tap a crossing on the canvas to swap which band passes over';
+            onTap(rev, () => hooks.reverseCrossings!());
+            menu.appendChild(rev);
+          }
+        }
       };
 
       const buildBackground = (menu: HTMLElement) => {
@@ -1450,6 +1510,7 @@ function showRepeatGuidesPanel(anchor: HTMLElement, controller: AppController, o
         closeAnyPopover();
         controller.spaceMode = false;
         controller.repeatColourMode = null;
+        controller.weaveEdit = false;
         controller.closeGap = { phase: 'pick' };
         showToast('Tap near a gap between repeated shapes', 2600);
         controller.notify();
@@ -1938,7 +1999,7 @@ export function buildShell(
   appearanceBtn.innerHTML = iconSvg('appearance');
   // Sprint S2: back at the top left in Repeat (UI-4 had moved it into the top-right control): Fill ·
   // Stroke · Background.
-  onTap(appearanceBtn, () => togglePanel(appearanceBtn, () => showRepeatAppearancePanel(appearanceBtn, controller)));
+  onTap(appearanceBtn, () => togglePanel(appearanceBtn, () => showRepeatAppearancePanel(appearanceBtn, controller, undefined, { reverseCrossings: () => setWeaveEdit(true) })));
   leftSide.appendChild(appearanceBtn);
 
   // Intersection: in that slot, the Copies panel — its icon a little 2×2 of the constructions' own
@@ -2350,7 +2411,7 @@ export function buildShell(
   const fillOnDot = document.createElement('span');
   fillOnDot.className = 'fill-on-dot';
   fillSwatchBtn.appendChild(fillOnDot);
-  onTap(fillSwatchBtn, () => togglePanel(appearanceBtn, () => showRepeatAppearancePanel(appearanceBtn, controller, 'fill')));
+  onTap(fillSwatchBtn, () => togglePanel(appearanceBtn, () => showRepeatAppearancePanel(appearanceBtn, controller, 'fill', { reverseCrossings: () => setWeaveEdit(true) })));
   fillOnBtn.title = 'Finish filling';
   fillOnBtn.setAttribute('aria-label', 'Fill — on; tap to finish');
   fillOnBtn.setAttribute('aria-pressed', 'true');
@@ -2362,6 +2423,38 @@ export function buildShell(
   colourKindRow.appendChild(fillSwatchBtn);
   colourKindRow.appendChild(fillCue);
   repeatPanel.appendChild(colourKindRow);
+
+  // Sprint S3: reversing crossings (Interlaced) — like Fill, a mode with one chip to finish it.
+  const weaveRow = document.createElement('div');
+  weaveRow.className = 'space-row fill-row weave-row';
+  const weaveOnBtn = document.createElement('button');
+  weaveOnBtn.className = 'space-chip fill-action active';
+  weaveOnBtn.textContent = 'Crossings';
+  weaveOnBtn.title = 'Finish reversing crossings';
+  weaveOnBtn.setAttribute('aria-label', 'Crossings — on; tap to finish');
+  weaveOnBtn.setAttribute('aria-pressed', 'true');
+  onTap(weaveOnBtn, () => setWeaveEdit(false));
+  const weaveCue = document.createElement('span');
+  weaveCue.className = 'close-gap-cue fill-cue';
+  weaveRow.appendChild(weaveOnBtn);
+  weaveRow.appendChild(weaveCue);
+  repeatPanel.appendChild(weaveRow);
+  function setWeaveEdit(on: boolean): void {
+    closeAnyPopover();
+    controller.weaveEdit = on;
+    if (on) {
+      controller.repeatColourMode = null;
+      controller.spaceMode = false;
+      controller.repeatGapMarks = null;
+      controller.closeGap = null;
+      showToast('Tap a crossing to swap which band passes over');
+    }
+    controller.notify();
+  }
+  function refreshWeaveRow(): void {
+    const net = weaveNetwork(controller.doc);
+    weaveCue.textContent = net.conflicts ? `Tap a crossing · ${net.conflicts} can’t alternate` : 'Tap a crossing to reverse it';
+  }
 
   // Close Gap (Stage C): picking — "Tap near a gap" · Cancel; previewing — up to three nearby gaps,
   // which arm moves and by how much, Apply · Cancel. Nothing changes until Apply (one Undo step).
@@ -2468,7 +2561,10 @@ export function buildShell(
     controller.spaceMode = scope === 'space';
     controller.repeatColourMode = scope === 'motif' || scope === 'pattern' ? scope : null;
     controller.repeatGapMarks = null;
-    if (scope) controller.closeGap = null;
+    if (scope) {
+      controller.closeGap = null;
+      controller.weaveEdit = false;
+    }
     if (scope === 'motif' || scope === 'space') showToast('Tap any enclosed region to fill it · Fill again to finish');
     if (scope === 'pattern') {
       // Copies alternating is where a pattern starts; rows or columns are one tap away.
@@ -3463,6 +3559,7 @@ export function buildShell(
       controller.spaceMode = false; // Space belongs to one visit to Repeat, not the next
       controller.repeatColourMode = null; // nor does Colouring
       controller.repeatGapMarks = null;
+      controller.weaveEdit = false;
       controller.closeGap = null; // nor does Close Gap
       controller.intersectionPicks = []; // nor do Intersection's picks outlive a visit
       controller.intersectionPickKind = 'instance';
@@ -3499,8 +3596,13 @@ export function buildShell(
     // While colouring, the lattice rows step aside for the colouring controls.
     const colouring = inRepeat && (!!controller.repeatColourMode || controller.spaceMode);
     const closingGap = inRepeat && !!controller.closeGap;
-    ruleLine.style.display = inRepeat && !colouring && !closingGap ? '' : 'none';
-    spaceRow.style.display = inRepeat && !colouring && !closingGap ? '' : 'none';
+    // A style other than Interlaced, or another workspace, ends reversing crossings.
+    if (controller.weaveEdit && (!inRepeat || !weaves(controller.doc.repeatSetup?.stroke))) controller.weaveEdit = false;
+    const weaving = inRepeat && controller.weaveEdit && !colouring && !closingGap;
+    weaveRow.style.display = weaving ? '' : 'none';
+    if (weaving) refreshWeaveRow();
+    ruleLine.style.display = inRepeat && !colouring && !closingGap && !weaving ? '' : 'none';
+    spaceRow.style.display = inRepeat && !colouring && !closingGap && !weaving ? '' : 'none';
     closeGapRow.style.display = closingGap ? '' : 'none';
     if (closingGap) refreshCloseGapRow();
     colourKindRow.style.display = colouring ? '' : 'none';

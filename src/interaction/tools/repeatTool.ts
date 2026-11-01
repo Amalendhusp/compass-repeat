@@ -16,6 +16,8 @@ import { fillTargetAt, patternGroup, toggleRegion } from '../../geometry/repeatC
 import { repeatSourceOf } from '../../geometry/repeatSetup.ts';
 import { showToast } from '../../ui/toast.ts';
 import { gapsAtTap } from '../closeGapMode.ts';
+import { crossingNear, weaveNetwork } from '../../geometry/weave.ts';
+import { withFlip } from '../../geometry/repeatStroke.ts';
 import type { Gesture, ToolModule } from './types.ts';
 
 const HANDLE_HIT_RADIUS = 26; // px — generous, these are the only two draggable points
@@ -175,6 +177,31 @@ function fillTapGesture(controller: AppController, view: ViewTransform): Gesture
   };
 }
 
+/** Sprint S3 — Interlaced: a tap on a crossing swaps which band passes over there (in every copy of it),
+ * one Undo step; the construction is never touched. */
+function weaveTapGesture(controller: AppController, view: ViewTransform): Gesture {
+  return {
+    onMove() {},
+    onUp(sp, wasDrag) {
+      if (wasDrag) return;
+      const doc = controller.doc;
+      const stroke = doc.repeatSetup?.stroke;
+      if (!stroke) return;
+      const hit = crossingNear(weaveNetwork(doc), screenToWorld(view, sp), CROSSING_REACH_PX / view.zoom);
+      if (!hit) {
+        showToast('No crossing here · tap where two bands cross', 2200);
+        return;
+      }
+      controller.commit((d) => {
+        d.repeatSetup = { ...d.repeatSetup!, stroke: withFlip(d.repeatSetup!.stroke!, hit.crossing.key) };
+      });
+    },
+    onCancel() {},
+  };
+}
+/** How near a tap must be to a crossing (px). */
+const CROSSING_REACH_PX = 24;
+
 /** Close Gap's tap (interaction/closeGapMode.ts): the valid gaps near the tap — the nearest previewed
  * at once, up to two more offered — or, if none, a plain word on why. Never changes the artwork. */
 function closeGapTapGesture(controller: AppController, view: ViewTransform): Gesture {
@@ -217,6 +244,7 @@ export const repeatTool: ToolModule = {
       return closeGapTapGesture(controller, view);
     }
     if (controller.repeatColourMode || controller.spaceMode) return fillTapGesture(controller, view);
+    if (controller.weaveEdit) return weaveTapGesture(controller, view);
     if (!controller.doc.repeatDisplay.handles) return null; // hidden handles are not interactive
     const doc = controller.doc;
     const pivot = doc.frame.origin;

@@ -330,6 +330,9 @@ export class AppController {
   /** Repeat Colouring (geometry/repeatColour.ts): while on, a tap in Repeat colours a region —
    * of every copy ('motif'), or of the second group of copies ('pattern'). Session state. */
   repeatColourMode: 'motif' | 'pattern' | null = null;
+  /** Interlaced (Sprint S3): while on, a tap in Repeat reverses the over/under of the crossing under it.
+   * Session state. */
+  weaveEdit = false;
   /** Fill (final sprint): where the region under the last Fill tap is open — marked on screen until the
    * next tap, leaving Fill, or any change to the artwork (`doc`). Session state, never saved. */
   repeatGapMarks: (import('../geometry/repeatGaps.ts').GapMarks & { doc: import('../model/types.ts').Doc }) | null = null;

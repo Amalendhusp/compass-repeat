@@ -33,7 +33,7 @@ import {
 } from '../geometry/lattice.ts';
 import { repeatUnit, type RepeatUnit } from '../geometry/repeatUnit.ts';
 import { colouringInUse, patternGroup, regionColour, regionKey } from '../geometry/repeatColour.ts';
-import { drawnLayers, type DrawnLayer } from '../geometry/repeatStroke.ts';
+import { drawnLayers, weaves, type DrawnLayer } from '../geometry/repeatStroke.ts';
 import { latticeShape } from '../geometry/latticeSnap.ts';
 import { compositionFeatures } from '../geometry/repeatComposition.ts';
 import { copyFeatures } from '../geometry/closeGap.ts';
@@ -44,6 +44,7 @@ import { color, stroke } from './tokens.ts';
 import { makePath } from './svgContext.ts';
 import type { ArtworkExport } from './renderer.ts';
 import type { GapMarks } from '../geometry/repeatGaps.ts';
+import { overStrand, periodTranslations, strandPiece, weaveNetwork, type WeaveCrossing, type WeaveNetwork } from '../geometry/weave.ts';
 
 function appendTransformedLoop(path: Path2D, view: ViewTransform, pivot: Vec2, pose: InstancePose, worldPts: Vec2[]): void {
   if (worldPts.length === 0) return;
@@ -502,6 +503,131 @@ function drawUnitRegionFills(ctx: CanvasRenderingContext2D, doc: Doc, view: View
   if (any) ctx.globalAlpha = 1;
 }
 
+/** The visible world box of a view. */
+function viewBox(view: ViewTransform): { minX: number; minY: number; maxX: number; maxY: number } {
+  const tl = screenToWorld(view, { x: 0, y: 0 });
+  const br = screenToWorld(view, { x: view.w, y: view.h });
+  return { minX: Math.min(tl.x, br.x), maxX: Math.max(tl.x, br.x), minY: Math.min(tl.y, br.y), maxY: Math.max(tl.y, br.y) };
+}
+
+/**
+ * Sprint S3 — Interlaced (geometry/weave.ts): at every crossing in view, the band passing over is drawn
+ * again across it, layer by layer (outer, inner, centre), so its edges run unbroken over the band beneath,
+ * which then reads as passing under. A single band has no edges of its own: the band beneath is first
+ * opened by a small gap (exactly its width, the over band's width plus a margin along it) in the
+ * background colour. Pieces never reach the next crossing (half the way at most). Vector paths
+ * throughout, so PNG, SVG and Timelapse show it exactly as the canvas does.
+ */
+function drawWeave(ctx: CanvasRenderingContext2D, view: ViewTransform, net: WeaveNetwork, style: DrawnLayer[], flips: ReadonlySet<string>, background: string): void {
+  if (!net.crossings.length) return;
+  const widths = style.map((l) => l.width ?? stroke.fairDefault);
+  const W = widths[0]!;
+  if (W <= 0) return;
+  const one = style.length === 1;
+  const gapW = one ? Math.max(W * 0.45, 0.8) : 0;
+  const eps = 0.75 / view.zoom; // covers the band's anti-aliased edge
+  const box = viewBox(view);
+  const reach = W * 4 + R_PAD;
+  interface Piece {
+    pts: Vec2[];
+    gap: Vec2[] | null;
+  }
+  const pieces: { piece: Piece; c: WeaveCrossing }[] = [];
+  for (const c of net.crossings) {
+    const o = overStrand(c, flips);
+    const sin = Math.max(c.sin, 0.17);
+    const cos = Math.sqrt(1 - sin * sin);
+    const L = one ? (W / 2 + eps + (W / 2 + gapW) * cos) / sin + W * 0.15 : ((W / 2) * (1 + cos)) / sin + W * 0.15;
+    const pts = strandPiece(c.at, c.strands[o], L);
+    let gap: Vec2[] | null = null;
+    if (one) {
+      const dir = (s: WeaveCrossing['strands'][0]) => {
+        const p = s.fwd[0] ?? s.back[0];
+        const sign = s.fwd[0] ? 1 : -1;
+        if (!p) return null;
+        const d = Math.hypot(p.x - c.at.x, p.y - c.at.y) || 1;
+        return { x: (sign * (p.x - c.at.x)) / d, y: (sign * (p.y - c.at.y)) / d };
+      };
+      const du = dir(c.strands[1 - o]!);
+      const dv = dir(c.strands[o]);
+      if (du && dv) {
+        const S = (W / 2 + gapW) / sin;
+        const T = (W / 2 + eps) / sin;
+        gap = [
+          [S, T],
+          [S, -T],
+          [-S, -T],
+          [-S, T],
+        ].map(([s, t]) => ({ x: c.at.x + s! * du.x + t! * dv.x, y: c.at.y + s! * du.y + t! * dv.y }));
+      }
+    }
+    pieces.push({ piece: { pts, gap }, c });
+  }
+  const moved = (p: Vec2, t: Vec2) => worldToScreen(view, { x: p.x + t.x, y: p.y + t.y });
+  const instances = pieces.map(({ c }) => periodTranslations(c.at, net.u, net.v, box, reach));
+  ctx.save();
+  ctx.lineCap = 'butt';
+  ctx.lineJoin = 'round';
+  if (one) {
+    const path = makePath(ctx);
+    pieces.forEach(({ piece }, n) => {
+      if (!piece.gap) return;
+      for (const t of instances[n]!) {
+        piece.gap.forEach((p, k) => {
+          const sp = moved(p, t);
+          if (k === 0) path.moveTo(sp.x, sp.y);
+          else path.lineTo(sp.x, sp.y);
+        });
+        path.closePath();
+      }
+    });
+    ctx.fillStyle = background;
+    ctx.fill(path);
+  }
+  style.forEach((layer, k) => {
+    const path = makePath(ctx);
+    pieces.forEach(({ piece }, n) => {
+      if (piece.pts.length < 2) return;
+      for (const t of instances[n]!) {
+        piece.pts.forEach((p, i) => {
+          const sp = moved(p, t);
+          if (i === 0) path.moveTo(sp.x, sp.y);
+          else path.lineTo(sp.x, sp.y);
+        });
+      }
+    });
+    ctx.strokeStyle = layer.colour ?? color.ink;
+    ctx.lineWidth = widths[k]! * view.zoom;
+    ctx.stroke(path);
+  });
+  ctx.restore();
+}
+/** Extra reach (world units) when finding the crossings in view: a piece never runs further than this. */
+const R_PAD = 60;
+
+/** While reversing crossings: a quiet ring at every crossing in view — filled brass where reversed by
+ * hand, alert red where the weave cannot alternate. Screen only. */
+function drawWeaveMarks(ctx: CanvasRenderingContext2D, doc: Doc, view: ViewTransform, flips: ReadonlySet<string>): void {
+  const net = weaveNetwork(doc);
+  const box = viewBox(view);
+  ctx.save();
+  for (const c of net.crossings) {
+    for (const t of periodTranslations(c.at, net.u, net.v, box, 0, 3000)) {
+      const s = worldToScreen(view, { x: c.at.x + t.x, y: c.at.y + t.y });
+      ctx.beginPath();
+      ctx.arc(s.x, s.y, 8, 0, Math.PI * 2);
+      ctx.fillStyle = flips.has(c.key) ? color.brass : color.paper;
+      ctx.globalAlpha = flips.has(c.key) ? 0.95 : 0.7;
+      ctx.fill();
+      ctx.globalAlpha = 1;
+      ctx.lineWidth = 2;
+      ctx.strokeStyle = c.conflict ? color.alert : color.ink;
+      ctx.stroke();
+    }
+  }
+  ctx.restore();
+}
+
 /** Fill's gap marks (repeatGaps.ts): small rings at open ends, or both sides of a near miss joined by a
  * dashed hairline. Screen only, never exported; they stay until the next tap or any change. */
 function drawGapMarks(ctx: CanvasRenderingContext2D, marks: GapMarks, view: ViewTransform): void {
@@ -717,6 +843,10 @@ export function renderRepeat(ctx: CanvasRenderingContext2D, controller: AppContr
         drawCopy(ctx, doc, view, pose, flat, display, pass.fills, pass.strokes, null, paintFor(colour, null, group), pass.layer);
       }
     }
+    // Sprint S3: Interlaced — over the flat bands, each crossing's over band (never while the
+    // arrangement is still being dragged: it waits for release, like the Spaces).
+    const strokeStyle = exp ? doc.repeatSetup?.stroke : (controller.repeatStrokeDraft ?? doc.repeatSetup?.stroke);
+    if (showStrokes && weaves(strokeStyle) && !drag && !rotating && !gap) drawWeave(ctx, view, weaveNetwork(doc), style, new Set(strokeStyle!.weave!.flips), display.background);
   });
   // Bitmaps no longer drawn (another style, group or pass) are let go at once.
   if (!exp) for (const slot of [...sprites.keys()]) if (!used.has(slot)) sprites.delete(slot);
@@ -756,6 +886,7 @@ export function renderRepeat(ctx: CanvasRenderingContext2D, controller: AppContr
     if (!controller.closeGap) drawRotationRing(ctx, controller, view);
   }
   if (gap) drawCloseGapInset(ctx, doc, view, gap);
+  if (!exp && controller.weaveEdit && !drag && !rotating) drawWeaveMarks(ctx, doc, view, new Set(doc.repeatSetup?.stroke?.weave?.flips ?? []));
   const marks = exp ? null : controller.repeatGapMarks;
   if (marks && marks.doc === doc && (controller.repeatColourMode || controller.spaceMode)) drawGapMarks(ctx, marks, view);
 

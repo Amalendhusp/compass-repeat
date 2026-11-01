@@ -23,8 +23,8 @@ Keep this short and current. It is a starting point, not a substitute for readin
 | UI-4 | Repeat: rules row, Construct/Intersect source, Motif/Space Fill, master guide toggle | done — "UI-4" |
 | S1 | One Fill: Intersect-unit regions, no Motif/Space choice, gap marks | done — "Sprint S1" |
 | S2 | Top-left Appearance (Fill · Stroke · Background), Fill toggle, preferences in the draft | done — "Sprint S2" |
-| S3 | Interlaced strokes (Single · Banded · Interlaced, over-under, crossing reversal) | next |
-| S4 | Integration, regression, iPhone release candidate | — |
+| S3 | Interlaced strokes (Single · Banded · Interlaced, over-under, crossing reversal) | done — "Sprint S3" |
+| S4 | Integration, regression, iPhone release candidate | next |
 
 ## Protected — never modify, merge into, push or deploy
 
@@ -371,11 +371,55 @@ Keep this short and current. It is a starting point, not a substitute for readin
   "Save changes?" on leaving, Don't save → original colour; Save → record has it, draft clean. Suite: fingerprints
   identical, cancel 16/0, smoke all true, Guide baseline; digest of all 142 stored records identical before/after.
 
+## Sprint S3: interlaced strokes
+
+- Scope: Repeat's Stroke style (the drawn bands of the repeated design — Construct source, Intersect source, the
+  Developed Primary and Primary-copies alike). Construct and Intersect workspaces draw lines as before.
+- Data: `RepeatStroke.weave?: { on, flips[] }` (types.ts) — absent in every older artwork (rendering unchanged).
+  `repeatStroke.ts`: `StrokeKind` + `'interlaced'`, `weaves()`, `withBands(1|2|3)`, `withFlip(key)`; `withKind`,
+  `withWidth`, `withColour` keep `weave` (reversals survive a style change and coming back).
+- Panel (Appearance → Stroke): **As designed · Single · Banded · Interlaced**; Banded/Interlaced → **Bands** (Banded
+  2|3 — the old Double/Triple; Interlaced 1 plain | 2 edged | 3 edged + centre line); layer rows (Edge/Band/Centre:
+  colour + width, existing controls); Interlaced → status ("N crossings · alternating over and under" / "· K can't
+  alternate" / "· R reversed") and **Reverse crossings…** → canvas mode (`controller.weaveEdit`): row `[Crossings]`
+  (tap = finish) + cue; rings at every crossing in view (brass = reversed, orange = can't alternate); a tap within
+  24 px reverses that crossing in every copy (one Undo step, `repeatTool.ts` `weaveTapGesture`). Fill / Close Gap /
+  leaving Repeat / another style end the mode.
+- Network (`geometry/weave.ts` `weaveNetwork`, cached per geometry + lattice; skipped while a handle / ring is dragged
+  or Close Gap previews): copies around the reference (≤ 160) → `spaces.ts planarSubs` (extracted from `traceFaces`,
+  unchanged: split at crossings between copies/members, points on pieces, coincident pieces once). Vertex: 2 pieces
+  → band runs on; 4 pieces in two straight-through strands (≤ 50° from straight) alternating round it → crossing;
+  else junction (flat). Ids: the two strands' pieces with copy offsets relative to the crossing (shift by the period
+  only, as Space signatures), `#n` for repeats at different places in the copy — every copy of a crossing is one
+  class. Weave: per class one unknown; consecutive crossings along a strand must alternate → parity union–find;
+  contradicting constraints are not forced and both classes are flagged (`conflict`). Period = lattice (Uniform) or
+  every-other-copy sub-lattice (Alternate / Mirror) — so a plain grid alternates under Alternate, not under Uniform.
+- Drawing (`repeatRenderer.ts` `drawWeave`, inside the artwork layer after all bands): per crossing, the over strand's
+  piece (`strandPiece`, through bends and arcs, never past half-way to the next crossing) redrawn layer by layer with
+  butt caps, long enough to cover the under band (`(W/2)(1+cos)/sin`); one band: first a background-colour
+  parallelogram exactly over the under band's crossing (the gap), then the over band. Every instance via
+  `periodTranslations`. makePath throughout → PNG, SVG, Timelapse identical to the canvas.
+- Tests (`scratchpad/weave-app.js`, 14/14): two bands; '#' checkerboard; reversal local; two squares 8 crossings;
+  two circles 2; circles + line 6; tangency → none; T → none; Intersect squares 8; Developed outline alone → none
+  (it never crosses itself); overlapping copies 20; plain grid Uniform → conflict reported; Alternate → alternates;
+  ids stable under a spacing nudge (160 → 162). Export probes at a crossing (PNG): 1 band → background gap in the
+  under band; 2 / 3 bands → under band cut by the over band's edge, over band (and centre line) unbroken; reversed →
+  swapped; Intersect and Developed Primary + promoted copy correct. Live: Interlaced from the panel (one Undo), 20
+  crossings alternating; Reverse crossings → tap → 1 Undo, Undo/Redo, Finish; save → reopen keeps the reversal (same
+  id); SVG +1 path per band layer; Timelapse (7 frames) playable. Plate 113 (dense): 197 classes, 16 can't
+  alternate, 3303 junctions; network 210 ms once per change (≈ 40 ms to recognise an unchanged one); woven export not
+  slower than flat.
+- Limits: three or more lines through one point, T-junctions and touching corners are drawn flat; very shallow
+  crossings (< 10°) are drawn as at 10° (the piece may not cover fully); one-band gaps use the Background colour (a
+  transparent PNG shows it); conflicts are reported, not resolved (reverse by hand); reversals whose crossing no longer
+  exists are kept in the data and ignored; the network is rebuilt after each lattice change (~0.2 s on Plate 113 on
+  desktop — expect more on a phone).
+
 ## Exact next step
 
-Final sprint: S1, S2 done. Next S3 (interlaced strokes): Repeat Stroke gains Single · Banded (existing Double/Triple
-layers) · Interlaced (render-level over-under at exact Fair crossings, cached crossing network with stable ids,
-automatic alternation + per-crossing reversal stored in `repeatSetup`, conflicts reported). Then S4.
+Final sprint: S1–S3 done. Next S4: integration (Construct → Fair → Intersect → Repeat → Fill → Interlace → Export, both
+sources, existing artworks untouched), full regression, 375 px check, fresh iPhone build (temp dir), final report;
+then freeze features and stop for the user's iPhone review. Do not merge, push or deploy.
 
 ## Commands
 
