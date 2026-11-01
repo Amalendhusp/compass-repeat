@@ -30,8 +30,8 @@ Keep this short and current. It is a starting point, not a substitute for readin
 | R1 | Point first: a selected point feeds Line (A) / Circle (centre); Divide keeps it selected | done — "Release R1" |
 | R2 | Intersect Fair: develop from construction and extension segments too (Fair only · Construction · Extensions) | done — "Release R2" |
 | R3 | Intersect: Spread / Reference / Save arrangement / bookmarks in the bookmark popover | done — "Release R3" |
-| R4 | Repeat: Fill on the lower row; grid/handle icon = back to geometry | next |
-| R5 | Optional participant info; export attribution (default off) | — |
+| R4 | Repeat: Fill on the lower row; grid/handle icon = back to geometry | done — "Release R4" |
+| R5 | Optional participant info; export attribution (default off) | next |
 
 ## Protected — never modify, merge into, push or deploy
 
@@ -488,6 +488,19 @@ Keep this short and current. It is a starting point, not a substitute for readin
   The popover closes when leaving Intersect. Bookmark data model and D8 (no Developed Primary in bookmarks) unchanged.
 - Tests (`scratchpad/r3-app.js`, 375 px): no Spread on the canvas; popover 14–367 px; Spread 150 % (1 Undo, label
   150 %); Reference → 100 %; Save → 1 bookmark, popover stays open; change → restore → spread back.
+
+## Release R4: Repeat Fill and the way back to the handles
+
+- Fill chip (lowest row, after Construct | Intersect, a 14 px gap and a hairline): off = plain paper button (no
+  outline, normal weight, `aria-pressed=false`), on = ink. The shell resets it to off whenever Fill is not on (it
+  stayed "active" when Fill was left by another route — fixed).
+- Top-right grid icon (`.guides-master`): reads OFF while a canvas mode has the canvas (Fill, reversing crossings,
+  Close Gap). A tap then leaves that mode and shows the handles (rotation, A, B) with the guides that were on (or the
+  remembered ones; handles always on) — display only, no Undo. Otherwise unchanged: on → hides handles, grid and
+  boundary (remembered); off → back. Handles stay completely free (no snapping).
+- Tests (`scratchpad/r4-app.js`, 375 px): Fill off look (paper, pressed false); Fill on (ink, icon off); a fill; icon
+  → Fill off, handles on, chip off; icon → all hidden, Undo depth unchanged; icon → handles back; Fill chip still
+  ends Fill.
 
 ## Exact next step
 

@@ -2083,9 +2083,12 @@ export function buildShell(
   const guidesBtn = document.createElement('button');
   guidesBtn.className = 'icon-btn guides-master';
   guidesBtn.innerHTML = iconSvg('gridGuides');
+  // Release R4: a canvas mode (Fill, reversing crossings, Close Gap) takes the canvas from the handles; the
+  // icon then reads off, and a tap is the way back to the geometry.
+  const canvasMode = () => !!controller.repeatColourMode || controller.spaceMode || controller.weaveEdit || !!controller.closeGap;
   const guidesOn = () => {
     const d = controller.doc.repeatDisplay;
-    return d.grid || d.handles || d.motifBoundary;
+    return (d.grid || d.handles || d.motifBoundary) && !canvasMode();
   };
   function refreshGuidesBtn(): void {
     const on = guidesOn();
@@ -2102,11 +2105,21 @@ export function buildShell(
       rememberedGuides.set(controller.doc.id, { grid: d.grid, handles: d.handles, motifBoundary: d.motifBoundary });
       d.grid = d.handles = d.motifBoundary = false;
     } else {
-      const back = rememberedGuides.get(controller.doc.id) ?? { grid: false, handles: true, motifBoundary: true };
-      Object.assign(d, back);
+      // Back to the geometry: leave any canvas mode, and show the handles (rotation, A, B) with the guides
+      // that were on — never changing the artwork. (Display only: no Undo step.)
+      if (canvasMode()) {
+        closeAnyPopover();
+        controller.repeatColourMode = null;
+        controller.spaceMode = false;
+        controller.repeatGapMarks = null;
+        controller.weaveEdit = false;
+        controller.closeGap = null;
+      }
+      const back = d.grid || d.handles || d.motifBoundary ? { grid: d.grid, handles: d.handles, motifBoundary: d.motifBoundary } : (rememberedGuides.get(controller.doc.id) ?? { grid: false, handles: true, motifBoundary: true });
+      Object.assign(d, back, { handles: true });
     }
     refreshGuidesBtn();
-    controller.notifyView();
+    controller.notify();
   });
 
   // Intersection: in Grid / guides' slot, Snapshots — discoveries kept on purpose (not Undo history),
@@ -3656,6 +3669,11 @@ export function buildShell(
     colourKindRow.style.display = colouring ? '' : 'none';
     patternRow.style.display = colouring && controller.repeatColourMode === 'pattern' ? '' : 'none';
     if (colouring) refreshColourRows();
+    else if (inRepeat) {
+      // Release R4: off is plainly off (also after leaving Fill another way, e.g. the grid icon).
+      colouringBtn.classList.remove('active');
+      colouringBtn.setAttribute('aria-pressed', 'false');
+    }
     // Spread arranges the instances: it belongs to Select's instance arranging — never under a
     // construction tool's ribbon, nor while an alignment (Parallel · Join, Point Snap, Match Edge)
     // is being picked.

@@ -2549,13 +2549,32 @@ canvas.stage {
 
 /* UI-4: Repeat. Fill is an action of its own (not a rule): an outlined chip with its icon, apart from
  * the Construct | Intersect choice on the same row. */
+/* Release R4: off, Fill reads as a plain button (never as a chosen option); on, it is filled ink. It sits at
+ * the far end of the lowest row, apart from the rules and the source. */
 .space-chip.fill-action {
   margin-left: auto;
   background: var(--paper);
-  box-shadow: inset 0 0 0 1.5px var(--ink);
-  font-weight: 600;
+  box-shadow: 0 1px 3px rgba(30, 42, 54, 0.18);
+  font-weight: 500;
   gap: 5px;
   padding: 0 12px 0 10px;
+}
+.space-row .space-chip.fill-action:not(.active) {
+  color: var(--ink);
+}
+/* Apart from the source choice: a clear gap and a hairline before it. */
+.space-row > .source-group + .space-chip.fill-action {
+  margin-left: 14px;
+  position: relative;
+}
+.space-row > .source-group + .space-chip.fill-action::before {
+  content: '';
+  position: absolute;
+  left: -8px;
+  top: 7px;
+  bottom: 7px;
+  width: 1px;
+  background: var(--line, rgba(30, 42, 54, 0.2));
 }
 .space-chip.fill-action svg {
   flex: none;
