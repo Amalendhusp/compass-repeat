@@ -22,6 +22,7 @@
 // construction's rotation ring showing which construction would move.
 
 import { drawArtworkLayer, type ScreenLayers } from './underlay.ts';
+import type { FormLayer } from '../geometry/formSegments.ts';
 import type { Doc, Entity, Vec2 } from '../model/types.ts';
 import type { AppController, ViewTransform } from '../app/controller.ts';
 import { screenToWorld, worldToScreen } from '../app/controller.ts';
@@ -133,7 +134,7 @@ export function renderIntersection(ctx: CanvasRenderingContext2D, controller: Ap
   // translucent and the Developed Primary opaque.
   const developing = controller.tool === 'fair';
   drawArtworkLayer(ctx, layers, (ctx) => {
-    if (developing) drawFairOnly(ctx, doc, view, sc, copies);
+    if (developing) drawFairOnly(ctx, doc, view, sc, copies, controller.formLayer);
     else drawCopies(ctx, doc, view, sc, copies);
     drawDevelopedPrimary(ctx, doc, view);
   });
@@ -213,9 +214,30 @@ function edgeShown(doc: Doc, copies: IntersectionCopy[], pick: IntersectionPick)
 
 /** Fair in Intersect: each copy's Fair strokes only, in its own colour — translucent (a reference), or
  * stronger for a Primary-copy (repeated whole with the Developed Primary). */
-function drawFairOnly(ctx: CanvasRenderingContext2D, doc: Doc, view: ViewTransform, sc: Scaffold, copies: IntersectionCopy[]): void {
+function drawFairOnly(ctx: CanvasRenderingContext2D, doc: Doc, view: ViewTransform, sc: Scaffold, copies: IntersectionCopy[], layer: FormLayer = 'fair'): void {
   ctx.lineCap = 'round';
   ctx.lineJoin = 'round';
+  // Release R2: Construction (and Extensions) offered too — drawn thin beneath the Fair strokes, in each
+  // copy's colour, so what can be taken is visible (Extension pieces dashed).
+  if (layer !== 'fair') {
+    for (const copy of copies) {
+      const solid = new Path2D();
+      const dashed = new Path2D();
+      for (const piece of sc.pieces) {
+        if (piece.kind === 'construction') appendPiece(solid, doc, view, copy.pose, piece);
+        else if (piece.kind === 'extension' && layer === 'extension') appendPiece(dashed, doc, view, copy.pose, piece);
+      }
+      ctx.strokeStyle = copy.colour;
+      ctx.globalAlpha = 0.55;
+      ctx.lineWidth = 1.1;
+      ctx.stroke(solid);
+      ctx.setLineDash([...stroke.extensionDash]);
+      ctx.globalAlpha = 0.5;
+      ctx.stroke(dashed);
+      ctx.setLineDash([]);
+    }
+    ctx.globalAlpha = 1;
+  }
   for (const copy of copies) {
     const fair = new Path2D();
     for (const piece of sc.pieces) if (piece.kind === 'fair') appendPiece(fair, doc, view, copy.pose, piece);
@@ -325,7 +347,7 @@ function drawFormFeedback(ctx: CanvasRenderingContext2D, controller: AppControll
     const centreWorld = screenToWorld(view, l.centreScreen);
     const zoom = view.zoom * l.mag;
     const mv: ViewTransform = { ...view, zoom, pan: { x: (l.x - view.w / 2) / zoom - centreWorld.x, y: (l.y - view.h / 2) / zoom - centreWorld.y } };
-    drawFairOnly(ctx, doc, mv, sc, copies);
+    drawFairOnly(ctx, doc, mv, sc, copies, controller.formLayer);
     drawDevelopedPrimary(ctx, doc, mv);
     press.picks.forEach((p, i) => {
       drawCandidate(ctx, mv, p.prim, p.action === 'add', i === press.active);

@@ -8,7 +8,7 @@
 
 import type { Doc, Vec2 } from '../model/types.ts';
 import { resolveEntityGeom } from './kernel.ts';
-import { deriveSegments } from './segments.ts';
+import { deriveSegments, effectiveSegmentKind } from './segments.ts';
 import { motifRadius, transformPoint, type InstancePose } from './lattice.ts';
 
 export const TAU = Math.PI * 2;
@@ -61,13 +61,15 @@ export function boxOf(p: Prim): Placed['box'] {
 
 /** One motif's Fair pieces, entity by entity, in the artwork's own coordinates — exact lines and
  * arcs, each with its piece key (`id`) and its line or circle (`entity`). */
-export function motifPieces(doc: Doc): MotifFeature[] {
+export function motifPieces(doc: Doc, kind: 'fair' | 'construction' | 'extension' = 'fair'): MotifFeature[] {
   const out: MotifFeature[] = [];
   for (const e of doc.entities) {
     const g = resolveEntityGeom(doc, e);
     const segs = deriveSegments(doc, e);
     for (const seg of segs) {
-      if (doc.segmentStates.get(seg.key)?.state !== 'fair') continue;
+      // Release R2: Construction or Extension pieces too (Intersect Fair can develop from them) — each
+      // piece's state as drawn (explicit, else its default role); trimmed pieces never.
+      if (kind === 'fair' ? doc.segmentStates.get(seg.key)?.state !== 'fair' : effectiveSegmentKind(doc, e, seg) !== kind) continue;
       if (g.kind === 'line') {
         if (Math.abs(seg.toParam - seg.fromParam) <= 1e-12) continue; // a zero-length piece
         const at = (t: number) => ({ x: g.a.x + (g.b.x - g.a.x) * t, y: g.a.y + (g.b.y - g.a.y) * t });

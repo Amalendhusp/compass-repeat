@@ -173,7 +173,9 @@ export interface UnderlayView {
 export interface DevelopedSegment {
   id: string;
   geom: { kind: 'line'; a: Vec2; b: Vec2 } | { kind: 'arc'; c: Vec2; r: number; a0: number; sw: number };
-  origins: { copy: string; entity: string }[];
+  /** Where it came from: which copy's which line or circle — and (Release R2) what that piece was, when
+   * it was Construction or Extension rather than Fair. */
+  origins: { copy: string; entity: string; kind?: 'construction' | 'extension' }[];
 }
 /** The Developed Primary. Its presence marks an artwork that uses Intersect Form Development: Repeat's
  * Intersect source is then the Original (unless demoted), the promoted Primary-copies and this —

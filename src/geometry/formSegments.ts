@@ -15,29 +15,38 @@
 
 import type { DevelopedSegment, Doc, Vec2 } from '../model/types.ts';
 import { intersectionCopies } from './intersection.ts';
-import { arcPoint, boxOf, closestOn, dot, endsOf, hits, len, motifRuns, motifScale, norm, placePrim, sub, TAU, type Placed, type Prim } from './fairGeometry.ts';
+import { arcPoint, boxOf, closestOn, dot, endsOf, hits, len, motifPieces, motifRuns, motifScale, norm, placePrim, sub, TAU, type Placed, type Prim } from './fairGeometry.ts';
 
 export interface FormOrigin {
   copy: string;
   entity: string;
+  /** Release R2: what the piece was in that copy when taken — absent = Fair (as before R2). */
+  kind?: 'construction' | 'extension';
 }
 export interface FormSegment extends Placed {
   origins: FormOrigin[];
+  /** Fair if any contributor is Fair; else Construction if any is; else Extension. */
+  kind: 'fair' | 'construction' | 'extension';
 }
+
+/** Release R2 — what Intersect Fair offers: Fair only (default), or also Construction, or also Extensions. */
+export type FormLayer = 'fair' | 'construction' | 'extension';
 
 /** How close (artwork units) two things must be to count as the same place: rounding, not drawing. */
 export function formEps(doc: Doc): number {
   return Math.max(motifScale(doc), 1) * 1e-6;
 }
 
-const cache = new WeakMap<Doc, FormSegment[]>();
+const cache = new WeakMap<Doc, Map<FormLayer, FormSegment[]>>();
 
-/** Every selectable segment of the arrangement as committed (one list per artwork state). */
-export function formSegments(doc: Doc): FormSegment[] {
-  let segs = cache.get(doc);
+/** Every selectable segment of the arrangement as committed (one list per artwork state and layer). */
+export function formSegments(doc: Doc, layer: FormLayer = 'fair'): FormSegment[] {
+  let byLayer = cache.get(doc);
+  if (!byLayer) cache.set(doc, (byLayer = new Map()));
+  let segs = byLayer.get(layer);
   if (!segs) {
-    segs = buildSegments(doc);
-    cache.set(doc, segs);
+    segs = buildSegments(doc, layer);
+    byLayer.set(layer, segs);
   }
   return segs;
 }
@@ -48,30 +57,38 @@ interface Run {
   box: Placed['box'];
 }
 
-function buildSegments(doc: Doc): FormSegment[] {
+function buildSegments(doc: Doc, layer: FormLayer): FormSegment[] {
   const eps = formEps(doc);
   const pivot = doc.frame.origin;
-  const own = motifRuns(doc);
-  const runs: Run[] = [];
-  for (const copy of intersectionCopies(doc))
-    for (const r of own) {
-      const prim = placePrim(r.prim, pivot, copy.pose);
-      runs.push({ prim, origin: { copy: copy.key, entity: r.entity }, box: boxOf(prim) });
-    }
+  const copies = intersectionCopies(doc);
+  const place = (own: { prim: Prim; entity: string }[], kind?: 'construction' | 'extension'): Run[] =>
+    copies.flatMap((copy) =>
+      own.map((r) => {
+        const prim = placePrim(r.prim, pivot, copy.pose);
+        return { prim, origin: { copy: copy.key, entity: r.entity, ...(kind ? { kind } : {}) }, box: boxOf(prim) };
+      }),
+    );
+  const runs = place(motifRuns(doc));
+  // Release R2: Construction / Extension pieces of every copy (each a bounded piece of its line or
+  // circle, between the points on it), offered beside the Fair runs. Fair is split exactly as before
+  // (only where Fair meets Fair), so Fair only is unchanged; the added pieces are split wherever they
+  // meet anything offered.
+  const extra = layer === 'fair' ? [] : [...place(motifPieces(doc, 'construction'), 'construction'), ...(layer === 'extension' ? place(motifPieces(doc, 'extension'), 'extension') : [])];
+  const all = [...runs, ...extra];
   const pieces: { prim: Prim; origin: FormOrigin }[] = [];
-  for (let i = 0; i < runs.length; i++) {
-    const f = runs[i]!;
+  const cut = (f: Run, against: Run[]) => {
     const cuts: number[] = [];
-    for (let j = 0; j < runs.length; j++) {
-      if (j === i) continue;
-      const g = runs[j]!;
+    for (const g of against) {
+      if (g === f) continue;
       if (!boxesMeet(f.box, g.box, eps)) continue;
       for (const h of hits(f.prim, g.prim, eps)) cuts.push(paramOf(f.prim, h.at));
       // A T-junction or the end of an overlap: the other run's end lying on this one.
       for (const e of endsOf(g.prim)) if (closestOn(e, f.prim).d <= eps) cuts.push(paramOf(f.prim, e));
     }
     for (const prim of splitAt(f.prim, cuts, eps)) pieces.push({ prim, origin: f.origin });
-  }
+  };
+  for (const f of runs) cut(f, runs);
+  for (const f of extra) cut(f, all);
   return merged(pieces, eps);
 }
 
@@ -145,6 +162,8 @@ export function samePiece(p: Prim, q: Prim, tol: number): boolean {
   return (near(p0!, q0!) && near(p1!, q1!)) || (near(p0!, q1!) && near(p1!, q0!));
 }
 
+const RANK = { fair: 0, construction: 1, extension: 2 } as const;
+
 /** Coincident pieces taken once, every contributor kept (D5). */
 function merged(pieces: { prim: Prim; origin: FormOrigin }[], eps: number): FormSegment[] {
   const tol = eps * 10;
@@ -159,11 +178,13 @@ function merged(pieces: { prim: Prim; origin: FormOrigin }[], eps: number): Form
     let found: FormSegment | undefined;
     for (let dx = -1; dx <= 1 && !found; dx++)
       for (let dy = -1; dy <= 1 && !found; dy++) found = grid.get(key(cx + dx, cy + dy))?.find((s) => samePiece(s.prim, piece.prim, tol));
+    const kind = piece.origin.kind ?? 'fair';
     if (found) {
       if (!found.origins.some((o) => o.copy === piece.origin.copy && o.entity === piece.origin.entity)) found.origins.push(piece.origin);
+      if (RANK[kind] < RANK[found.kind]) found.kind = kind;
       continue;
     }
-    const seg: FormSegment = { id: `s${out.length}`, prim: piece.prim, box: boxOf(piece.prim), origins: [piece.origin] };
+    const seg: FormSegment = { id: `s${out.length}`, prim: piece.prim, box: boxOf(piece.prim), origins: [piece.origin], kind };
     out.push(seg);
     (grid.get(key(cx, cy)) ?? grid.set(key(cx, cy), []).get(key(cx, cy))!).push(seg);
   }

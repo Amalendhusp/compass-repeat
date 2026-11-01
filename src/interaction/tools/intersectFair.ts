@@ -33,7 +33,7 @@ export const intersectFairTool: ToolModule = {
   hint: () => 'Tap a Fair segment to add it to the Primary — tap again to remove it',
   beginGesture(controller, view, sp) {
     const doc = controller.doc;
-    const picks = formPicksAt(doc, screenToWorld(view, sp), REACH_PX / view.zoom, MARKER_STEP_PX / view.zoom);
+    const picks = formPicksAt(doc, screenToWorld(view, sp), REACH_PX / view.zoom, MARKER_STEP_PX / view.zoom, controller.formLayer);
     if (picks.length === 0) return null;
     const crowded = picks.length > 1 && (picks[1]!.d - picks[0]!.d) * view.zoom < CROWD_PX;
     const press: FormPress = { picks: crowded ? picks.slice(0, MAX_CANDIDATES) : [picks[0]!], active: 0, anchorScreen: sp, loupe: null };

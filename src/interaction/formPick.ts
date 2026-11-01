@@ -10,7 +10,7 @@ import type { DevelopedSegment, Doc, Vec2 } from '../model/types.ts';
 import type { AppController } from '../app/controller.ts';
 import { asForm, developedSegments, formMode, intersectionCopies } from '../geometry/intersection.ts';
 import { closestOn, len, sub, type Prim } from '../geometry/fairGeometry.ts';
-import { developedAlong, developedPrim, formSegments, geomOf, midOf, type FormOrigin, type FormSegment } from '../geometry/formSegments.ts';
+import { developedAlong, developedPrim, formSegments, geomOf, midOf, type FormLayer, type FormOrigin, type FormSegment } from '../geometry/formSegments.ts';
 import { showToast } from '../ui/toast.ts';
 
 export interface FormPick {
@@ -48,7 +48,7 @@ export interface FormPress {
 }
 
 /** Candidates within `reach` of `at` (artwork units), nearest first. */
-export function formPicksAt(doc: Doc, at: Vec2, reach: number, markerStep: number): FormPick[] {
+export function formPicksAt(doc: Doc, at: Vec2, reach: number, markerStep: number, layer: FormLayer = 'fair'): FormPick[] {
   const developed = developedSegments(doc);
   const out: FormPick[] = [];
   const marker = (prim: Prim, q: Vec2): Vec2 => {
@@ -64,7 +64,7 @@ export function formPicksAt(doc: Doc, at: Vec2, reach: number, markerStep: numbe
     const c = closestOn(at, prim);
     if (c.d <= reach) out.push({ prim, action: 'remove', developed: s, d: c.d, at: c.q, marker: marker(prim, c.q) });
   }
-  for (const seg of formSegments(doc)) {
+  for (const seg of formSegments(doc, layer)) {
     const b = seg.box;
     if (at.x < b.x0 - reach || at.x > b.x1 + reach || at.y < b.y0 - reach || at.y > b.y1 + reach) continue;
     const c = closestOn(at, seg.prim);

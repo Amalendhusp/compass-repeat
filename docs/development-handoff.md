@@ -28,8 +28,8 @@ Keep this short and current. It is a starting point, not a substitute for readin
 | S3 | Interlaced strokes (Single · Banded · Interlaced, over-under, crossing reversal) | done — "Sprint S3" |
 | S4 | Integration, regression, iPhone release candidate | done — "Sprint S4" (features frozen) |
 | R1 | Point first: a selected point feeds Line (A) / Circle (centre); Divide keeps it selected | done — "Release R1" |
-| R2 | Intersect Fair: develop from construction and extension segments too (Fair only · Construction · Extensions) | next |
-| R3 | Intersect: Spread / Reference / Save arrangement / bookmarks in the bookmark popover | — |
+| R2 | Intersect Fair: develop from construction and extension segments too (Fair only · Construction · Extensions) | done — "Release R2" |
+| R3 | Intersect: Spread / Reference / Save arrangement / bookmarks in the bookmark popover | next |
 | R4 | Repeat: Fill on the lower row; grid/handle icon = back to geometry | — |
 | R5 | Optional participant info; export attribution (default off) | — |
 
@@ -454,6 +454,29 @@ Keep this short and current. It is a starting point, not a substitute for readin
   A → Circle → tap C: circle centred on A, same new points as the tool-first circle (2 and 2 on a fresh square);
   A → Divide: tool Divide, A still selected, nothing pending or made; A → Line → Circle: nothing made; tool first
   Line unchanged; Circle with nothing selected: nothing pending. Suite identical / 16/0 / all true / Guide baseline.
+
+## Release R2: Intersect Fair from Construction and Extensions
+
+- Ribbon in Intersect with Fair: **Fair only · Construction · Extensions** (`controller.formLayer`, session; default
+  Fair only). Drawing (`intersectionRenderer.ts` `drawFairOnly(…, layer)`): each copy's Construction pieces thin
+  (alpha 0.55) and, with Extensions, its extension pieces dashed, under the translucent Fair strokes; the loupe too.
+- Geometry reuses the one segment engine (`formSegments(doc, layer)`, cached per Doc and layer):
+  `fairGeometry.ts` `motifPieces(doc, kind)` gives Construction / Extension pieces (state as drawn —
+  `effectiveSegmentKind`; trimmed never) between the points on each line/circle; every copy's pieces are placed and
+  split wherever they meet anything offered; Fair runs are split exactly as before (only where Fair meets Fair) — so
+  Fair only is unchanged and Fair segments are identical in all three layers. Coincident pieces merge, all origins
+  kept; `FormSegment.kind` (fair > construction > extension); `FormOrigin.kind` / stored
+  `DevelopedSegment.origins[].kind` ('construction' | 'extension'; absent = Fair, as before).
+- Taking a piece stores its exact geometry (independent of the source); nothing is joined, closed, recoloured or
+  changed in the construction. Tap / chooser / loupe / remove / Undo exactly as before (`formPicksAt(…, layer)`).
+- Tests (`scratchpad/r2-app.js`): Fair only has only Fair; Fair identical across layers; the construction diagonal
+  offered as 8 bounded pieces (≤ 70.7 of 200) with source; live: Fair only tap on construction takes nothing;
+  Construction takes the 70.7 piece (1 Undo, origin kind construction); Extensions takes the 40.7 piece beyond the
+  line's end (origin kind extension); construction (entities + segment states) untouched; tap again removes; Undo/
+  Redo. Suite identical / 16/0 / all true / Guide baseline.
+- Limits: the frame circle counts as Construction (offered too); extension pieces are those between points on the
+  extended line (never an unbounded tail); a construction piece is not split at Fair it merely touches inside a copy
+  unless a point is there.
 
 ## Exact next step
 

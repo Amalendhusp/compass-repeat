@@ -3514,7 +3514,22 @@ export function buildShell(
       renderDivideRibbon();
     } else if (tool === 'fair' && doc.view.workspace === 'intersection') {
       // Fair in Intersect develops the Primary, in its one Primary style: Construct's Fair colour and
-      // width are not its to change (the owner tag says what it edits).
+      // width are not its to change (the owner tag says what it edits). Release R2: what it offers to
+      // take — Fair only (default), or Construction too, or Extensions too.
+      modeToggle(
+        [
+          { id: 'fair', label: 'Fair only' },
+          { id: 'construction', label: 'Construction' },
+          { id: 'extension', label: 'Extensions' },
+        ],
+        controller.formLayer,
+        (layer) => {
+          controller.formLayer = layer;
+          controller.formPress = null;
+          controller.lineChoice = null;
+          controller.notify();
+        },
+      );
     }
     // UI-2: Fair's colour and width and Fill's colour and opacity are set in the contextual Appearance
     // panel (the swatch at the top right), not on the ribbon.
