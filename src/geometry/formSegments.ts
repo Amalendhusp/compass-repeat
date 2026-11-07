@@ -15,6 +15,7 @@
 
 import type { DevelopedSegment, Doc, Vec2 } from '../model/types.ts';
 import { intersectionCopies } from './intersection.ts';
+import { hasLayerGeometry, LAYER_ORIGIN, layerDoc } from './intersectLayer.ts';
 import { arcPoint, boxOf, closestOn, dot, endsOf, hits, len, motifPieces, motifRuns, motifScale, norm, placePrim, sub, TAU, type Placed, type Prim } from './fairGeometry.ts';
 
 export interface FormOrigin {
@@ -74,6 +75,15 @@ function buildSegments(doc: Doc, layer: FormLayer): FormSegment[] {
   // (only where Fair meets Fair), so Fair only is unchanged; the added pieces are split wherever they
   // meet anything offered.
   const extra = layer === 'fair' ? [] : [...place(motifPieces(doc, 'construction'), 'construction'), ...(layer === 'extension' ? place(motifPieces(doc, 'extension'), 'extension') : [])];
+  // Intersect's own construction (geometry/intersectLayer.ts) — drawn for developing Fair, so always
+  // offered, where it lies (its extensions with the Extensions setting, as the copies' are). Split like
+  // the other added pieces: wherever it meets anything offered.
+  if (hasLayerGeometry(doc)) {
+    const L = layerDoc(doc);
+    const own = (pieces: { prim: Prim; entity: string }[], kind: 'construction' | 'extension'): Run[] =>
+      pieces.map((r) => ({ prim: r.prim, origin: { copy: LAYER_ORIGIN, entity: r.entity, kind }, box: boxOf(r.prim) }));
+    extra.push(...own(motifPieces(L, 'construction'), 'construction'), ...(layer === 'extension' ? own(motifPieces(L, 'extension'), 'extension') : []));
+  }
   const all = [...runs, ...extra];
   const pieces: { prim: Prim; origin: FormOrigin }[] = [];
   const cut = (f: Run, against: Run[]) => {

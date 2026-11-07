@@ -6,6 +6,7 @@
 // no longer has a segment there, but the developed one can still be removed). Coincident geometry is
 // one candidate. Nothing is ever joined up or closed automatically.
 
+import { LAYER_ORIGIN } from '../geometry/intersectLayer.ts';
 import type { DevelopedSegment, Doc, Vec2 } from '../model/types.ts';
 import type { AppController } from '../app/controller.ts';
 import { asForm, developedSegments, formMode, intersectionCopies } from '../geometry/intersection.ts';
@@ -78,6 +79,7 @@ export function formPicksAt(doc: Doc, at: Vec2, reach: number, markerStep: numbe
 /** "Original", "Copy 2"… — the contributors of a segment, as Intersect names its constructions. */
 export function originsLabel(doc: Doc, origins: FormOrigin[]): string {
   const labels = new Map(intersectionCopies(doc).map((c) => [c.key, c.label]));
+  labels.set(LAYER_ORIGIN, 'Intersect construction');
   return [...new Set(origins.map((o) => o.copy))].map((k) => labels.get(k) ?? 'a removed copy').join(' + ');
 }
 

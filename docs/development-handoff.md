@@ -642,6 +642,38 @@ One artwork, complete and editable, as a single `Name.compass-repeat.json` file 
   the published release, exported by the branch and opened on device B, draws identically and saves an identical
   record.
 
+## Intersect construction independence (November 2026) — `src/geometry/intersectLayer.ts`
+
+Approved decisions D1 (independent Intersect construction) and D4 (one Extensions switch, later stage); D2
+(what Repeat takes from Intersect) awaits approval of its example; D3 (older states kept as they are).
+
+- **Why Construct used to change.** Line / Circle / Arc / Divide in Intersect were Construct's own tools run
+  through the active copy's camera (`onActiveInstance`, `instanceCamera`), committing to `doc.points` /
+  `doc.entities`; a point taken from another copy became a free point of Construct. Removed.
+- **The layer.** `doc.intersection.construction = { points, entities, segmentStates: [key, state][] }` in
+  workspace coordinates (plain data: Timelapse's `plain()` would flatten a Map). Absent until something is drawn.
+  A layer document (`layerDoc(doc)`, one per artwork state) gives the kernel, tools and renderer a Doc whose
+  geometry is the layer's and whose every other field reads/writes the artwork (accessors). Frame: no entities,
+  centre `ix_centre` (a hidden free point at the frame centre).
+- **Editing.** `layerController(controller)` (a Proxy): `doc` = layer document, `commit` = one commit of the
+  artwork writing the layer back through `withConstruction` (which records an empty Form for a 'new' artwork,
+  as any first Intersect write does). main.ts wraps the four tools (`onLayer`); shell.ts's ribbon actions use
+  `geo()` (Divide preview / Apply, Horizontal / Vertical, Extend). The tools work through the workspace camera.
+- **From the copies.** `layerContextPointNear` / `layerContextLinesNear` / `layerCopiesNear` (intersectionLink.ts):
+  every copy's points that lie on what it draws (`pointOnDrawn` — divisions and midpoints included, unlike
+  Snap's `pointShown`), and crossings between any two drawn pieces, at least one a copy's. Taken, they become
+  fixed free points of the layer. Reflected copies work like any other (the "draw on the Original" notice is gone).
+- **Fixed.** Moving, turning, reflecting a copy never moves the layer or the developed Fair.
+- **Drawn** by Construct's entity renderer (`drawConstructionOnly`) over the copies, under the developed Fair,
+  quieter while Fair is the tool; included in Intersect's Fit.
+- **Intersect Fair** (`formSegments`): the layer's construction pieces are always offered (its extensions with the
+  Extensions setting), split wherever they meet anything offered; origin `copy: 'ix'` ("Intersect construction").
+- **Never Construct, never Repeat.** Nothing reads the layer outside Intersect except Undo, the draft, Timelapse
+  state and project files (validated: `snapshotProblem`, and every layer point must resolve).
+- **Old artworks.** Unchanged: construction drawn in Intersect before this change stays in Construct (no migration).
+- **Not yet:** selecting / deleting layer geometry with Select (Undo removes the last step).
+- **Checks:** `layer.mjs` 22/22 and `layer-fair.mjs` 13/13, phone and desktop.
+
 ## Exact next step
 
 Release refinements R1–R5 done on `feature/release-candidate`; release candidate on the phone-preview server. Stop
