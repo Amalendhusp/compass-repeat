@@ -3547,8 +3547,10 @@ export function buildShell(
           controller.setExtendChip(null);
         });
       }
+      // Construct only: in Intersect, Fair develops Intersect's own Primary and never Construct's Fair
+      // (Stage 1 — Promote to Fair would change the source motif of every copy and the Construct Repeat).
       const promoteFor = controller.fairPromoteChip;
-      if (promoteFor && !pending) {
+      if (promoteFor && !pending && controller.doc.view.workspace === 'construct') {
         chip('Promote to Fair', () => {
           controller.commit((d) => promoteEntityToFair(d, promoteFor.entityId));
           controller.setFairPromoteChip(null);

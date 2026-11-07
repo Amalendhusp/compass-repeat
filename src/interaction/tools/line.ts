@@ -352,7 +352,9 @@ function offerAfterLine(controller: AppController, newId: EntityId | null): void
     }, 4000);
   }
   // Phase 3.4 item 3: offered for either mode — an Extension line "may later be promoted
-  // where appropriate" just as much as a Construction one.
+  // where appropriate" just as much as a Construction one. Construct only: in Intersect, Line edits
+  // the shared construction, but Fair there belongs to Intersect's own Developed Primary.
+  if (controller.doc.view.workspace !== 'construct') return;
   controller.setFairPromoteChip(newId);
   setTimeout(() => {
     if (controller.fairPromoteChip?.entityId === newId) controller.setFairPromoteChip(null);
