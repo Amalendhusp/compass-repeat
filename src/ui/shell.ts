@@ -2382,6 +2382,9 @@ export function buildShell(
   contextBar.className = 'context-bar';
   contextSlot.appendChild(contextBar);
 
+  // Selection first: when a selection can't start the tool just chosen, say what to tap instead.
+  controller.onNotice = (text) => showToast(text, 2600);
+
   const dock = document.createElement('div');
   dock.className = 'dock';
   const dockButtonEls = new Map<ToolId, HTMLButtonElement>();

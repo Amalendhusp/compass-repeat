@@ -550,6 +550,22 @@ Keep this short and current. It is a starting point, not a substitute for readin
 7. After merging: check the Actions tab (Deploy to GitHub Pages: success), open the public URL on the iPhone, hard
    refresh once, and test one saved artwork.
 
+## Interface refinement (November 2026) — branch `feature/interface-refinement`
+
+Branched from the published `main` (9a4ea59); no upstream, never pushed to `main`. Staged plan approved by the
+user (D1–D9 as recommended). Do not merge or deploy without explicit approval.
+
+- **Stage 1a — Fair independence.** Line in Intersect no longer offers Promote to Fair (`line.ts` offerAfterLine,
+  `shell.ts` ribbon guard). Intersect Fair writes only `doc.intersection.form.developed`, as before.
+- **Stage 1b — selection first = tool first** (`interaction/selectionFirst.ts`, used by `controller.setTool`, Construct
+  only). A Select selection gives the tool chosen next the same first input a tap would: point → Line (A), point →
+  Circle By radius (centre), point → Arc (Measure: A; Same radius: the compass opens on it), segment / run / line /
+  arc / circle → Divide (target previewed, never applied). A point under Divide stays selected, as before. A
+  selection a tool can't start from is cleared with a short message (`controller.onNotice` → toast). Nothing is
+  made until the tool's next input. Divide's target helpers moved to `interaction/divideTarget.ts` (unchanged).
+- Checks: `scratchpad/refine-tests/stage1.mjs` (isolated headless Chrome on port 9334, dev server 5188), touch at
+  390 × 844 and mouse at 1280 × 800 — 29/29 each.
+
 ## Exact next step
 
 Release refinements R1–R5 done on `feature/release-candidate`; release candidate on the phone-preview server. Stop

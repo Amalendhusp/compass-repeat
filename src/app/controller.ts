@@ -6,6 +6,9 @@ import { carryAppearanceAcross } from '../geometry/repeatSetup.ts';
 import type { PointRef } from '../interaction/pointref.ts';
 import type { EdgeCircle } from '../geometry/incircle.ts';
 import type { IntersectionPick, PickKind } from '../geometry/intersectionSnap.ts';
+import { resolvePoint } from '../geometry/kernel.ts';
+import { selectionStart } from '../interaction/selectionFirst.ts';
+import { dividePreviewPoints } from '../interaction/divideTarget.ts';
 
 /** Phase 5.2 item 1: Polygon is no longer a creation tool (connected Lines make any polygon);
  * existing polygon groups stay fully supported as data and as Select targets. */
@@ -314,6 +317,9 @@ export class AppController {
    * Primary — and, held in a crowded spot, the loupe it is choosing in. Never history. */
   formPress: import('../interaction/formPick.ts').FormPress | null = null;
   cue: { at: Vec2; text: string; until: number } | null = null;
+  /** A short message for the participant (the shell shows it as a toast) — e.g. why a selection
+   * could not start the tool just chosen. */
+  onNotice: ((text: string) => void) | null = null;
   /** Phase 3.4 item 2: Line's own creation mode — every new line commits as either a finite
    * Construction line or a through-both-points Extension line (spec's extension-line logic,
    * dashed/subdued). Sticky across gestures, like Fair's old stroke default was. */
@@ -661,9 +667,16 @@ export class AppController {
     if (!LIVE_TOOLS.has(tool)) return;
     // Release R1 — point first: one point selected (Select, Construct), then a tool — exactly as if the
     // tool had been chosen first and the point tapped.
+    // Stage 1 — selection first: the same holds for Arc (the point is A, or the compass opens on it with
+    // Same radius) and for Divide (a selected line, arc, circle or segment is previewed, not applied).
+    // Worked out before anything is cleared; nothing is made until the tool's next input.
     const was = this.tool;
     const sel = this.selection;
-    const pointFirst = was === 'select' && sel.length === 1 && sel[0]!.kind === 'point' && this.doc.view.workspace === 'construct' && this.doc.points.some((p) => p.id === (sel[0] as { id: string }).id) ? (sel[0] as { kind: 'point'; id: string }).id : null;
+    const next: ToolId = tool === this.tool || tool === 'select' ? 'select' : tool;
+    const start =
+      was === 'select' && next !== 'select'
+        ? selectionStart(this.doc, next, sel, { circleVariant: this.circleVariant, arcMode: this.doc.toolPrefs.arcMode, lastRadius: this.doc.toolPrefs.lastRadius })
+        : null;
     this.lineChoice = null;
     this.formPress = null;
     this.incircle = null;
@@ -688,19 +701,27 @@ export class AppController {
     this.multiRegion = null;
     this.pointEdit = null;
     this.clearFillDiagnostic();
-    this.tool = tool === this.tool || tool === 'select' ? 'select' : tool;
+    this.tool = next;
     // Line always starts Free: Parallel / Perpendicular last only for the Line session they were
     // chosen in (Construction / Extension — lineMode — is kept, as ever).
     this.lineGuide = 'free';
     this.lineReference = null;
     if (this.tool !== 'select') this.selection = [];
-    if (pointFirst && this.tool !== 'select') {
-      // Line: the point is A. Circle (By radius): the point is the centre. Nothing is made until the
-      // second input, as ever. Any other tool (Divide's first input is a curve): the point simply stays
-      // selected — no operation is started.
-      if (this.tool === 'line') this.pending = { kind: 'line', a: { kind: 'existing', id: pointFirst } };
-      else if (this.tool === 'circle' && this.circleVariant === 'centre-radius') this.pending = { kind: 'circle', centre: { kind: 'existing', id: pointFirst } };
-      else if (this.tool === 'divide') this.selection = sel;
+    if (start) {
+      // Line: the point is A. Circle (By radius): the centre. Arc: A, or the compass's centre. Divide:
+      // its target, previewed. Nothing is made until the tool's next input, as when it was tapped.
+      if (start.kind === 'line') this.pending = { kind: 'line', a: { kind: 'existing', id: start.point } };
+      else if (start.kind === 'circle') this.pending = { kind: 'circle', centre: { kind: 'existing', id: start.point } };
+      else if (start.kind === 'arc-measure') this.pending = { kind: 'arc', stage: 'measure-b', a: { kind: 'existing', id: start.point } };
+      else if (start.kind === 'arc-compass') {
+        this.pending = { kind: 'arc', stage: 'compass', radius: start.radius, centre: { kind: 'existing', id: start.point } };
+        this.preview = { kind: 'arc', centre: resolvePoint(this.doc, start.point), radius: start.radius };
+      } else if (start.kind === 'divide') {
+        const n = this.doc.dividePrefs.lastN;
+        this.divide = { target: start.target, n, angle: 0 };
+        this.dividePreview = { target: start.target, points: dividePreviewPoints(this.doc, start.target, n, 0) };
+      } else if (start.kind === 'keep') this.selection = sel;
+      else if (start.kind === 'reject') this.onNotice?.(start.message);
     }
     this.notify();
   }
