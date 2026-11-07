@@ -83,8 +83,39 @@ export interface InstancePose {
   mirror: boolean;
 }
 
-function parity(i: number, j: number): 0 | 1 {
-  return (((i + j) % 2) + 2) % 2 === 0 ? 0 : 1;
+const odd = (n: number) => ((n % 2) + 2) % 2 === 1;
+
+/** Which copies a Repeat rule changes: every other copy (i + j odd — the original rule, a checkerboard
+ * in lattice coordinates, which on a 60° lattice reads as stripes), every other row (j odd) or every
+ * other column (i odd). Null for a rule that changes no copy. */
+export type Alternation = 'cells' | 'rows' | 'columns';
+
+export function alternationOf(rule: RepeatSystem['rule']): Alternation | null {
+  if (rule.kind !== 'alternate' && rule.kind !== 'mirror') return null;
+  return rule.by ?? 'cells';
+}
+
+/** Whether copy (i, j) is one the alternation changes. */
+export function isAlternateCopy(alt: Alternation, i: number, j: number): boolean {
+  return alt === 'rows' ? odd(j) : alt === 'columns' ? odd(i) : odd(i + j);
+}
+
+/** A lattice shift (si, sj) made into one that keeps copies alike under the alternation — the
+ * nearest such shift, found the way Space and weave identities have always found it (Alternate and
+ * Mirror: i + j even), so their keys are unchanged. */
+export function evenShift(alt: Alternation | null, si: number, sj: number): [number, number] {
+  if (alt === 'cells' && odd(si + sj)) return [si + 1, sj];
+  if (alt === 'rows' && odd(sj)) return [si, sj + 1];
+  if (alt === 'columns' && odd(si)) return [si + 1, sj];
+  return [si, sj];
+}
+
+/** The rule as it identifies Space classes and caches: just its kind for every rule there has always
+ * been (so every saved Space colour keeps its key); a reflection axis or row/column alternation, only
+ * when chosen, is added. */
+export function ruleKey(rule: RepeatSystem['rule']): string {
+  const alt = alternationOf(rule);
+  return `${rule.kind}${rule.kind === 'mirror' && rule.flip === 'h' ? ':h' : ''}${alt && alt !== 'cells' ? `:${alt}` : ''}`;
 }
 
 /** Phase 5 item 8: the orientation rule is a property of the REPETITION, not something applied
@@ -93,16 +124,13 @@ function parity(i: number, j: number): 0 | 1 {
  * special-casing at any boundary. */
 function ruleAdjustment(rule: RepeatSystem['rule'], i: number, j: number): { rotation: number; mirror: boolean } {
   if (i === 0 && j === 0) return { rotation: 0, mirror: false }; // the reference instance is always plain
-  switch (rule.kind) {
-    case 'alternate':
-      return { rotation: parity(i, j) === 1 ? Math.PI : 0, mirror: false };
-    case 'mirror':
-      return { rotation: 0, mirror: parity(i, j) === 1 };
-    case 'same':
-    case 'around':
-    default:
-      return { rotation: 0, mirror: false };
-  }
+  const alt = alternationOf(rule);
+  if (!alt || !isAlternateCopy(alt, i, j)) return { rotation: 0, mirror: false };
+  // Alternate: a half turn. Mirror: reflected across the motif's own horizontal axis (top and bottom
+  // swap) — or, with flip 'h', across its vertical axis (left and right swap: the same reflection and a
+  // half turn). Both axes turn with the motif's rotation, as Mirror always has.
+  if (rule.kind === 'alternate') return { rotation: Math.PI, mirror: false };
+  return { rotation: rule.flip === 'h' ? Math.PI : 0, mirror: true };
 }
 
 export function instancePose(repeat: RepeatSystem, i: number, j: number): InstancePose {

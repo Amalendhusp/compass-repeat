@@ -87,7 +87,12 @@ export interface RepeatSystem {
   b: { x: number; y: number };
   rowOffset: number;
   motif: { rotation: number; scale: number };
-  rule: { kind: 'same' | 'alternate' | 'mirror' | 'around'; rotation?: number; order?: number };
+  /** How copies differ. `same` (Uniform): none do. `alternate`: the changed copies are turned half a
+   * turn. `mirror`: they are reflected across the motif's own horizontal axis — or, with `flip: 'h'`,
+   * across its vertical axis. `by` says which copies change: absent = every other copy (i + j odd, as
+   * always), or every other row / column. `flip` and `by` are absent on every rule made before they
+   * existed — and written only when chosen — so older artworks keep exactly their look and keys. */
+  rule: { kind: 'same' | 'alternate' | 'mirror' | 'around'; rotation?: number; order?: number; flip?: 'h'; by?: 'rows' | 'columns' };
   footprint: 'design' | 'frame';
   overlap: 'stack' | 'clip';
   showStrokes: boolean;

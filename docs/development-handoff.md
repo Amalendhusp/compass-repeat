@@ -565,6 +565,29 @@ user (D1–D9 as recommended). Do not merge or deploy without explicit approval.
   made until the tool's next input. Divide's target helpers moved to `interaction/divideTarget.ts` (unchanged).
 - Checks: `scratchpad/refine-tests/stage1.mjs` (isolated headless Chrome on port 9334, dev server 5188), touch at
   390 × 844 and mouse at 1280 × 800 — 29/29 each.
+- **Stage 2a — reflection-aware placement maths** (`lattice.ts`: composePose mirror = XOR, relativePlacement,
+  inversePoint, poseVector(Inverse), poseArcRange). Intersect linking / snapping / Match Edge use them;
+  `instanceCamera` refuses a reflected pose. Repeat unit cache key includes reflection (only when set).
+- **Stage 2b — Intersect copy reflection.** `layout.pieces[].mirror?: true` (written only when true; never the
+  Original; never a locked copy). `withReflection(doc, key, 'h' | 'v')`: ↔ → mirror toggles, turn → π − turn;
+  ↕ → mirror toggles, turn → −turn (twice = identity; both = half turn). Construction tools never draw through a
+  reflected copy (main.ts `activeCopy` falls back to the Original; a touch on one → notice). Temporary Reflect
+  buttons under a copy's colour swatches until Stage 3.
+- **Stage 2c — Repeat rules.** `rule.flip?: 'h'` (mirror only: reflect across the motif's vertical axis = mirror +
+  half turn) and `rule.by?: 'rows' | 'columns'` (absent = every other copy, i + j odd, as always). Shared helpers
+  in `lattice.ts`: `alternationOf`, `isAlternateCopy`, `evenShift`, `ruleKey` (= `rule.kind` for every older rule,
+  so Space keys / caches are unchanged). Space periods (`patternPeriod`): rows → (a, 2b), columns → (2a, b).
+  Close gap bases per alternation. UI: Transformation (As drawn · Rotate 180° · Reflect ↔ · Reflect ↕) and
+  Apply to (Alternating · Rows · Columns, shown only while something changes).
+- Stage 2 checks (`scratchpad/refine-tests/`): `stage2-math.mjs` 17/17; `stage2-ui.mjs` 36/36 touch and mouse;
+  `stage2-features.mjs` (Plate 113: Space colours, Fill targets, interlacing, Close gap, PNG/SVG under every new
+  rule and with a reflected copy in the Intersect source); `stage2-timelapse.mjs`; `compat-compare.mjs` (Plate
+  113 on published main — `preview_start main-baseline`, a `git archive origin/main` copy in the session
+  scratchpad on port 5191 — vs the branch: drawing, Space keys and crossings identical under Uniform /
+  Alternate / Mirror / turned motif / Intersect source); `compat-saved.mjs` (an artwork saved by the release,
+  opened and re-saved by the branch: identical record).
+- **Baseline correction:** the published release's Plate 113 Repeat fingerprint is `b6c2014136565e92·4729`
+  (measured on main 9a4ea59); the `c25d06fd…·4321` value below predates the last release changes.
 
 ## Exact next step
 

@@ -2452,25 +2452,87 @@ export function buildShell(
   // The lattice is shaped by its handles alone (precise 90° / 60° relations and equal arms snap —
   // geometry/latticeSnap.ts); Grid and guides keeps a Reset lattice.
 
+  // Stage 2: two choices instead of Uniform / Alternate / Mirror — WHAT changes on the changed copies
+  // (nothing, a half turn, or a reflection across either of the motif's own axes) and WHICH copies
+  // change (every other copy, row or column). Existing rules read exactly as before: Uniform = As drawn;
+  // Alternate = Rotate 180° on alternating copies; Mirror = Reflect ↕ (top and bottom swap) on
+  // alternating copies. `flip` and `by` are written only when chosen (lattice.ts ruleKey).
+  type Transform = 'none' | 'rotate' | 'reflect-h' | 'reflect-v';
+  type Placement = 'cells' | 'rows' | 'columns';
+  const transformOf = (rule: RepeatSystem['rule']): Transform =>
+    rule.kind === 'alternate' ? 'rotate' : rule.kind === 'mirror' ? (rule.flip === 'h' ? 'reflect-h' : 'reflect-v') : 'none';
+  const placementOf = (rule: RepeatSystem['rule']): Placement => rule.by ?? 'cells';
+  const ruleFor = (t: Transform, by: Placement): RepeatSystem['rule'] => {
+    const where = by === 'cells' ? {} : { by };
+    if (t === 'rotate') return { kind: 'alternate', ...where };
+    if (t === 'reflect-v') return { kind: 'mirror', ...where };
+    if (t === 'reflect-h') return { kind: 'mirror', flip: 'h', ...where };
+    return { kind: 'same' };
+  };
+  const setRule = (t: Transform, by: Placement) => {
+    const next = ruleFor(t, by);
+    const now = controller.doc.repeat.rule;
+    if (transformOf(now) === t && (t === 'none' || placementOf(now) === by)) return;
+    controller.commit((d) => {
+      d.repeat.rule = next;
+    });
+  };
   const ruleRow = document.createElement('div');
   ruleRow.className = 'segmented-mini';
-  const RULES: { id: RepeatSystem['rule']['kind']; label: string }[] = [
-    { id: 'same', label: 'Uniform' },
-    { id: 'alternate', label: 'Alternate' },
-    { id: 'mirror', label: 'Mirror' },
+  ruleRow.setAttribute('role', 'group');
+  ruleRow.setAttribute('aria-label', 'Transformation');
+  const TRANSFORMS: { id: Transform; label: string; title: string }[] = [
+    { id: 'none', label: 'As drawn', title: 'Every copy as drawn' },
+    { id: 'rotate', label: 'Rotate 180°', title: 'Rotate the changed copies by half a turn' },
+    { id: 'reflect-h', label: 'Reflect ↔', title: 'Reflect the changed copies horizontally — left and right swap' },
+    { id: 'reflect-v', label: 'Reflect ↕', title: 'Reflect the changed copies vertically — top and bottom swap' },
   ];
-  const ruleBtns = new Map<RepeatSystem['rule']['kind'], HTMLButtonElement>();
-  for (const r of RULES) {
+  const ruleBtns = new Map<Transform, HTMLButtonElement>();
+  for (const r of TRANSFORMS) {
     const btn = document.createElement('button');
     btn.textContent = r.label;
-    btn.addEventListener('click', () => {
-      if (controller.doc.repeat.rule.kind === r.id) return;
-      controller.commit((d) => {
-        d.repeat.rule = { kind: r.id };
-      });
-    });
+    btn.title = r.title;
+    btn.setAttribute('aria-label', r.title);
+    btn.addEventListener('click', () => setRule(r.id, placementOf(controller.doc.repeat.rule)));
     ruleBtns.set(r.id, btn);
     ruleRow.appendChild(btn);
+  }
+  // Which copies change — shown only while something changes.
+  const placeRow = document.createElement('div');
+  placeRow.className = 'space-row placement-row';
+  const placeGroup = document.createElement('div');
+  placeGroup.className = 'source-group pattern-group';
+  const placeLabel = document.createElement('span');
+  placeLabel.className = 'space-label';
+  placeLabel.textContent = 'Apply to';
+  const placeSeg = document.createElement('div');
+  placeSeg.className = 'segmented-mini';
+  placeSeg.setAttribute('role', 'group');
+  placeSeg.setAttribute('aria-label', 'Apply to');
+  const placeBtns = new Map<Placement, HTMLButtonElement>();
+  for (const [id, label, title] of [
+    ['cells', 'Alternating', 'Every other copy'],
+    ['rows', 'Rows', 'Every other row (along handle A)'],
+    ['columns', 'Columns', 'Every other column (along handle B)'],
+  ] as const) {
+    const b = document.createElement('button');
+    b.textContent = label;
+    b.title = title;
+    b.setAttribute('aria-label', title);
+    b.addEventListener('click', () => setRule(transformOf(controller.doc.repeat.rule), id));
+    placeBtns.set(id, b);
+    placeSeg.appendChild(b);
+  }
+  placeGroup.appendChild(placeLabel);
+  placeGroup.appendChild(placeSeg);
+  placeRow.appendChild(placeGroup);
+  function refreshRuleRows(): void {
+    const rule = controller.doc.repeat.rule;
+    const t = transformOf(rule);
+    for (const [id, btn] of ruleBtns) btn.classList.toggle('active', t === id);
+    const changing = t !== 'none';
+    placeRow.style.display = changing && ruleLine.style.display !== 'none' ? '' : 'none';
+    for (const [id, btn] of placeBtns) btn.classList.toggle('active', changing && placementOf(rule) === id);
   }
   // Repeat Colouring (geometry/repeatColour.ts): beside the rule — how copies alternate in
   // orientation there, how they may differ in colour here. A toggle; while on, the lattice rows
@@ -2487,6 +2549,7 @@ export function buildShell(
   colouringBtn.setAttribute('aria-pressed', 'false');
   onTap(colouringBtn, () => setFillScope(fillScope() ? null : 'motif'));
   repeatPanel.appendChild(ruleLine);
+  repeatPanel.appendChild(placeRow);
 
   // Final sprint, Stage 1: one Fill. While filling the row shows only Fill itself (on, with the colour
   // it applies) and a cue: tap any enclosed region — the app works out whether it is a region of the
@@ -3732,7 +3795,7 @@ export function buildShell(
     ixSnapshotsBtn.style.display = inIntersection ? '' : 'none';
 
     if (placing) {
-      for (const [id, btn] of ruleBtns) btn.classList.toggle('active', controller.doc.repeat.rule.kind === id);
+      refreshRuleRows();
       if (inRepeat) refreshSpaceRow();
       else {
         refreshIxCopiesBtn();

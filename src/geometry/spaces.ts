@@ -36,7 +36,7 @@ import type { Doc, RepeatSystem, Vec2 } from '../model/types.ts';
 import { resolveEntityGeom } from './kernel.ts';
 import { deriveSegments } from './segments.ts';
 import { computeFairRegions, pointInPolygon } from './regions.ts';
-import { instancePose, motifExtent, motifRadius, transformPoint, type InstancePose } from './lattice.ts';
+import { alternationOf, evenShift, instancePose, motifExtent, motifRadius, ruleKey, transformPoint, type Alternation, type InstancePose } from './lattice.ts';
 import { compositionFeatures, repeatComposition } from './repeatComposition.ts';
 import { repeatSourceOf } from './repeatSetup.ts';
 import { repeatUnit } from './repeatUnit.ts';
@@ -132,7 +132,6 @@ function strokesOf(doc: Doc, tol: number): Stroke[] {
   return repeatSourceOf(doc) === 'intersect' ? unitStrokes(doc, tol) : motifStrokes(doc, tol);
 }
 
-const usesParityPeriod = (rule: RepeatSystem['rule']) => rule.kind === 'alternate' || rule.kind === 'mirror';
 
 // ---- a small planar arrangement over straight pieces ----
 
@@ -512,7 +511,8 @@ function toMotif(pivot: Vec2, pose: InstancePose, p: Vec2): Vec2 {
  * for Alternate, the mirror for Mirror) — then alternate copies are indistinguishable and the
  * pattern repeats with the full lattice after all. */
 function motifInvariant(strokes: Stroke[], pivot: Vec2, rule: RepeatSystem['rule'], tol: number): boolean {
-  const map = (p: Vec2): Vec2 => (rule.kind === 'alternate' ? { x: 2 * pivot.x - p.x, y: 2 * pivot.y - p.y } : { x: p.x, y: 2 * pivot.y - p.y });
+  const map = (p: Vec2): Vec2 =>
+    rule.kind === 'alternate' ? { x: 2 * pivot.x - p.x, y: 2 * pivot.y - p.y } : rule.kind === 'mirror' && rule.flip === 'h' ? { x: 2 * pivot.x - p.x, y: p.y } : { x: p.x, y: 2 * pivot.y - p.y };
   const segs: [Vec2, Vec2][] = [];
   for (const s of strokes) for (let k = 0; k + 1 < s.pts.length; k++) segs.push([s.pts[k]!, s.pts[k + 1]!]);
   if (segs.length === 0) return false;
@@ -564,9 +564,7 @@ function build(doc: Doc, repeat: RepeatSystem, strokes: Stroke[], intersect: boo
   // How far what stands at each lattice position reaches: the motif, or the whole Intersect unit.
   const E = intersect ? (repeatUnit(doc)?.extent ?? motifExtent(doc)) : motifExtent(doc);
   const pivot = doc.frame.origin;
-  const parity = usesParityPeriod(repeat.rule);
-  const u = parity ? { x: a.x + b.x, y: a.y + b.y } : a;
-  const v = parity ? { x: a.x - b.x, y: a.y - b.y } : b;
+  const { u, v, parity, alt } = patternPeriod(repeat);
 
   // Every copy that could touch a face lying within `trust` of the reference.
   let trust = E + Math.hypot(u.x, u.y) + Math.hypot(v.x, v.y);
@@ -619,9 +617,9 @@ function build(doc: Doc, repeat: RepeatSystem, strokes: Stroke[], intersect: boo
     const inside = interiorPoint(f.loop, width);
     if (!inside) continue;
     if (nearCopies(inside).some((pose) => ownRegions.some((loop) => pointInPolygon(loop, toMotif(pivot, pose, inside))))) continue;
-    const sig = signature(f, parity);
+    const sig = signature(f, alt);
     if (!sig) continue;
-    const key = `${intersect ? 'unit|' : ''}${repeat.family ?? 'square'}|${repeat.rule.kind}|${sig}`;
+    const key = `${intersect ? 'unit|' : ''}${repeat.family ?? 'square'}|${ruleKey(repeat.rule)}|${sig}`;
     (byKey.get(key) ?? byKey.set(key, []).get(key)!).push(f);
     gaps.set(key, Math.max(gaps.get(key) ?? 0, f.gap));
   }
@@ -669,7 +667,7 @@ function isLatticeTranslate(p: SpaceClass, q: SpaceClass, a: Vec2, b: Vec2, det:
 /** Which curves of which copies bound the face, in order round it, with copy offsets taken
  * relative to the face (shifted by a period translation only), so every member of a class reads
  * the same — and a face bounded differently never does. */
-function signature(f: Face, parity: boolean): string {
+function signature(f: Face, alt: Alternation | null): string {
   const pieces: { i: number; j: number; id: string }[] = [];
   for (const p of f.pieces) {
     if (p.src.bridge) continue; // a bridge across a hair-line gap is never part of what a Space is
@@ -687,10 +685,8 @@ function signature(f: Face, parity: boolean): string {
   if (pieces.length === 0) return '';
   let min = pieces[0]!;
   for (const p of pieces) if (p.j < min.j || (p.j === min.j && p.i < min.i)) min = p;
-  // Same: any lattice shift. Alternate/Mirror: only shifts with i + j even keep copies alike.
-  let si = -min.i;
-  let sj = -min.j;
-  if (parity && (((si + sj) % 2) + 2) % 2 === 1) si += 1;
+  // Same: any lattice shift. Alternate/Mirror: only shifts that keep copies alike (evenShift).
+  const [si, sj] = evenShift(alt, -min.i, -min.j);
   const parts = pieces.map((p) => `${p.i + si},${p.j + sj},${p.id}`);
   let best = 0;
   for (let k = 1; k < parts.length; k++) {
@@ -708,7 +704,7 @@ let last: { key: string; topology: SpaceTopology } | null = null;
 function contentKey(doc: Doc, repeat: RepeatSystem, strokes: Stroke[], intersect: boolean): string {
   const q = motifRadius(doc) * 1e-6;
   const r = (x: number) => Math.round(x / q);
-  const parts: (string | number | undefined)[] = [intersect ? 'unit' : 'motif', GAP_FRACTION, repeat.family, repeat.rule.kind, r(repeat.a.x), r(repeat.a.y), r(repeat.b.x), r(repeat.b.y), Math.round(repeat.motif.rotation * 1e9), r(doc.frame.origin.x), r(doc.frame.origin.y), r(doc.frame.radius)];
+  const parts: (string | number | undefined)[] = [intersect ? 'unit' : 'motif', GAP_FRACTION, repeat.family, ruleKey(repeat.rule), r(repeat.a.x), r(repeat.a.y), r(repeat.b.x), r(repeat.b.y), Math.round(repeat.motif.rotation * 1e9), r(doc.frame.origin.x), r(doc.frame.origin.y), r(doc.frame.radius)];
   for (const s of strokes) parts.push(s.entityId, ...s.pts.flatMap((p) => [r(p.x), r(p.y)]));
   return parts.join(',');
 }
@@ -854,7 +850,7 @@ export function unitRegions(doc: Doc): UnitRegion[] {
     // Faces in a fixed order (by centroid), so a repeated signature always gets the same ordinal.
     faces.sort((p, q) => p.centroid.y - q.centroid.y || p.centroid.x - q.centroid.x);
     regions = faces.map((f) => {
-      const sig = signature(f, false);
+      const sig = signature(f, null);
       const n = (seen.get(sig) ?? 0) + 1;
       seen.set(sig, n);
       return { key: `${UNIT_REGION_PREFIX}${sig}${n > 1 ? `#${n}` : ''}`, loop: f.loop, holes: [], area: f.area };
@@ -892,8 +888,12 @@ export function repeatStrokes(doc: Doc): { id: string; pts: Vec2[]; member: numb
 
 /** The period of the whole pattern (what maps it onto itself): the lattice for Same; the every-other-copy
  * sub-lattice for Alternate / Mirror — as Space classes use. */
-export function patternPeriod(repeat: RepeatSystem): { u: Vec2; v: Vec2; parity: boolean } {
+export function patternPeriod(repeat: RepeatSystem): { u: Vec2; v: Vec2; parity: boolean; alt: Alternation | null } {
   const { a, b } = repeat;
-  const parity = usesParityPeriod(repeat.rule);
-  return { u: parity ? { x: a.x + b.x, y: a.y + b.y } : a, v: parity ? { x: a.x - b.x, y: a.y - b.y } : b, parity };
+  const alt = alternationOf(repeat.rule);
+  // Every other copy: (a + b, a − b), as always. Every other row: a and 2b. Every other column: 2a and b.
+  if (alt === 'cells') return { u: { x: a.x + b.x, y: a.y + b.y }, v: { x: a.x - b.x, y: a.y - b.y }, parity: true, alt };
+  if (alt === 'rows') return { u: a, v: { x: 2 * b.x, y: 2 * b.y }, parity: true, alt };
+  if (alt === 'columns') return { u: { x: 2 * a.x, y: 2 * a.y }, v: b, parity: true, alt };
+  return { u: a, v: b, parity: false, alt: null };
 }
