@@ -20,7 +20,7 @@ import { resolveEntityGeom } from './kernel.ts';
 import { defaultSegmentKind, deriveSegments, paramInRange } from './segments.ts';
 import { inversePoint, poseArcRange, poseVector, relativePlacement, transformPoint, type InstancePose } from './lattice.ts';
 import type { IntersectionCopy } from './intersection.ts';
-import { localPoints, pointShown } from './intersectionSnap.ts';
+import { localPoints, pointOnDrawn, pointShown } from './intersectionSnap.ts';
 
 const turn = (v: Vec2, a: number): Vec2 => {
   const c = Math.cos(a);
@@ -300,4 +300,72 @@ export function instanceDistances(doc: Doc, copies: IntersectionCopy[], w: Vec2,
     if (best <= reach) out.set(copy.key, best);
   }
   return out;
+}
+
+// ---- Intersect's own construction layer (geometry/intersectLayer.ts) ----
+//
+// The construction tools in Intersect draw on the layer, in the workspace's own coordinates: no copy is
+// "active", every copy is another construction lying there. Contextual places are then every copy's
+// shown points, and every crossing between two drawn pieces of which at least one is a copy's — the
+// layer's crossings with itself are its own kernel's (as in Construct).
+
+const WORKSPACE: IntersectionCopy = { key: '', label: 'Intersect', i: 0, j: 0, colour: '', extensions: true, pose: { i: 0, j: 0, translate: { x: 0, y: 0 }, rotation: 0, mirror: false } } as unknown as IntersectionCopy;
+const LAYER_KEY = '·layer';
+
+/** The layer's own drawn pieces near `m` (workspace coordinates). */
+function layerPiecesNear(layer: Doc, m: Vec2, reach: number): Placed[] {
+  const out: Placed[] = [];
+  for (const p of localPieces(layer)) {
+    if (distToPiece(p, m) > reach) continue;
+    if (p.kind === 'line') out.push({ copy: LAYER_KEY, kind: 'line', a: p.a, d: p.d, t0: p.t0, t1: p.t1, whole: p.whole });
+    else out.push({ copy: LAYER_KEY, kind: 'arc', c: p.c, r: p.r, from: norm(p.from), to: norm(p.to), full: p.full });
+  }
+  return out;
+}
+
+/** The contextual place nearest `m` (workspace coordinates) for the layer's tools: a copy's shown
+ * point, or a crossing involving a copy's drawn geometry. Null when there is none within `reach`. */
+export function layerContextPointNear(doc: Doc, layer: Doc, copies: IntersectionCopy[], m: Vec2, reach: number): ContextPoint | null {
+  if (copies.length === 0) return null;
+  const pivot = doc.frame.origin;
+  let best: ContextPoint | null = null;
+  const consider = (at: Vec2, label: string) => {
+    const d = Math.hypot(at.x - m.x, at.y - m.y);
+    if (d <= reach && (!best || d < best.d - 1e-12)) best = { at, d, label };
+  };
+  for (const copy of copies) {
+    for (const p of localPoints(doc)) {
+      const at = transformPoint(pivot, copy.pose, p.at);
+      if (Math.abs(at.x - m.x) > reach || Math.abs(at.y - m.y) > reach) continue;
+      if (pointOnDrawn(doc, p.id, p.at, copy.extensions)) consider(at, `Point · ${copy.label}`);
+    }
+  }
+  const near = [...placedNear(doc, copies, WORKSPACE, m, reach), ...layerPiecesNear(layer, m, reach)];
+  for (let i = 0; i < near.length; i++) {
+    for (let j = i + 1; j < near.length; j++) {
+      if (near[i]!.copy === LAYER_KEY && near[j]!.copy === LAYER_KEY) continue;
+      for (const at of crossings(near[i]!, near[j]!)) consider(at, 'Crossing');
+    }
+  }
+  return best;
+}
+
+/** Every copy's straight line within `reach` of `m` (workspace coordinates), nearest first — a
+ * Parallel / Perpendicular reference for the layer's Line. */
+export function layerContextLinesNear(doc: Doc, copies: IntersectionCopy[], m: Vec2, reach: number): { a: Vec2; b: Vec2; d: number }[] {
+  const out: { a: Vec2; b: Vec2; d: number }[] = [];
+  for (const p of placedNear(doc, copies, WORKSPACE, m, reach)) {
+    if (p.kind !== 'line') continue;
+    const len2 = p.d.x * p.d.x + p.d.y * p.d.y;
+    let t = ((m.x - p.a.x) * p.d.x + (m.y - p.a.y) * p.d.y) / len2;
+    if (!p.whole) t = Math.min(p.t1, Math.max(p.t0, t));
+    const d = Math.hypot(m.x - (p.a.x + p.d.x * t), m.y - (p.a.y + p.d.y * t));
+    out.push({ a: p.a, b: { x: p.a.x + p.d.x, y: p.a.y + p.d.y }, d });
+  }
+  return out.sort((x, y) => x.d - y.d);
+}
+
+/** Whether any copy's drawn geometry lies within `reach` of `m` (workspace coordinates). */
+export function layerCopiesNear(doc: Doc, copies: IntersectionCopy[], m: Vec2, reach: number): boolean {
+  return instanceDistances(doc, copies, m, reach).size > 0;
 }

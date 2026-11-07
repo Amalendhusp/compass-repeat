@@ -27,7 +27,8 @@ import type { Doc, Entity, Vec2 } from '../model/types.ts';
 import type { AppController, ViewTransform } from '../app/controller.ts';
 import { screenToWorld, worldToScreen } from '../app/controller.ts';
 import type { Prim } from '../geometry/fairGeometry.ts';
-import { CHOICE_MARKER_R, drawLabelPill, drawNumberBadge, fanMarkers, RUN_COLOURS, RUN_DASHES } from './renderer.ts';
+import { CHOICE_MARKER_R, drawConstructionOnly, drawLabelPill, drawNumberBadge, fanMarkers, RUN_COLOURS, RUN_DASHES } from './renderer.ts';
+import { hasLayerGeometry, layerController } from '../geometry/intersectLayer.ts';
 import { resolveEntityGeom } from '../geometry/kernel.ts';
 import { defaultSegmentKind, deriveSegments } from '../geometry/segments.ts';
 import { motifRadius, poseArcAngle, transformPoint, type InstancePose } from '../geometry/lattice.ts';
@@ -136,6 +137,9 @@ export function renderIntersection(ctx: CanvasRenderingContext2D, controller: Ap
   drawArtworkLayer(ctx, layers, (ctx) => {
     if (developing) drawFairOnly(ctx, doc, view, sc, copies, controller.formLayer);
     else drawCopies(ctx, doc, view, sc, copies);
+    // Intersect's own construction — over the copies, under the developed Fair; shown while Fair is
+    // the tool too (quieter), since Fair develops from it.
+    if (hasLayerGeometry(doc)) drawConstructionOnly(ctx, layerController(controller), view);
     drawDevelopedPrimary(ctx, doc, view);
   });
   // What a finger on Fair would add or remove, the loupe it is choosing in, and "Which line?".

@@ -178,6 +178,15 @@ export function pointShown(doc: Doc, id: PointId, at: Vec2, extensions: boolean)
   return doc.entities.some((e) => e.kind === 'line' && (e.a === id || e.b === id) && drawnAt(doc, e.id, extensions, at));
 }
 
+/** Whether one of the construction's own points (at `at`, unplaced) lies on something a copy draws —
+ * every point pointShown accepts, and also the places that only mark a spot on a drawn line or circle
+ * (divisions, midpoints, points on a curve). What Intersect's own construction can start from, as
+ * Construct's tools can from any of its points. */
+export function pointOnDrawn(doc: Doc, id: PointId, at: Vec2, extensions: boolean): boolean {
+  if (pointShown(doc, id, at, extensions)) return true;
+  return doc.entities.some((e) => drawnAt(doc, e.id, extensions, at));
+}
+
 /** One line of one construction as shown, or null if nothing of it is shown. */
 function shownLine(doc: Doc, copy: IntersectionCopy, l: LocalLine): ShownLine | null {
   let extent: [number, number] | null;

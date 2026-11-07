@@ -1,4 +1,5 @@
 import type { AppController, PointVisibility, SelectCandidate, ToolId, ViewTransform } from '../app/controller.ts';
+import { layerController } from '../geometry/intersectLayer.ts';
 import { unturned } from '../app/controller.ts';
 import type { Doc, Entity, EntityId, PointId, SegmentKey, Vec2 } from '../model/types.ts';
 import {
@@ -3575,6 +3576,11 @@ export function buildShell(
 
   // ---- tools ----
 
+  /** Who the construction tools' ribbon edits: in Intersect, Intersect's own construction layer
+   * (geometry/intersectLayer.ts) — never Construct; elsewhere the artwork itself. */
+  const geo = (): AppController =>
+    controller.doc.view.workspace === 'intersection' && (['circle', 'line', 'arc', 'divide'] as ToolId[]).includes(controller.tool) ? layerController(controller) : controller;
+
   function renderDivideRibbon(): void {
     const state = controller.divide;
     if (!state) return;
@@ -3599,7 +3605,7 @@ export function buildShell(
       const d = controller.divide;
       if (!d) return;
       d.n = Math.max(DIVIDE_MIN, Math.min(DIVIDE_MAX, Math.round(n)));
-      controller.dividePreview = { target: d.target, points: dividePreviewPoints(controller.doc, d.target, d.n, d.angle) };
+      controller.dividePreview = { target: d.target, points: dividePreviewPoints(geo().doc, d.target, d.n, d.angle) };
       count.textContent = String(d.n);
       slider.value = String(d.n);
       minus.disabled = d.n <= DIVIDE_MIN;
@@ -3625,13 +3631,14 @@ export function buildShell(
     if (!state) return;
     const { target, n, angle } = state;
     let created: PointId[] = [];
-    controller.commit((d) => {
+    const g = geo();
+    g.commit((d) => {
       const entity = d.entities.find((e) => e.id === target.entityId);
       if (!entity) return;
       created = target.kind === 'circle-whole' ? addCircleDivision(d, entity.id, n, angle) : addSegmentDivisionPoints(d, target, n);
     });
     controller.doc.dividePrefs.lastN = n;
-    setDivideTarget(controller, null);
+    setDivideTarget(g, null);
     if (created.length > 0) controller.setRecentPoints(created);
   }
 
@@ -3688,13 +3695,13 @@ export function buildShell(
       } else if (pending?.kind === 'line') {
         cue('Choose B, or');
         // …from A alone, the horizontal / vertical extension through it.
-        chip('Horizontal', () => axisThrough(controller, 'h'));
-        chip('Vertical', () => axisThrough(controller, 'v'));
+        chip('Horizontal', () => axisThrough(geo(), 'h'));
+        chip('Vertical', () => axisThrough(geo(), 'v'));
       }
       const extendFor = controller.extendChip;
       if (extendFor && !pending) {
         chip('Extend', () => {
-          controller.commit((d) => {
+          geo().commit((d) => {
             const e = d.entities.find((en) => en.id === extendFor.entityId);
             if (e && e.kind === 'line') e.extended = true;
           });

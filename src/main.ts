@@ -1,6 +1,6 @@
 import './style.css';
 import { cloneDoc, createDoc, defaultRepeatDisplay, placeFrame } from './model/doc.ts';
-import { AppController, cameraView, paperToScreen, screenToPaper, screenToWorld, type ToolId, type ViewTransform } from './app/controller.ts';
+import { AppController, cameraView, paperToScreen, screenToWorld, type ToolId, type ViewTransform } from './app/controller.ts';
 import { PointerManager } from './interaction/pointer.ts';
 import { selectTool } from './interaction/tools/select.ts';
 import { circleTool } from './interaction/tools/circle.ts';
@@ -15,10 +15,10 @@ import { intersectFairTool } from './interaction/tools/intersectFair.ts';
 import { drawInteraction, render } from './render/renderer.ts';
 import { renderRepeat } from './render/repeatRenderer.ts';
 import { renderIntersection } from './render/intersectionRenderer.ts';
-import { intersectionCopies, layoutOf, type IntersectionCopy } from './geometry/intersection.ts';
-import { contextLinesNear, contextPointNear, instanceCamera, instanceUnder } from './geometry/intersectionLink.ts';
+import { intersectionCopies, layoutOf } from './geometry/intersection.ts';
+import { layerContextLinesNear, layerContextPointNear, layerCopiesNear } from './geometry/intersectionLink.ts';
+import { hasLayerGeometry, layerController, layerDoc } from './geometry/intersectLayer.ts';
 import { setContextProvider } from './interaction/context.ts';
-import { curveCandidatesAt, pickPointTarget } from './interaction/hittest.ts';
 import type { ToolModule } from './interaction/tools/types.ts';
 import { drawUnderlayOutline, onUnderlayImage, screenLayers, settleUnderlay, underlayIn } from './render/underlay.ts';
 import { referenceTakeover, referenceWheel } from './interaction/referenceTransform.ts';
@@ -31,7 +31,7 @@ import { openStartScreen, type CardActions } from './ui/startscreen.ts';
 import { buildDrawFrameHud } from './ui/drawframehud.ts';
 import { attachDrawFrame } from './interaction/drawframe.ts';
 import { initToast } from './ui/toast.ts';
-import type { Camera, Doc, FrameKind, Vec2 } from './model/types.ts';
+import type { Camera, Doc, FrameKind } from './model/types.ts';
 import { resolvePoint } from './geometry/kernel.ts';
 import { worldToScreen } from './app/controller.ts';
 import { attachAutosave, type AutosaveHandle } from './persist/autosave.ts';
@@ -201,7 +201,15 @@ function fitIntersectionView(controller: AppController, canvas: HTMLCanvasElemen
   const pivot = doc.frame.origin;
   const r = motifRadius(doc);
   const discs = intersectionCopies(doc).map((c) => ({ x: pivot.x + c.pose.translate.x, y: pivot.y + c.pose.translate.y, r }));
-  fitViewState(doc.intersectionView, (turn) => discBounds(discs, turn), doc.frame.radius, doc.frame.origin, canvas, overlay);
+  // Intersect's own construction is part of what is shown, so part of what is fitted.
+  const layer = hasLayerGeometry(doc) ? layerDoc(doc) : null;
+  const both = (turn: number) => {
+    const a = discBounds(discs, turn);
+    const b = layer ? computeVisibleBounds(layer, turn) : null;
+    if (!a || !b) return a ?? b;
+    return { minX: Math.min(a.minX, b.minX), minY: Math.min(a.minY, b.minY), maxX: Math.max(a.maxX, b.maxX), maxY: Math.max(a.maxY, b.maxY) };
+  };
+  fitViewState(doc.intersectionView, both, doc.frame.radius, doc.frame.origin, canvas, overlay);
   controller.notifyView();
 }
 
@@ -320,82 +328,38 @@ function boot(doc: Doc, opts: { fitToScreen: boolean; history?: { undo: Doc[]; r
     if (controller.doc.view.workspace !== 'intersection' || !LINKED_TOOLS.includes(controller.tool)) return null;
     return tools[controller.tool] ?? null;
   }
-  /** The instance the construction tools work through: the one selected — unless it is reflected, when
-   * the Original stands in. A camera can turn but not reflect, so (for now) nothing is drawn THROUGH a
-   * reflected copy; its points and crossings are still there to snap to, and it can still be arranged
-   * and used for Fair. */
-  function activeCopy(): IntersectionCopy {
-    const copies = intersectionCopies(controller.doc);
-    const selected = copies.find((c) => c.key === controller.intersectionSelected);
-    return selected && !selected.pose.mirror ? selected : copies[0]!;
-  }
-  const REFLECTED_NOTICE = (label: string) => `${label} is reflected — draw on the Original or an unreflected copy`;
-  /** The view the single-finger tool works in: the camera's own — or, for a construction tool in
-   * Intersect, the active instance's (its placement, then the camera). */
+  /** The view the single-finger tool works in. In Intersect the construction tools draw on Intersect's
+   * own layer, in the workspace's coordinates — through the workspace camera itself. */
   function getToolView(): ViewTransform {
-    if (!linkedTool() || (controller.referenceTransform && controller.referenceAnchorMode)) return getView();
-    return cameraView(instanceCamera(viewState(), controller.doc.frame.origin, activeCopy().pose), canvas.clientWidth, canvas.clientHeight);
+    return getView();
   }
-  /** Whether a construction step is under way that belongs to the active instance as it is — or
-   * the tool is Line's Parallel / Perpendicular, where a tap on another instance's line means
-   * "this is the reference", never "work on that instance". */
-  const midStep = () =>
-    !!controller.pending || !!controller.incircle || !!controller.copyRadius || !!controller.divide || !!controller.precision || (controller.tool === 'line' && controller.lineGuide !== 'free');
-  /**
-   * A construction tool in Intersect. Between steps, the touch belongs to whichever instance has
-   * drawn geometry nearest the finger: another instance's line or point clearly nearer than anything
-   * of the active one (by SWITCH_NEARER_PX) makes THAT instance the active one, and the tool works
-   * there — so what is touched is what is edited, wherever the active instance's own geometry lies.
-   * A near-tie stays with the active instance (the tool's own press feedback shows what it took).
-   * Mid-step the instance never changes; other instances are reached as contextual places.
-   */
-  const SWITCH_NEARER_PX = 4;
-  const REACH_PX = 16;
-  /** How far (screen px) the active instance's own nearest point or curve is from the finger. */
-  const ownDistance = (doc: Doc, view: ViewTransform, sp: Vec2): number =>
-    Math.min(pickPointTarget(doc, view, sp, { explicitOnly: true })?.screenD ?? Infinity, curveCandidatesAt(doc, view, sp, REACH_PX)[0]?.d ?? Infinity);
-  function onActiveInstance(tool: ToolModule): ToolModule {
+  /** A construction tool in Intersect works on Intersect's own construction layer (never Construct):
+   * the same tool, handed the layer controller (geometry/intersectLayer.ts). */
+  function onLayer(tool: ToolModule): ToolModule {
     return {
       id: tool.id,
-      hint: (c) => tool.hint(c),
-      beginGesture(c, view, sp) {
-        const doc = c.doc;
-        const copies = intersectionCopies(doc);
-        const other = midStep() ? null : instanceUnder(doc, copies, activeCopy().key, screenToWorld(view, sp), REACH_PX / view.zoom);
-        if (other && other.d * view.zoom + SWITCH_NEARER_PX < ownDistance(doc, view, sp)) {
-          // The touch is on a reflected copy: it can't be drawn through (yet) — say so, and do nothing.
-          const target = copies.find((x) => x.key === other.key);
-          if (target?.pose.mirror) {
-            c.onNotice?.(REFLECTED_NOTICE(target.label));
-            return null;
-          }
-          const onCanvas = paperToScreen(view, sp);
-          c.intersectionSelected = other.key;
-          const next = getToolView();
-          c.notify();
-          return tool.beginGesture(c, next, screenToPaper(next, onCanvas));
-        }
-        return tool.beginGesture(c, view, sp);
-      },
+      hint: (c) => tool.hint(layerController(c)),
+      beginGesture: (c, view, sp) => tool.beginGesture(layerController(c), view, sp),
     };
   }
   // Contextual places for the construction tools: only in Intersect, only around the finger.
+  // The copies' points and crossings, offered to the layer's tools as fixed places.
   setContextProvider({
     point(view, sp, radiusPx) {
       if (!linkedTool()) return null;
       const doc = controller.doc;
-      const hit = contextPointNear(doc, intersectionCopies(doc), activeCopy().key, screenToWorld(view, sp), radiusPx / view.zoom);
+      const hit = layerContextPointNear(doc, layerDoc(doc), intersectionCopies(doc), screenToWorld(view, sp), radiusPx / view.zoom);
       return hit && { at: hit.at, screenD: hit.d * view.zoom, label: hit.label };
     },
     lines(view, sp, radiusPx) {
       if (!linkedTool()) return [];
       const doc = controller.doc;
-      return contextLinesNear(doc, intersectionCopies(doc), activeCopy().key, screenToWorld(view, sp), radiusPx / view.zoom).map((l) => ({ a: l.a, b: l.b, screenD: l.d * view.zoom }));
+      return layerContextLinesNear(doc, intersectionCopies(doc), screenToWorld(view, sp), radiusPx / view.zoom).map((l) => ({ a: l.a, b: l.b, screenD: l.d * view.zoom }));
     },
     near(view, sp, radiusPx) {
       if (!linkedTool()) return false;
       const doc = controller.doc;
-      return instanceUnder(doc, intersectionCopies(doc), activeCopy().key, screenToWorld(view, sp), radiusPx / view.zoom) !== null;
+      return layerCopiesNear(doc, intersectionCopies(doc), screenToWorld(view, sp), radiusPx / view.zoom);
     },
   });
   const pointer = new PointerManager(
@@ -409,7 +373,7 @@ function boot(doc: Doc, opts: { fitToScreen: boolean; history?: { undo: Doc[]; r
       if (ws === 'repeat') return repeatTool;
       if (ws === 'intersection') {
         const linked = linkedTool();
-        if (linked) return onActiveInstance(linked);
+        if (linked) return onLayer(linked);
         return controller.tool === 'fair' ? intersectFairTool : intersectionTool;
       }
       return tools[controller.tool] ?? null;
@@ -474,17 +438,16 @@ function boot(doc: Doc, opts: { fitToScreen: boolean; history?: { undo: Doc[]; r
       if (placing) drawAnchorLoupe(ctx!, moving, view, anchorWorld(moving, controller.anchorDraft!), controller.anchorLoupe!);
     }
     ctx!.restore();
-    // Intersect, a construction tool at work: its own feedback (previews, points, snap marks) on
-    // the active instance, through that instance's view.
+    // Intersect, a construction tool at work: its own feedback (previews, the layer's points, snap
+    // marks) on Intersect's own construction layer.
     if (linkedTool()) {
-      const toolView = getToolView();
       ctx!.save();
-      if (toolView.screen) {
-        ctx!.translate(toolView.screen.w / 2, toolView.screen.h / 2);
-        ctx!.rotate(toolView.screen.turn);
-        ctx!.translate(-toolView.w / 2, -toolView.h / 2);
+      if (view.screen) {
+        ctx!.translate(view.screen.w / 2, view.screen.h / 2);
+        ctx!.rotate(view.screen.turn);
+        ctx!.translate(-view.w / 2, -view.h / 2);
       }
-      drawInteraction(ctx!, controller, toolView);
+      drawInteraction(ctx!, layerController(controller), view);
       ctx!.restore();
     }
     diagnostics?.record(performance.now() - t0, copies);

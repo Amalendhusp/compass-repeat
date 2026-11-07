@@ -19,6 +19,7 @@
 import type { Doc, ParticipantInfo } from '../model/types.ts';
 import { genId } from '../model/id.ts';
 import { resolvePoint } from '../geometry/kernel.ts';
+import { layerDoc } from '../geometry/intersectLayer.ts';
 import { artworkHash } from './draft.ts';
 import { makeThumbnail } from './thumbnail.ts';
 import { saveDocument } from './db.ts';
@@ -223,6 +224,22 @@ export function snapshotProblem(d: unknown): string | null {
   if (!isObj(d.view) || !['construct', 'intersection', 'repeat'].includes(d.view.workspace as string)) return 'its view is damaged';
   if (d.intersectionSnapshots !== undefined && !Array.isArray(d.intersectionSnapshots)) return 'its bookmarks are damaged';
   if (d.underlay !== undefined && !(isObj(d.underlay) && isStr(d.underlay.refId) && isNum(d.underlay.aspect))) return 'its reference image placement is damaged';
+  // Intersect's own construction: the same rules as Construct's, within itself.
+  const ix = isObj(d.intersection) ? d.intersection : null;
+  if (ix && ix.construction !== undefined) {
+    const c = ix.construction;
+    if (!isObj(c) || !Array.isArray(c.points) || !Array.isArray(c.entities) || !Array.isArray(c.segmentStates)) return 'its Intersect construction is damaged';
+    const pts = new Set<string>();
+    for (const p of c.points) {
+      if (!isObj(p) || !isStr(p.id) || !isStr(p.kind) || pts.has(p.id) || (p.kind === 'free' && !(isNum(p.x) && isNum(p.y)))) return 'its Intersect construction is damaged';
+      pts.add(p.id);
+    }
+    for (const e of c.entities) {
+      if (!isObj(e) || !isStr(e.id)) return 'its Intersect construction is damaged';
+      if (e.kind === 'line' ? !(pts.has(e.a as string) && pts.has(e.b as string)) : e.kind === 'circle' ? !(pts.has(e.centre as string) && pts.has(e.through as string)) : true) return 'its Intersect construction is damaged';
+    }
+    if (!c.segmentStates.every((x) => Array.isArray(x) && x.length === 2 && isStr(x[0]) && isObj(x[1]))) return 'its Intersect construction is damaged';
+  }
   return null;
 }
 
@@ -295,6 +312,11 @@ export async function readProjectFile(file: Blob, upgrade: (doc: Doc, named: boo
         // point with no position at all is not.
         if (p.kind === 'free') throw new Error('point');
       }
+    }
+    // Intersect's own construction resolves too (a point it can't place fails here).
+    if (snapshot.intersection?.construction) {
+      const L = layerDoc(snapshot);
+      for (const p of L.points) resolvePoint(L, p.id);
     }
     artworkHash(snapshot);
     thumbnail = makeThumbnail(snapshot);

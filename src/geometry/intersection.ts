@@ -307,6 +307,12 @@ function baseOf(doc: Doc): Partial<NonNullable<Doc['intersection']>> {
   return kept;
 }
 
+/** The artwork's Intersection with its own construction replaced (everything else kept — and a 'new'
+ * artwork's first stored Intersection records an empty Form, exactly as an arrangement change does). */
+export function withConstruction(doc: Doc, construction: import('../model/types.ts').IntersectConstruction): NonNullable<Doc['intersection']> {
+  return { copies: {}, ...baseOf(doc), construction } as NonNullable<Doc['intersection']>;
+}
+
 /** The artwork's Intersection with a restored arrangement (a bookmark): positions, turns and copy
  * settings replaced; the Developed Primary — and everything else — kept. */
 export function withArrangement(doc: Doc, copies: NonNullable<Doc['intersection']>['copies'], layout: IntersectionLayout): NonNullable<Doc['intersection']> {

@@ -191,6 +191,17 @@ export interface IntersectionForm {
   developed: DevelopedSegment[];
 }
 
+/** Intersect's own construction (geometry/intersectLayer.ts): lines, circles, arcs and divisions drawn in
+ * Intersect, in the workspace's own coordinates — never part of Construct, never repeated. Points taken
+ * from a copy (one of its points, or a crossing between copies) are fixed `free` points where they were
+ * taken. Kept as plain data (segment states as entries) so it clones, records and travels like the rest
+ * of `intersection`. Absent until something is drawn in Intersect. */
+export interface IntersectConstruction {
+  points: Point[];
+  entities: Entity[];
+  segmentStates: [SegmentKey, SegmentState][];
+}
+
 export interface IntersectionSnapshot {
   id: string;
   at: number;
@@ -408,7 +419,7 @@ export interface Doc {
    * the copy's key; the primary is "0,0"), and the arrangement itself. Absent or partial = defaults
    * (see geometry/intersection.ts). Part of Undo; never part of the recorded artwork (it is a way of
    * exploring, not the design). */
-  intersection?: { copies: Record<string, { colour?: string; extensions?: boolean; locked?: boolean; primaryCopy?: boolean }>; layout?: IntersectionLayout; form?: IntersectionForm };
+  intersection?: { copies: Record<string, { colour?: string; extensions?: boolean; locked?: boolean; primaryCopy?: boolean }>; layout?: IntersectionLayout; form?: IntersectionForm; construction?: IntersectConstruction };
   /** Intersection Snapshots: discoveries kept on purpose while exploring — not history, so Undo /
    * Redo never adds or removes one (carried across them like the cameras). */
   intersectionSnapshots?: IntersectionSnapshot[];
