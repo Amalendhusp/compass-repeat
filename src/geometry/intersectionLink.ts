@@ -18,7 +18,7 @@
 import type { Camera, Doc, Entity, Vec2 } from '../model/types.ts';
 import { resolveEntityGeom } from './kernel.ts';
 import { defaultSegmentKind, deriveSegments, paramInRange } from './segments.ts';
-import type { InstancePose } from './lattice.ts';
+import { inversePoint, poseArcRange, poseVector, relativePlacement, transformPoint, type InstancePose } from './lattice.ts';
 import type { IntersectionCopy } from './intersection.ts';
 import { localPoints, pointShown } from './intersectionSnap.ts';
 
@@ -34,6 +34,9 @@ const turn = (v: Vec2, a: number): Vec2 => {
  * s = centre + turnCam((q + pan) × zoom): pan′ = turn⁻¹(pivot + t + pan) − pivot, and the rotations add.
  */
 export function instanceCamera(camera: Camera, pivot: Vec2, pose: InstancePose): Camera {
+  // A camera can turn but not reflect: a reflected instance is never edited through (main.ts — the
+  // construction tools work only on the Original and unreflected copies).
+  if (pose.mirror) throw new Error('instanceCamera: a reflected instance has no camera');
   const r = turn({ x: pivot.x + pose.translate.x + camera.pan.x, y: pivot.y + pose.translate.y + camera.pan.y }, -pose.rotation);
   const rotation = (camera.rotation ?? 0) + pose.rotation;
   return { zoom: camera.zoom, pan: { x: r.x - pivot.x, y: r.y - pivot.y }, ...(rotation ? { rotation } : null) };
@@ -91,10 +94,6 @@ function localPieces(doc: Doc): LocalPiece[] {
 
 type Placed = { copy: string } & ({ kind: 'line'; a: Vec2; d: Vec2; t0: number; t1: number; whole: boolean } | { kind: 'arc'; c: Vec2; r: number; from: number; to: number; full: boolean });
 
-/** How instance `b` lies in instance `a`'s own frame: p ↦ turn(p − pivot, by) + pivot + shift. */
-function relativePose(a: InstancePose, b: InstancePose): { by: number; shift: Vec2 } {
-  return { by: b.rotation - a.rotation, shift: turn({ x: b.translate.x - a.translate.x, y: b.translate.y - a.translate.y }, -a.rotation) };
-}
 
 const TOL = 1e-7;
 /** An angle in [0, 2π) — how arc ranges are kept (paramInRange). */
@@ -177,19 +176,20 @@ function placedNear(doc: Doc, copies: IntersectionCopy[], active: IntersectionCo
   const pivot = doc.frame.origin;
   const out: Placed[] = [];
   for (const copy of copies) {
-    const rel = relativePose(active.pose, copy.pose);
+    // How this copy lies in the active one's frame (turned, shifted — and reflected when exactly one
+    // of the two is).
+    const rel = relativePlacement(active.pose, copy.pose);
     // The finger, in this copy's own frame — so its pieces are tested where they are stored.
-    const back = turn({ x: m.x - pivot.x - rel.shift.x, y: m.y - pivot.y - rel.shift.y }, -rel.by);
-    const local = { x: back.x + pivot.x, y: back.y + pivot.y };
-    const place = (p: Vec2): Vec2 => {
-      const r = turn({ x: p.x - pivot.x, y: p.y - pivot.y }, rel.by);
-      return { x: r.x + pivot.x + rel.shift.x, y: r.y + pivot.y + rel.shift.y };
-    };
+    const local = inversePoint(pivot, rel, m);
+    const place = (p: Vec2): Vec2 => transformPoint(pivot, rel, p);
     for (const p of localPieces(doc)) {
       if (p.ext && !copy.extensions) continue;
       if (distToPiece(p, local) > reach) continue;
-      if (p.kind === 'line') out.push({ copy: copy.key, kind: 'line', a: place(p.a), d: turn(p.d, rel.by), t0: p.t0, t1: p.t1, whole: p.whole });
-      else out.push({ copy: copy.key, kind: 'arc', c: place(p.c), r: p.r, from: norm(p.from + rel.by), to: norm(p.to + rel.by), full: p.full });
+      if (p.kind === 'line') out.push({ copy: copy.key, kind: 'line', a: place(p.a), d: poseVector(rel, p.d), t0: p.t0, t1: p.t1, whole: p.whole });
+      else {
+        const [from, to] = poseArcRange(rel, p.from, p.to);
+        out.push({ copy: copy.key, kind: 'arc', c: place(p.c), r: p.r, from: norm(from), to: norm(to), full: p.full });
+      }
     }
   }
   return out;
@@ -212,10 +212,9 @@ export function contextPointNear(doc: Doc, copies: IntersectionCopy[], activeKey
   // Other instances' own points (those that read as points in what they draw).
   for (const copy of copies) {
     if (copy.key === activeKey) continue;
-    const rel = relativePose(active.pose, copy.pose);
+    const rel = relativePlacement(active.pose, copy.pose);
     for (const p of localPoints(doc)) {
-      const r = turn({ x: p.at.x - pivot.x, y: p.at.y - pivot.y }, rel.by);
-      const at = { x: r.x + pivot.x + rel.shift.x, y: r.y + pivot.y + rel.shift.y };
+      const at = transformPoint(pivot, rel, p.at);
       if (Math.abs(at.x - m.x) > reach || Math.abs(at.y - m.y) > reach) continue;
       if (pointShown(doc, p.id, p.at, copy.extensions)) consider(at, `Point · ${copy.label}`);
     }
@@ -264,9 +263,7 @@ export function instanceUnder(doc: Doc, copies: IntersectionCopy[], fromKey: str
   let best: { key: string; d: number } | null = null;
   for (const copy of copies) {
     if (copy.key === fromKey) continue;
-    const rel = relativePose(from.pose, copy.pose);
-    const back = turn({ x: m.x - pivot.x - rel.shift.x, y: m.y - pivot.y - rel.shift.y }, -rel.by);
-    const local = { x: back.x + pivot.x, y: back.y + pivot.y };
+    const local = inversePoint(pivot, relativePlacement(from.pose, copy.pose), m);
     for (const p of localPieces(doc)) {
       if (p.ext && !copy.extensions) continue;
       if (p.kind === 'arc' && !p.full && !paramInRange(Math.atan2(local.y - p.c.y, local.x - p.c.x), p.from, p.to, true)) continue;
@@ -289,8 +286,7 @@ export function instanceDistances(doc: Doc, copies: IntersectionCopy[], w: Vec2,
   const pivot = doc.frame.origin;
   const out = new Map<string, number>();
   for (const copy of copies) {
-    const back = turn({ x: w.x - pivot.x - copy.pose.translate.x, y: w.y - pivot.y - copy.pose.translate.y }, -copy.pose.rotation);
-    const local = { x: back.x + pivot.x, y: back.y + pivot.y };
+    const local = inversePoint(pivot, copy.pose, w);
     let best = Infinity;
     for (const p of localPieces(doc)) {
       if (p.ext && !copy.extensions) continue;

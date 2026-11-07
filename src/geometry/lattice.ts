@@ -117,10 +117,10 @@ export function instancePose(repeat: RepeatSystem, i: number, j: number): Instan
 }
 
 /**
- * One placement after another, as one: `inner` first (never mirrored), then `outer`. With a
- * placement p ↦ turn(mirror(p − pivot)) + pivot + t: the result mirrors as `outer` does, turns by
- * outer's angle plus inner's (minus, when mirrored — a mirror reverses the inner turn), and lands
- * inner's shift where `outer` carries it.
+ * One placement after another, as one: `inner` first, then `outer`. With a placement
+ * p ↦ turn(mirror(p − pivot)) + pivot + t: the result is mirrored when exactly one of them is (two
+ * reflections make a turn), turns by outer's angle plus inner's (minus, when `outer` mirrors — a mirror
+ * reverses the inner turn), and lands inner's shift where `outer` carries it.
  */
 export function composePose(outer: InstancePose, inner: InstancePose): InstancePose {
   const y = outer.mirror ? -inner.translate.y : inner.translate.y;
@@ -131,8 +131,46 @@ export function composePose(outer: InstancePose, inner: InstancePose): InstanceP
     j: outer.j,
     translate: { x: outer.translate.x + inner.translate.x * c - y * n, y: outer.translate.y + inner.translate.x * n + y * c },
     rotation: outer.mirror ? outer.rotation - inner.rotation : outer.rotation + inner.rotation,
-    mirror: outer.mirror,
+    mirror: outer.mirror !== inner.mirror,
   };
+}
+
+/** How placement `b` looks from inside placement `a` — the placement a⁻¹ ∘ b, so that
+ * transformPoint(pivot, a, transformPoint(pivot, relativePlacement(a, b), p)) = transformPoint(pivot, b, p). */
+export function relativePlacement(a: InstancePose, b: InstancePose): InstancePose {
+  const t = poseVectorInverse(a, { x: b.translate.x - a.translate.x, y: b.translate.y - a.translate.y });
+  const by = b.rotation - a.rotation;
+  return { i: b.i, j: b.j, translate: t, rotation: a.mirror ? -by : by, mirror: a.mirror !== b.mirror };
+}
+
+/** A direction (or offset) as a placement carries it: mirrored, then turned — no shift. */
+export function poseVector(pose: InstancePose, v: Vec2): Vec2 {
+  const y = pose.mirror ? -v.y : v.y;
+  const c = Math.cos(pose.rotation);
+  const n = Math.sin(pose.rotation);
+  return { x: v.x * c - y * n, y: v.x * n + y * c };
+}
+
+/** The inverse of poseVector: turned back, then un-mirrored. */
+export function poseVectorInverse(pose: InstancePose, v: Vec2): Vec2 {
+  const c = Math.cos(pose.rotation);
+  const n = Math.sin(pose.rotation);
+  const x = v.x * c + v.y * n;
+  const y = -v.x * n + v.y * c;
+  return { x, y: pose.mirror ? -y : y };
+}
+
+/** Where a world position lies in the construction's own (unplaced) coordinates — transformPoint's
+ * inverse. */
+export function inversePoint(pivot: Vec2, pose: InstancePose, w: Vec2): Vec2 {
+  const l = poseVectorInverse(pose, { x: w.x - pivot.x - pose.translate.x, y: w.y - pivot.y - pose.translate.y });
+  return { x: l.x + pivot.x, y: l.y + pivot.y };
+}
+
+/** An arc range [from → to] (anticlockwise, the construction's own angles) as a placement shows it:
+ * turned — and, when mirrored, reflected, which reverses it. */
+export function poseArcRange(pose: InstancePose, from: number, to: number): [number, number] {
+  return pose.mirror ? [pose.rotation - to, pose.rotation - from] : [pose.rotation + from, pose.rotation + to];
 }
 
 /** Maps a point in the ORIGINAL Construct-world onto where it sits for one repeat instance —

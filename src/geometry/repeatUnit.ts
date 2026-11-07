@@ -64,7 +64,7 @@ export function repeatUnit(doc: Doc): RepeatUnit | null {
       keys: comp.map((m) => m.key),
       // Nothing to repeat (an empty composition): one motif's reach, so nothing downstream divides by zero.
       extent: reaches.length ? Math.max(...reaches) : motifExtent(doc),
-      key: members.map((m) => `${m.translate.x},${m.translate.y},${m.rotation}`).join(';') + devIds,
+      key: members.map((m) => `${m.translate.x},${m.translate.y},${m.rotation}${m.mirror ? ",m" : ""}`).join(';') + devIds,
       developed,
     };
     cache.set(doc, unit);
