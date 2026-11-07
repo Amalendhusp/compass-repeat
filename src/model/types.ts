@@ -99,8 +99,10 @@ export interface RepeatSystem {
  * shown is centre + spread × (reference − centre): Spread moves centres in or out about the
  * reference group's centre — sizes and rotations never change. */
 export interface IntersectionLayout {
-  /** The Primary first ("0,0"), then each copy, in the order added. */
-  pieces: { key: string; x: number; y: number; rotation: number }[];
+  /** The Primary first ("0,0"), then each copy, in the order added. `mirror`: the copy is reflected
+   * (across its own horizontal axis, before its turn) — written only when true, never on the Primary,
+   * so every arrangement made before reflection existed keeps exactly its shape. */
+  pieces: { key: string; x: number; y: number; rotation: number; mirror?: true }[];
   /** Which constructions the reference was set with. When the copies present differ (one added or
    * removed since), the reference is out of date and Spread waits for a new one. Absent in
    * arrangements saved before copies could be added — those are always current. */

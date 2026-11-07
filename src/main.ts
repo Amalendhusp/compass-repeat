@@ -316,10 +316,16 @@ function boot(doc: Doc, opts: { fitToScreen: boolean; history?: { undo: Doc[]; r
     if (controller.doc.view.workspace !== 'intersection' || !LINKED_TOOLS.includes(controller.tool)) return null;
     return tools[controller.tool] ?? null;
   }
+  /** The instance the construction tools work through: the one selected — unless it is reflected, when
+   * the Original stands in. A camera can turn but not reflect, so (for now) nothing is drawn THROUGH a
+   * reflected copy; its points and crossings are still there to snap to, and it can still be arranged
+   * and used for Fair. */
   function activeCopy(): IntersectionCopy {
     const copies = intersectionCopies(controller.doc);
-    return copies.find((c) => c.key === controller.intersectionSelected) ?? copies[0]!;
+    const selected = copies.find((c) => c.key === controller.intersectionSelected);
+    return selected && !selected.pose.mirror ? selected : copies[0]!;
   }
+  const REFLECTED_NOTICE = (label: string) => `${label} is reflected — draw on the Original or an unreflected copy`;
   /** The view the single-finger tool works in: the camera's own — or, for a construction tool in
    * Intersect, the active instance's (its placement, then the camera). */
   function getToolView(): ViewTransform {
@@ -350,8 +356,15 @@ function boot(doc: Doc, opts: { fitToScreen: boolean; history?: { undo: Doc[]; r
       hint: (c) => tool.hint(c),
       beginGesture(c, view, sp) {
         const doc = c.doc;
-        const other = midStep() ? null : instanceUnder(doc, intersectionCopies(doc), activeCopy().key, screenToWorld(view, sp), REACH_PX / view.zoom);
+        const copies = intersectionCopies(doc);
+        const other = midStep() ? null : instanceUnder(doc, copies, activeCopy().key, screenToWorld(view, sp), REACH_PX / view.zoom);
         if (other && other.d * view.zoom + SWITCH_NEARER_PX < ownDistance(doc, view, sp)) {
+          // The touch is on a reflected copy: it can't be drawn through (yet) — say so, and do nothing.
+          const target = copies.find((x) => x.key === other.key);
+          if (target?.pose.mirror) {
+            c.onNotice?.(REFLECTED_NOTICE(target.label));
+            return null;
+          }
           const onCanvas = paperToScreen(view, sp);
           c.intersectionSelected = other.key;
           const next = getToolView();

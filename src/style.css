@@ -2655,3 +2655,7 @@ canvas.stage {
   font-size: 14px;
   color: var(--ink);
 }
+
+/* Stage 2: a copy's Reflect actions, under its colour swatches in the Copies panel. */
+.copy-reflect-row { display: flex; gap: 8px; padding: 4px 0 8px; }
+.copy-reflect-row .btn-secondary { flex: 1; min-height: 36px; }

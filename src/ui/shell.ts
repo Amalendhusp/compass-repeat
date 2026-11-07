@@ -35,7 +35,7 @@ import { onTap } from './tap.ts';
 import { color, fairPalette, stroke } from '../render/tokens.ts';
 import { suggestedFamily, type LatticeFamily } from '../geometry/lattice.ts';
 import { rotationFractionLabel } from '../render/repeatRenderer.ts';
-import { inComposition, withPrimaryCopy, withArrangement, asReference, intersectionCopies, layoutOf, MAX_CONSTRUCTIONS, placedAt, PRIMARY, referenceCurrent, sliderToSpread, SPREAD_SLIDER_MAX, spreadToSlider, withAddedCopy, withCopySetting, withLayout, withLock, withoutCopy, withSpreadAround, isLocked } from '../geometry/intersection.ts';
+import { inComposition, withPrimaryCopy, withArrangement, asReference, intersectionCopies, layoutOf, MAX_CONSTRUCTIONS, placedAt, PRIMARY, referenceCurrent, sliderToSpread, SPREAD_SLIDER_MAX, spreadToSlider, withAddedCopy, withCopySetting, withLayout, withLock, withoutCopy, withSpreadAround, isLocked, withReflection } from '../geometry/intersection.ts';
 import { canMoveAgainst, convertPick, isPointPick, planMatchEdge, planSnap, resolvePick, type PickKind } from '../geometry/intersectionSnap.ts';
 import { PICK_REACH_PX } from '../interaction/tools/intersectionTool.ts';
 import { repeatSource, type RepeatSource } from '../geometry/repeatUnit.ts';
@@ -1078,7 +1078,7 @@ function showIntersectionCopiesPanel(anchor: HTMLElement, controller: AppControl
           });
           const label = document.createElement('span');
           label.className = 'popover-row-label';
-          label.textContent = copy.label;
+          label.textContent = copy.pose.mirror ? `${copy.label} · reflected` : copy.label;
           const sw = document.createElement('button');
           sw.className = 'toggle-switch' + (copy.extensions ? ' on' : '');
           sw.innerHTML = '<span class="toggle-knob"></span>';
@@ -1139,6 +1139,35 @@ function showIntersectionCopiesPanel(anchor: HTMLElement, controller: AppControl
             swatches.classList.add('panel-swatches');
             swatches.setAttribute('aria-label', `${copy.label} colour`);
             menu.appendChild(swatches);
+            // Stage 2: reflect the copy about its own centre — across the vertical axis (left and right
+            // swap) or the horizontal axis (top and bottom swap). One Undo step each. Never the Original;
+            // a locked copy stays exactly as it is. (Stage 3 gives these their place in the Copies panel.)
+            if (copy.key !== PRIMARY) {
+              const reflectRow = document.createElement('div');
+              reflectRow.className = 'copy-reflect-row';
+              for (const [axis, text, aria] of [
+                ['h', 'Reflect ↔', 'horizontally (left and right swap)'],
+                ['v', 'Reflect ↕', 'vertically (top and bottom swap)'],
+              ] as const) {
+                const b = document.createElement('button');
+                b.className = 'btn-secondary';
+                b.textContent = text;
+                b.setAttribute('aria-label', `Reflect ${copy.label} ${aria}`);
+                b.disabled = copy.locked;
+                if (copy.locked) b.title = 'Unlock the copy to reflect it';
+                b.addEventListener('click', (e) => {
+                  e.stopPropagation();
+                  const next = withReflection(controller.doc, copy.key, axis);
+                  if (!next) return;
+                  controller.commit((d) => {
+                    d.intersection = next;
+                  });
+                  build();
+                });
+                reflectRow.appendChild(b);
+              }
+              menu.appendChild(reflectRow);
+            }
           }
         }
         // + Copy: one more construction, in a free spot with a colour of its own (up to six in all).

@@ -68,7 +68,8 @@ export interface IntersectionCopy {
   /** Whether this copy's extension geometry (its dashed extended lines) is drawn. Its bounded
    * construction always is. */
   extensions: boolean;
-  /** Where it is shown: its frame centre moved by `translate`, turned by `rotation` about it. */
+  /** Where it is shown: its frame centre moved by `translate`, turned by `rotation` about it — after
+   * being reflected across its own horizontal axis when `pose.mirror` (never the Original). */
   pose: InstancePose;
   /** Locked: it stays exactly where it is — never dragged, turned, aligned onto another or spread —
    * while it stays selectable and a reference others can be aligned to. */
@@ -93,7 +94,7 @@ export function intersectionCopies(doc: Doc, live?: { drag?: { key: string; x: n
       label: n === 0 ? 'Original' : `Copy ${n}`,
       colour: saved[piece.key]?.colour ?? LEGACY_COLOURS[piece.key] ?? PALETTE[n % PALETTE.length]!,
       extensions: saved[piece.key]?.extensions ?? true,
-      pose: { i, j, translate: at, rotation: drag ? drag.rotation : piece.rotation, mirror: false },
+      pose: { i, j, translate: at, rotation: drag ? drag.rotation : piece.rotation, mirror: piece.mirror === true },
       locked,
     };
   });
@@ -106,7 +107,7 @@ export function placedAt(layout: IntersectionLayout, key: string, shown: Vec2, r
   return {
     ...layout,
     pieces: layout.pieces.map((p) =>
-      p.key === key ? { key, x: layout.centre.x + (shown.x - layout.centre.x) / s, y: layout.centre.y + (shown.y - layout.centre.y) / s, rotation } : { ...p },
+      p.key === key ? { ...p, x: layout.centre.x + (shown.x - layout.centre.x) / s, y: layout.centre.y + (shown.y - layout.centre.y) / s, rotation } : { ...p },
     ),
   };
 }
@@ -200,6 +201,34 @@ export function withSpreadAround(doc: Doc, spread: number): IntersectionLayout {
       return { ...p, x: next.centre.x + (shown.x - next.centre.x) / next.spread, y: next.centre.y + (shown.y - next.centre.y) / next.spread };
     }),
   };
+}
+
+const wrapAngle = (a: number) => Math.atan2(Math.sin(a), Math.cos(a));
+
+/** Whether a copy is reflected. */
+export function isReflected(doc: Doc, key: string): boolean {
+  return layoutOf(doc).pieces.some((p) => p.key === key && p.mirror === true);
+}
+
+/**
+ * The arrangement with one copy reflected about its own centre, across the artwork's vertical axis
+ * ('h': left and right swap) or its horizontal axis ('v': top and bottom swap). A copy is one stored
+ * reflection plus its turn: reflecting across the horizontal axis keeps or drops the reflection and
+ * negates the turn; across the vertical axis, the same and a half turn — so reflecting twice the same
+ * way gives back exactly where it was, and both ways together are a half turn. Its centre never moves.
+ * Never the Original, never a locked copy (null).
+ */
+export function withReflection(doc: Doc, key: string, axis: 'h' | 'v'): NonNullable<Doc['intersection']> | null {
+  if (key === PRIMARY || isLocked(doc, key)) return null;
+  const layout = layoutOf(doc);
+  if (!layout.pieces.some((p) => p.key === key)) return null;
+  const pieces = layout.pieces.map((p) => {
+    if (p.key !== key) return { ...p };
+    const { mirror, ...rest } = p;
+    const rotation = wrapAngle(axis === 'h' ? Math.PI - p.rotation : -p.rotation);
+    return mirror ? { ...rest, rotation } : { ...rest, rotation, mirror: true as const };
+  });
+  return withLayout(doc, { ...layout, pieces });
 }
 
 /** Whether a construction is locked in place. */

@@ -157,7 +157,9 @@ export function renderIntersection(ctx: CanvasRenderingContext2D, controller: Ap
   // Select arranges: the selected construction shows its rotation ring. A construction tool builds
   // on the ACTIVE instance (the selected one — the Primary until another is): only a quiet ring.
   const building = !!controller.tool && controller.tool !== 'select' && !developing;
-  const selected = copies.find((c) => c.key === controller.intersectionSelected) ?? (building ? copies[0] : undefined);
+  // (A reflected copy is never built on — the Original stands in for it: main.ts activeCopy.)
+  const picked = copies.find((c) => c.key === controller.intersectionSelected);
+  const selected = building ? (picked && !picked.pose.mirror ? picked : copies[0]) : picked;
   // A locked construction has nothing to grab: its ring, without a handle.
   if (selected && !developing) drawRotationRing(ctx, doc, view, selected, controller.intersectionDrag?.key === selected.key && controller.intersectionDrag.mode === 'turn', !building && !selected.locked);
   // Locked constructions: a small padlock at the centre, in their own colour (screen only).
