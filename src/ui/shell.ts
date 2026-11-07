@@ -1874,6 +1874,9 @@ export function buildShell(
     onOpen: () => void;
     onSave: () => void;
     onSaveAs: () => void;
+    /** Project files: the open artwork as a file to take elsewhere, and an artwork from such a file. */
+    onSaveProject: () => void;
+    onOpenProject: () => void;
     /** UI-1: whether the open artwork has changes not saved (named in the menu's heading). */
     unsaved: () => boolean;
     /** UI-2: a drawing preference changed (the saved artwork keeps it too). */
@@ -1912,6 +1915,10 @@ export function buildShell(
         { label: 'Open…', onSelect: () => opts.onOpen() },
         { label: 'Save', onSelect: () => opts.onSave() },
         { label: 'Save As…', onSelect: () => opts.onSaveAs() },
+        // Project files — the whole editable artwork, for another browser or device (images and
+        // Timelapse stay under Share).
+        { label: 'Save project file…', divided: true, onSelect: () => opts.onSaveProject() },
+        { label: 'Open project file…', onSelect: () => opts.onOpenProject() },
         // UI-3: the reference image (Reference Library, import, Transform, Lock, Remove, this
         // workspace's visibility and strength) — formerly the image button on the canvas row.
         { label: 'Reference image…', divided: true, onSelect: () => openReferencePanel() },

@@ -85,7 +85,7 @@ export function filenameStem(name: string): string {
 
 /** The artwork's own name (or Construct-Repeat-<date> while it has none); a name already handed
  * out gains the date and time, e.g. Eight-Point-Star_2026-09-24_0148.png. */
-export function shareFilename(doc: { name: string; named: boolean }, ext: 'png' | 'svg' | 'mp4' | 'webm', now = new Date(), suffix = ''): string {
+export function shareFilename(doc: { name: string; named: boolean }, ext: 'png' | 'svg' | 'mp4' | 'webm' | 'compass-repeat.json', now = new Date(), suffix = ''): string {
   const stem = ((doc.named && filenameStem(doc.name)) || `Construct-Repeat-${dateStamp(now)}`) + suffix;
   const used = usedFilenames();
   const candidates = doc.named && filenameStem(doc.name)
@@ -144,6 +144,23 @@ function download(blob: Blob, filename: string): void {
   a.click();
   a.remove();
   setTimeout(() => URL.revokeObjectURL(url), 10_000);
+}
+
+/** A plain download, never the share sheet (e.g. a project file kept on this computer). */
+export function saveFile(blob: Blob, filename: string): void {
+  download(blob, filename);
+  markFilenameUsed(filename);
+}
+
+/** Whether this very file could go to the system share sheet (some browsers share images but not
+ * other kinds of file). */
+export function canShareFile(blob: Blob, filename: string): boolean {
+  if (!fileShareSupport().files) return false;
+  try {
+    return navigator.canShare({ files: [new File([blob], filename, { type: blob.type })] });
+  } catch {
+    return false;
+  }
 }
 
 /** Where file sharing is genuinely available, the operating system's own share sheet (Save,

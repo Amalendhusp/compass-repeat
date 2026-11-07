@@ -54,6 +54,8 @@ import { refreshSuggestedSpacing } from './geometry/repeatSetup.ts';
 import { repeatUnit } from './geometry/repeatUnit.ts';
 import { preventSafariPageZoom } from './interaction/preventPageZoom.ts';
 import { migrateLegacyFillKeys } from './geometry/regions.ts';
+import { buildProjectFile, PROJECT_EXTENSION, ProjectFileError, readProjectFile, sizeLabel, writeImportedArtwork, type ProjectToImport } from './persist/projectFile.ts';
+import { canShareFile, deliverFile, saveFile, shareFilename } from './render/export.ts';
 
 const root = document.getElementById('app');
 if (!root) throw new Error('missing #app root');
@@ -239,6 +241,8 @@ function boot(doc: Doc, opts: { fitToScreen: boolean; history?: { undo: Doc[]; r
     onOpen: () => showStart('artworks'),
     onSave: () => saveArtwork(),
     onSaveAs: () => saveAsNewArtwork(),
+    onSaveProject: () => saveOpenAsProjectFile(),
+    onOpenProject: () => chooseProjectFile(),
     unsaved: () => isDirty(),
     onPrefs: () => persistPrefs(),
     getView: () => getView(),
@@ -660,6 +664,145 @@ function saveAsNewArtwork(): void {
   });
 }
 
+// ---- Project files: one artwork, complete and editable, to take to another browser or device ----
+
+/** A short notice with a single OK. */
+function notice(title: string, body: string): void {
+  openConfirmSheet({ title, body, confirmLabel: 'OK', noCancel: true, onConfirm: () => {} });
+}
+
+/** Menu → Save project file…: the artwork as it is on screen now (unsaved changes included). */
+function saveOpenAsProjectFile(): void {
+  const s = session;
+  if (!s) return;
+  void offerProjectFile(s.controller.doc);
+}
+
+/** Makes the project file for `doc`, then offers it — Share… (the system share sheet, where this
+ * browser can share such a file) or Download. The file is handed over from the tap on that button,
+ * so iOS still counts it as the participant's own action however long the file took to make. */
+async function offerProjectFile(doc: Doc): Promise<void> {
+  // Said only if it takes a moment (a large reference image).
+  const slow = setTimeout(() => showToast('Preparing the project file…', 1600), 400);
+  let built: Awaited<ReturnType<typeof buildProjectFile>>;
+  try {
+    built = await buildProjectFile(doc);
+  } catch (err) {
+    clearTimeout(slow);
+    console.warn('Project file failed:', err);
+    notice('Couldn’t make the project file', 'Something went wrong while preparing it. Nothing was changed — please try again.');
+    return;
+  }
+  clearTimeout(slow);
+  const filename = shareFilename(doc, PROJECT_EXTENSION);
+  const share = canShareFile(built.blob, filename);
+  const reference =
+    built.reference === 'embedded'
+      ? ' Its reference image is included.'
+      : built.reference === 'missing'
+        ? ' Its reference image isn’t on this device, so it can’t be included (its placement is kept).'
+        : '';
+  const downloaded = () => showToast(`Downloaded ${filename}`, 2600);
+  openConfirmSheet({
+    title: 'Project file ready',
+    body: `${filename} · ${sizeLabel(built.bytes)}. Open it in Compass Repeat on any device or browser to keep editing.${reference} Undo and Timelapse history aren’t included.`,
+    confirmLabel: share ? 'Share…' : 'Download',
+    onConfirm: () =>
+      void deliverFile(built.blob, filename).then((r) => {
+        if (r === 'shared') showToast('Project file shared', 2200);
+        else if (r === 'saved') downloaded();
+      }),
+    ...(share
+      ? {
+          secondary: {
+            label: 'Download',
+            onSelect: () => {
+              saveFile(built.blob, filename);
+              downloaded();
+            },
+          },
+        }
+      : {}),
+  });
+}
+
+let projectInput: HTMLInputElement | null = null;
+
+/** Menu / Start screen → Open project file…: the device's own file picker (from the tap itself). */
+function chooseProjectFile(): void {
+  closeAnyPopover();
+  if (!projectInput) {
+    const input = document.createElement('input');
+    input.type = 'file';
+    input.accept = '.json,application/json';
+    input.tabIndex = -1;
+    input.setAttribute('aria-hidden', 'true');
+    input.style.cssText = 'position:fixed;left:0;top:0;width:1px;height:1px;opacity:0;pointer-events:none;';
+    input.addEventListener('change', () => {
+      const file = input.files?.[0];
+      input.value = ''; // the same file can be chosen again
+      if (file) void importProjectFile(file);
+    });
+    document.body.appendChild(input);
+    projectInput = input;
+  }
+  projectInput.click();
+}
+
+/** Reads and checks the file (nothing is written yet), then asks before adding it as a new artwork. */
+async function importProjectFile(file: Blob): Promise<void> {
+  let p: ProjectToImport;
+  try {
+    p = await readProjectFile(file, upgradeSnapshot);
+  } catch (err) {
+    if (!(err instanceof ProjectFileError)) console.warn('Project file could not be read:', err);
+    const e = err instanceof ProjectFileError ? err : new ProjectFileError('This file can’t be opened', 'It couldn’t be read on this device. Nothing on this device was changed.');
+    notice(e.title, e.message);
+    return;
+  }
+  // A new artwork never takes the name of one already here.
+  const taken = new Set((await listArtworks().catch(() => [] as ArtworkSummary[])).filter((a) => a.named).map((a) => a.name));
+  let name = p.name;
+  if (p.named && taken.has(name)) {
+    name = `${p.name} (imported)`;
+    for (let n = 2; taken.has(name); n++) name = `${p.name} (imported ${n})`;
+  }
+  const shown = p.named ? p.name : 'Untitled artwork';
+  const notes = [
+    'It will be added to My Artworks as a new artwork — nothing on this device is replaced.',
+    name !== p.name ? `An artwork called “${p.name}” is already here, so this one will be “${name}”.` : '',
+    p.reference.status === 'embedded' ? 'Its reference image comes with it.' : '',
+    p.reference.status === 'missing' ? 'Its reference image wasn’t in the file, so it opens without it (its placement is kept — choose the image again under Reference image…).' : '',
+    p.reference.status === 'damaged' ? 'Its reference image in the file is damaged, so it opens without it (its placement is kept).' : '',
+    p.contactDropped ? 'Contact details in the file were left out.' : '',
+  ].filter(Boolean);
+  openConfirmSheet({
+    title: `Open “${shown}”?`,
+    body: notes.join(' '),
+    confirmLabel: 'Open',
+    onConfirm: () => confirmLeave(() => void finishImport(p, name)),
+  });
+}
+
+async function finishImport(p: ProjectToImport, name: string): Promise<void> {
+  let id: string;
+  try {
+    id = await writeImportedArtwork(p, name);
+  } catch (err) {
+    const quota = (err as DOMException | null)?.name === 'QuotaExceededError';
+    console.warn('Project import failed:', err);
+    notice('The artwork couldn’t be added', quota ? 'There isn’t enough storage on this device for it. Nothing was changed.' : 'Something went wrong while adding it. Nothing was changed.');
+    return;
+  }
+  closeAnyPopover();
+  if (!(await openArtwork(id))) {
+    showToast('The artwork was added to My Artworks but couldn’t be opened', 3200, 'error');
+    showStart('artworks');
+    return;
+  }
+  showToast(`Opened “${p.named ? name : 'Untitled'}” · a new artwork`, 3000);
+}
+
 /** The process history of a saved artwork goes back to its last Save (a never-saved artwork's is
  * removed). An artwork saved before UI-1 has no record of that: its history is left as it is. */
 async function restoreSavedProcess(id: string): Promise<void> {
@@ -777,6 +920,7 @@ function showStart(focus: 'frames' | 'artworks'): void {
     guide: { onStart: () => startGuide() },
     onChooseFrame: (k) => confirmLeave(() => armDrawFrame(k)),
     onOpenArtwork: (id) => confirmLeave(() => void openFromStart(id)),
+    onOpenProject: () => chooseProjectFile(),
   });
 }
 
@@ -797,6 +941,14 @@ const cardActions: CardActions = {
     void duplicateArtwork(a).then((name) => {
       if (name) showToast(`Duplicated as “${name}”`);
       done();
+    });
+  },
+  /** The saved version of an artwork, as a project file (unsaved changes in hand are not in it). */
+  exportProject(a, done) {
+    void loadDocument(a.id).then((record) => {
+      done();
+      if (!record?.snapshot) return showToast('That artwork could not be read', 2600, 'error');
+      void offerProjectFile(upgraded(record));
     });
   },
   remove(a, done) {

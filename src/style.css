@@ -1050,6 +1050,22 @@ canvas.stage {
   z-index: 10;
 }
 /* UI-1: Recover last session — the one unsaved draft, apart from the saved artworks (dashed brass). */
+/* My Artworks → Open project file… (an artwork from a file, as a new artwork). */
+.start-open-project {
+  display: inline-flex;
+  align-items: center;
+  height: 38px;
+  margin: 6px 0 14px;
+  padding: 0 14px;
+  border: 1px solid var(--hairline);
+  border-radius: 12px;
+  background: var(--paper);
+  color: var(--ink);
+  font: inherit;
+  font-size: 14px;
+  font-weight: 500;
+  cursor: pointer;
+}
 .start-recover {
   display: flex;
   align-items: stretch;

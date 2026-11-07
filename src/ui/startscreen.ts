@@ -33,6 +33,8 @@ export interface StartScreenOptions {
   guide: { onStart?: () => void; note?: string };
   onChooseFrame: (kind: FrameKind) => void;
   onOpenArtwork: (id: string) => void;
+  /** Open project file… — an artwork saved as a file, from this or another device. */
+  onOpenProject?: () => void;
   onClose?: () => void;
 }
 
@@ -50,6 +52,8 @@ export interface RecoveryEntry {
 export interface CardActions {
   rename(artwork: ArtworkSummary, done: () => void): void;
   duplicate(artwork: ArtworkSummary, done: () => void): void;
+  /** Save project file — the saved artwork as a file to open elsewhere. */
+  exportProject?(artwork: ArtworkSummary, done: () => void): void;
   remove(artwork: ArtworkSummary, done: () => void): void;
 }
 
@@ -143,6 +147,15 @@ export function openStartScreen(root: HTMLElement, opts: StartScreenOptions): ()
   artworks.className = 'start-section';
   artworks.id = 'start-artworks';
   artworks.innerHTML = '<h2>My Artworks</h2>';
+  // An artwork saved as a project file (on this or another device) comes in as a new artwork.
+  if (opts.onOpenProject) {
+    const openProject = document.createElement('button');
+    openProject.className = 'start-open-project';
+    openProject.textContent = 'Open project file…';
+    const run = opts.onOpenProject;
+    onTap(openProject, () => run());
+    artworks.appendChild(openProject);
+  }
   // UI-1: Recover last session — the one unsaved working session, above (and apart from) the saved
   // artworks; absent when there is nothing to recover.
   const recoverSlot = document.createElement('div');
@@ -210,6 +223,7 @@ export function openStartScreen(root: HTMLElement, opts: StartScreenOptions): ()
     };
     item('Rename', opts.actions.rename);
     item('Duplicate', opts.actions.duplicate);
+    if (opts.actions.exportProject) item('Save project file', opts.actions.exportProject);
     item('Delete', opts.actions.remove, true);
     page.appendChild(el);
     // Anchored under the ⋮ (above it if there isn't room), inside the scrolling page so it moves with

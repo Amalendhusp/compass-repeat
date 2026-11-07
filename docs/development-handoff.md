@@ -604,6 +604,43 @@ user (D1–D9 as recommended). Do not merge or deploy without explicit approval.
   Copy · Row · Column". Checks: `stage4-ui.mjs` 39/39 and `stage4-region.mjs` 7/7, touch and mouse.
 - **Baseline correction:** the published release's Plate 113 Repeat fingerprint is `b6c2014136565e92·4729`
   (measured on main 9a4ea59); the `c25d06fd…·4321` value below predates the last release changes.
+- **Transformation caption** (commit after Stage 4): a small visible "Transformation" label above Repeat's four
+  choices (`.rule-line .row-caption`, aria-hidden — the group already has that accessible name). Display only.
+  Check: `label.mjs` 7/7.
+
+## Project files (November 2026) — `src/persist/projectFile.ts`
+
+One artwork, complete and editable, as a single `Name.compass-repeat.json` file for another browser or device.
+
+- **Controls.** Menu → Save project file… (the work in hand, unsaved changes included) and Open project file…; My
+  Artworks → Open project file… (works on a device with nothing saved) and card ⋮ → Save project file (the saved
+  version). Never in Share, which stays PNG / SVG / Timelapse.
+- **Format v1.** `{ format: 'compass-repeat-project', formatVersion: 1, app, exportedAt, contains, check, payload }`.
+  `payload.artwork` = name, named, dates, schemaVersion and the Doc exactly as stored (Maps `{__map}`, Sets `{__set}`,
+  non-finite numbers `{__num}`); `payload.reference` = the reference image's record and its working copy as a data
+  URL. `check` = `check64` (64-bit, cyrb-style) of `JSON.stringify(payload)` — re-indenting keeps it valid, any
+  content change fails. Not included: Undo history, process / Timelapse history, email, phone.
+- **Export.** Built first, then a sheet "Project file ready" (name, size, reference included / not on this device,
+  what is left out) with Share… (only where `navigator.canShare` accepts this very file — iOS Safari) and Download.
+  The file is handed over from the tap on that button, so the share sheet keeps its user activation.
+- **Import.** `readProjectFile` does everything in memory: size, JSON, format, version (newer → "Made with a newer
+  Compass Repeat"), check, `snapshotProblem` (frame, points, entities and their references, Maps, Repeat, view,
+  bookmarks, underlay), `upgradeSnapshot`, then a test drawing (every point resolves, `artworkHash`,
+  `makeThumbnail`); the image is decoded (`createImageBitmap`) and its library thumbnail redrawn. Refused files show
+  a notice with OK only, and storage is untouched. Accepted files ask "Open “Name”?" (notes: renamed because the
+  name is taken → "Name (imported)", reference included / missing / damaged, contact details left out); then the
+  usual unsaved-changes question (`confirmLeave`). `writeImportedArtwork` writes a NEW artwork (new id, now, no
+  history); the image is reused only if this device holds the same bytes, otherwise added with scope `'artwork'`;
+  if the artwork write fails that new image is removed again. A missing or damaged image: the artwork opens without
+  it and keeps its placement (shown as missing, as before).
+- **No storage change.** No database, store, key or version changed; nothing existing is ever rewritten or cleared.
+- **Checks** (scratchpad/refine-tests, two isolated Chrome profiles on two origins — A: port 9334 /
+  `localhost:5188`, B: port 9335 / `[::1]:5188`): `project.mjs [A] [B]` 63/63 desktop→phone and phone→desktop
+  (export → transfer → import → edit → save → reload; drawing fingerprints equal; re-import; 7 refused files with
+  storage unchanged; missing / damaged image; contact details; share path with a stubbed share sheet);
+  `project-extra.mjs` 8/8 phone and desktop (Menu, card ⋮, Share panel); `compat-project.mjs` — an artwork saved by
+  the published release, exported by the branch and opened on device B, draws identically and saves an identical
+  record.
 
 ## Exact next step
 
