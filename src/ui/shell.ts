@@ -78,7 +78,8 @@ function colourSwatchRow(menu: HTMLElement, current: string | null, onPick: (col
   const row = document.createElement('div');
   row.className = 'swatch-row';
   const swatches: HTMLButtonElement[] = [];
-  let active = current ? colourRgb(current).toLowerCase() : null;
+  // '' = several colours (a mixed selection): no swatch is lit — not even Default.
+  let active = current ? colourRgb(current).toLowerCase() : current === '' ? '' : null;
   const refresh = () => swatches.forEach((el) => el.classList.toggle('active', (el.dataset.colour ?? null) === active));
   if (extra) {
     const none = document.createElement('button');
@@ -147,25 +148,6 @@ function sliderRow(menu: HTMLElement, opts: { min: number; max: number; step: nu
   row.appendChild(value);
   menu.appendChild(row);
 }
-
-function showColourPopover(anchor: HTMLElement, sections: { title: string; current: string | null; noFill?: boolean; defaultSwatch?: string; onPick: (colour: string | null) => void }[]): void {
-  mountPopover(anchor, (menu) => {
-    for (const s of sections) {
-      popoverSectionLabel(menu, s.title);
-      // C1: `defaultSwatch` offers "Default" — back to the default colour, shown as that colour.
-      const extra = s.noFill ? { label: 'No fill', value: null } : s.defaultSwatch ? { label: 'Default', value: null, swatch: s.defaultSwatch } : undefined;
-      colourSwatchRow(menu, s.current, s.onPick, extra);
-    }
-  });
-}
-
-function showSliderPopover(anchor: HTMLElement, title: string, opts: Parameters<typeof sliderRow>[1]): void {
-  mountPopover(anchor, (menu) => {
-    popoverSectionLabel(menu, title);
-    sliderRow(menu, opts);
-  });
-}
-
 
 /** Mounts an anchored popover shell (positioning, outside-tap dismissal, single-instance),
  * leaving the caller to fill in `menu`. Phase 5.3 item 1: it remembers which control opened it, so
@@ -1973,44 +1955,90 @@ export function buildShell(
   // Sprint S2: Construct only — Repeat's appearance is its own Appearance panel at the top left.
   type AppearanceKind = 'construction' | 'fair' | 'fill';
   const appearanceKind = (): AppearanceKind => (controller.tool === 'fair' ? 'fair' : controller.tool === 'fill' ? 'fill' : 'construction');
-  /** The construction the panel can recolour: whole non-frame lines and circles under a non-Fair
-   * selection (Select only), or none. */
-  function ccTargets(): Entity[] {
-    if (controller.tool !== 'select' || controller.doc.view.workspace !== 'construct') return [];
+  /**
+   * Stage 4 — what a Select selection gives the one colour control (Construct only): the whole lines and
+   * circles whose construction colour it changes (never the frame), the Fair pieces whose stroke it
+   * changes, and the Fair regions whose fill it changes. A construction colour belongs to the whole line
+   * or circle, so a construction segment stands for its whole line here. Null: nothing is selected (or
+   * only points) — the control then shows the drawing colour for the tool in hand.
+   */
+  interface SelectionColouring {
+    entities: Entity[];
+    fairKeys: SegmentKey[];
+    regions: Extract<SelectCandidate, { kind: 'region' }>[];
+    label: string;
+  }
+  function selectionColouring(): SelectionColouring | null {
+    if (controller.tool !== 'select' || controller.doc.view.workspace !== 'construct') return null;
     const doc = controller.doc;
     const sel = controller.selection.filter((c) => c.kind !== 'point');
-    if (sel.length === 0) return [];
+    if (sel.length === 0) return null;
     const keys = selectionKeys(doc, sel);
-    const regions = sel.filter((c) => c.kind === 'region') as Extract<SelectCandidate, { kind: 'region' }>[];
-    if (regions.length > 0 ? regions[0]!.fair : isUniformlyFair(doc, keys)) return [];
+    const fairKeys = keys.filter((k) => doc.segmentStates.get(k)?.state === 'fair');
     const frame = new Set(doc.frame.entityIds);
-    return selectionEntityIds(doc, sel, keys)
-      .map((id) => doc.entities.find((e) => e.id === id))
-      .filter((e): e is Entity => !!e && !frame.has(e.id));
+    const ids = new Set(
+      keys
+        .filter((k) => {
+          const st = doc.segmentStates.get(k)?.state;
+          return st !== 'fair' && st !== 'trimmed';
+        })
+        .map((k) => k.split(':')[0]!),
+    );
+    const entities = [...ids].map((id) => doc.entities.find((e) => e.id === id)).filter((e): e is Entity => !!e && !frame.has(e.id));
+    const regions = sel.filter((c): c is Extract<SelectCandidate, { kind: 'region' }> => c.kind === 'region' && c.fair);
+    const parts: string[] = [];
+    if (regions.length) parts.push(regions.length === 1 ? 'region' : `${regions.length} regions`);
+    if (entities.length) {
+      const circles = entities.filter((e) => e.kind === 'circle').length;
+      const lines = entities.length - circles;
+      parts.push(entities.length === 1 ? (circles ? 'whole circle' : 'whole line') : [lines && `${lines} line${lines === 1 ? '' : 's'}`, circles && `${circles} circle${circles === 1 ? '' : 's'}`].filter(Boolean).join(', '));
+    }
+    if (fairKeys.length && !regions.length) {
+      const n = segmentCount(doc, fairKeys) || fairKeys.length;
+      parts.push(`${n} Fair segment${n === 1 ? '' : 's'}`);
+    }
+    return { entities, fairKeys, regions, label: parts.join(' · ') || 'nothing with a colour of its own' };
   }
+  const strokeOf = (doc: Doc, k: SegmentKey) => doc.segmentStates.get(k)?.stroke ?? doc.fairDefaults;
+  /** The colours a selection shows now: its fills (regions), else its construction and Fair colours. */
+  function selectionColours(sc: SelectionColouring): (string | null)[] {
+    const doc = controller.doc;
+    if (sc.regions.length) return [...new Set(sc.regions.map((r) => getRegionFill(doc, r.sig) ?? null))];
+    return [...new Set([...sc.entities.map((e) => e.colour ?? color.construction), ...sc.fairKeys.map((k) => strokeOf(doc, k).colour)].map((c) => c.toLowerCase()))];
+  }
+  /** What a swatch row shows as current for several colours: the one they share (null = all default /
+   * unfilled), or '' — no swatch lit — when they differ. */
+  const currentOf = (xs: (string | null)[]): string | null => {
+    const lower = xs.map((c) => c?.toLowerCase() ?? null);
+    return lower.every((c) => c === lower[0]) ? (xs[0] ?? null) : '';
+  };
   function refreshCcBtn(): void {
     const doc = controller.doc;
     const kind = appearanceKind();
-    const targets = kind === 'construction' ? ccTargets() : [];
-    ccDot.classList.remove('none');
-    const shown =
-      kind === 'fair'
-        ? doc.fairDefaults.colour
-        : kind === 'fill'
-          ? withAlpha(doc.fillDefaults.colour, doc.fillDefaults.opacity)
-          : targets.length > 0
-            ? targets.every((e) => (e.colour ?? null) === (targets[0]!.colour ?? null))
-              ? (targets[0]!.colour ?? color.construction)
-              : color.construction
-            : (doc.toolPrefs?.constructionColour ?? color.construction);
-    ccDot.style.background = shown;
-    ccBtn.dataset.kind = kind;
-    ccBtn.classList.toggle('recolour', targets.length > 0);
+    const sc = selectionColouring();
+    ccDot.classList.remove('none', 'mixed');
+    ccDot.style.background = '';
+    if (sc && (sc.entities.length || sc.fairKeys.length || sc.regions.length)) {
+      const colours = selectionColours(sc);
+      if (colours.length > 1) {
+        // Mixed: a little wheel of the selection's own colours.
+        ccDot.classList.add('mixed');
+        const cs = colours.slice(0, 4).map((c) => c ?? 'transparent');
+        ccDot.style.background = `conic-gradient(${cs.map((c, i) => `${c} ${(i * 100) / cs.length}% ${((i + 1) * 100) / cs.length}%`).join(', ')})`;
+      } else if (colours[0] === null) ccDot.classList.add('none');
+      else ccDot.style.background = colours[0]!;
+    } else {
+      ccDot.style.background =
+        kind === 'fair' ? doc.fairDefaults.colour : kind === 'fill' ? withAlpha(doc.fillDefaults.colour, doc.fillDefaults.opacity) : (doc.toolPrefs?.constructionColour ?? color.construction);
+    }
+    const mode = sc ? 'selection' : kind;
+    ccBtn.dataset.kind = mode;
+    ccBtn.classList.toggle('recolour', !!sc);
     ccBtn.setAttribute(
       'aria-label',
-      kind === 'fair' ? 'Fair appearance' : kind === 'fill' ? 'Fill appearance' : targets.length > 0 ? 'Appearance · selected construction' : 'Construction colour',
+      sc ? `Colour · selected ${sc.label}` : kind === 'fair' ? 'Fair appearance' : kind === 'fill' ? 'Fill appearance' : 'Construction colour',
     );
-    if (openPopoverAnchor === ccBtn && ccBtn.dataset.open !== kind) closeAnyPopover(); // the tool changed under it
+    if (openPopoverAnchor === ccBtn && ccBtn.dataset.open !== `${mode}|${sc?.label ?? ''}`) closeAnyPopover(); // the tool or selection changed under it
   }
   /** A drawing preference changed: no Undo step; the artwork remembers it in the working draft — and in
    * its saved version only through Save or Save As (Sprint S2). */
@@ -2021,10 +2049,61 @@ export function buildShell(
   };
   function showConstructAppearance(): void {
     const kind = appearanceKind();
-    ccBtn.dataset.open = kind;
+    const sc = selectionColouring();
+    ccBtn.dataset.open = `${sc ? 'selection' : kind}|${sc?.label ?? ''}`;
     mountPopover(ccBtn, (menu) => {
       menu.classList.add('appearance-panel');
       const doc = controller.doc;
+      if (sc) {
+        // A selection: its own colours — one Undo step each — and nothing about the next drawing (that
+        // returns as soon as the selection is cleared).
+        popoverSectionLabel(menu, `Selected · ${sc.label}`);
+        if (!sc.entities.length && !sc.fairKeys.length && !sc.regions.length) {
+          panelHint(menu, 'The frame keeps its own colour. Select lines, circles or Fair pieces to recolour them.');
+          return;
+        }
+        if (sc.regions.length) {
+          popoverSectionLabel(menu, 'Fill');
+          colourSwatchRow(menu, currentOf(sc.regions.map((r) => getRegionFill(doc, r.sig) ?? null)), (colour) =>
+            controller.commit((d) => {
+              for (const r of sc.regions) {
+                if (colour === null) {
+                  removeRegionFill(d, r.sig);
+                  continue;
+                }
+                const existing = getRegionFill(d, r.sig);
+                setRegionFill(d, r.sig, withAlpha(colour, existing ? colourAlpha(existing) : d.fillDefaults.opacity));
+              }
+            }),
+          { label: 'No fill', value: null });
+        }
+        if (sc.entities.length || sc.fairKeys.length) {
+          if (sc.regions.length) popoverSectionLabel(menu, 'Line');
+          const current = currentOf([...sc.entities.map((e) => e.colour ?? null), ...sc.fairKeys.map((k) => doc.segmentStates.get(k)?.stroke?.colour ?? null)]);
+          colourSwatchRow(menu, current, (colour) =>
+            controller.commit((d) => {
+              if (sc.entities.length) setEntityColour(d, sc.entities.map((e) => e.id), colour);
+              for (const k of sc.fairKeys) setSegmentStroke(d, k, colour ?? color.ink, d.segmentStates.get(k)?.stroke?.width ?? d.fairDefaults.width);
+            }),
+          { label: 'Default', value: null, swatch: sc.entities.length ? color.construction : color.ink });
+        }
+        if (sc.fairKeys.length) {
+          popoverSectionLabel(menu, 'Fair width');
+          sliderRow(menu, {
+            min: 1,
+            max: 8,
+            step: 0.5,
+            value: strokeOf(doc, sc.fairKeys[0]!).width,
+            format: (v) => `${v} px`,
+            onCommit: (width) =>
+              controller.commit((d) => {
+                for (const k of sc.fairKeys) setSegmentStroke(d, k, d.segmentStates.get(k)?.stroke?.colour ?? d.fairDefaults.colour, width);
+              }),
+          });
+        }
+        if (sc.entities.length) panelHint(menu, 'A construction colour belongs to the whole line or circle — every construction piece of it changes.');
+        return;
+      }
       if (kind === 'fair') {
         popoverSectionLabel(menu, 'Fair colour · new strokes');
         colourSwatchRow(menu, doc.fairDefaults.colour, (c) => {
@@ -2067,14 +2146,6 @@ export function buildShell(
         });
         panelHint(menu, 'Regions already filled keep their colour.');
         return;
-      }
-      const targets = ccTargets();
-      if (targets.length > 0) {
-        const first = targets[0]!.colour ?? null;
-        const same = targets.every((e) => (e.colour ?? null) === first);
-        const what = targets.length === 1 ? (targets[0]!.kind === 'circle' ? 'whole circle' : 'whole line') : `${targets.length} lines and circles`;
-        popoverSectionLabel(menu, `Selected · ${what}`);
-        colourSwatchRow(menu, same ? first : null, (colour) => controller.commit((d) => setEntityColour(d, targets.map((e) => e.id), colour)), { label: 'Default', value: null, swatch: color.construction });
       }
       popoverSectionLabel(menu, 'Construction · new lines, circles, arcs');
       colourSwatchRow(menu, doc.toolPrefs?.constructionColour ?? null, (colour) => {
@@ -2555,7 +2626,7 @@ export function buildShell(
   // Repeat Colouring (geometry/repeatColour.ts): beside the rule — how copies alternate in
   // orientation there, how they may differ in colour here. A toggle; while on, the lattice rows
   // step aside for its own few controls and a tap colours a region of the repeated design.
-  // UI-4: this row holds the repetition rules only; Fill is its own action on the Source row.
+  // UI-4: this row holds the repetition rules only; Fill is its own action, on its own row (Stage 4).
   const ruleLine = document.createElement('div');
   ruleLine.className = 'space-row';
   ruleLine.appendChild(ruleRow);
@@ -2687,20 +2758,23 @@ export function buildShell(
   patternRow.className = 'space-row';
   const patternLabel = document.createElement('span');
   patternLabel.className = 'space-label';
-  patternLabel.textContent = 'Alternate';
+  // Stage 4: "Colour every other …" — which copies take the second colouring, never how copies are
+  // arranged (that is Repeat's Transformation · Apply to).
+  patternLabel.textContent = 'Colour every other';
   const patternSeg = document.createElement('div');
   patternSeg.className = 'segmented-mini';
   patternSeg.setAttribute('role', 'group');
-  patternSeg.setAttribute('aria-label', 'Alternate');
+  patternSeg.setAttribute('aria-label', 'Colour every other');
   const patternBtns = new Map<PatternBy, HTMLButtonElement>();
   for (const [id, label, title] of [
-    ['copies', 'Copies', 'Every other copy'],
-    ['rows', 'Rows', 'Every other row'],
-    ['columns', 'Columns', 'Every other column'],
+    ['copies', 'Copy', 'Colour every other copy'],
+    ['rows', 'Row', 'Colour every other row'],
+    ['columns', 'Column', 'Colour every other column'],
   ] as const) {
     const b = document.createElement('button');
     b.textContent = label;
     b.title = title;
+    b.setAttribute('aria-label', title);
     onTap(b, () => setPatternBy(id));
     patternBtns.set(id, b);
     patternSeg.appendChild(b);
@@ -2799,8 +2873,14 @@ export function buildShell(
   sourceGroup.appendChild(sourceSeg);
 
   spaceRow.appendChild(sourceGroup);
-  spaceRow.appendChild(colouringBtn);
-  repeatPanel.appendChild(spaceRow);
+  // Stage 4: Repeat reads top to bottom — Source; what changes on every other copy (Transformation) and
+  // which copies (Apply to); then Fill, an editing action of its own, on its own row. (Appearance is the
+  // top-left button.)
+  repeatPanel.insertBefore(spaceRow, ruleLine);
+  const fillRow = document.createElement('div');
+  fillRow.className = 'space-row fill-entry-row';
+  fillRow.appendChild(colouringBtn);
+  repeatPanel.insertBefore(fillRow, colourKindRow);
 
   // Spread: centres in or out about the reference group's centre (100% = the reference); Reference
   // makes what is shown now the reference. Sizes and rotations never change. Logarithmic, 25–500%,
@@ -3446,63 +3526,7 @@ export function buildShell(
       }
     }
 
-    // (Construction colour: the top-bar swatch — Stage A — recolours a construction selection.)
-
-    if (fair) {
-      const firstStroke = doc.segmentStates.get(keys[0]!)?.stroke ?? doc.fairDefaults;
-      const filled = regions.map((r) => getRegionFill(doc, r.sig)).find((c) => c !== undefined) ?? null;
-      chip(
-        'Colour',
-        (el) => {
-          const sections: Parameters<typeof showColourPopover>[1] = [];
-          if (regions.length > 0) {
-            // Phase 5.2 item 10: a region's Colour covers its fill too — "No fill" instead of a
-            // separate Remove fill action.
-            sections.push({
-              title: 'Fill',
-              current: filled,
-              noFill: true,
-              onPick: (colour) =>
-                controller.commit((d) => {
-                  for (const r of regions) {
-                    if (colour === null) {
-                      removeRegionFill(d, r.sig);
-                      continue;
-                    }
-                    const existing = getRegionFill(d, r.sig);
-                    setRegionFill(d, r.sig, withAlpha(colour, existing ? colourAlpha(existing) : d.fillDefaults.opacity));
-                  }
-                }),
-            });
-          }
-          sections.push({
-            title: regions.length > 0 ? 'Line' : 'Stroke colour',
-            current: firstStroke.colour,
-            onPick: (colour) => {
-              if (!colour) return;
-              controller.commit((d) => {
-                for (const k of keys) setSegmentStroke(d, k, colour, d.segmentStates.get(k)?.stroke?.width ?? d.fairDefaults.width);
-              });
-            },
-          });
-          showColourPopover(el, sections);
-        },
-        regions.length > 0 ? filled : firstStroke.colour,
-      );
-      chip('Width', (el) =>
-        showSliderPopover(el, 'Stroke width', {
-          min: 1,
-          max: 8,
-          step: 0.5,
-          value: firstStroke.width,
-          format: (v) => `${v}px`,
-          onCommit: (width) =>
-            controller.commit((d) => {
-              for (const k of keys) setSegmentStroke(d, k, d.segmentStates.get(k)?.stroke?.colour ?? d.fairDefaults.colour, width);
-            }),
-        }),
-      );
-    }
+    // Colour, width and a region's fill: the top-right colour control (Stage 4) — the one place for colour.
   }
 
   /** Phase 5.10: what the selection covers, in words — for the ribbon label and action names. */
@@ -3798,6 +3822,7 @@ export function buildShell(
     if (weaving) refreshWeaveRow();
     ruleLine.style.display = inRepeat && !colouring && !closingGap && !weaving ? '' : 'none';
     spaceRow.style.display = inRepeat && !colouring && !closingGap && !weaving ? '' : 'none';
+    fillRow.style.display = spaceRow.style.display;
     closeGapRow.style.display = closingGap ? '' : 'none';
     if (closingGap) refreshCloseGapRow();
     colourKindRow.style.display = colouring ? '' : 'none';

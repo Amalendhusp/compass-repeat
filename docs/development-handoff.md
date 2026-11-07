@@ -594,6 +594,14 @@ user (D1–D9 as recommended). Do not merge or deploy without explicit approval.
   arrangement + the list only (stored data unchanged: `intersectionSnapshots`); reference-image visibility stays in
   Menu → Reference image…. Checks: `stage3-ui.mjs` 33/33 touch and mouse (shared setup: `setup.mjs`);
   `compat-saved.mjs` also restores the release's bookmark through the new popover.
+- **Stage 4 — one colour control; Repeat rows.** The top-right control (`selectionColouring`, Construct + Select):
+  with a selection it shows the selection's colour (a small wheel when mixed) and edits only it — one swatch row for
+  construction lines (Entity.colour, the whole line or circle — said so) and Fair pieces (stroke) together, Fair width
+  when Fair pieces are included, Fill (No fill, opacity kept) + Line for a Fair region; one Undo step each. Nothing
+  selected: the tool's drawing colour as before (Fair width, Fill opacity kept). The Select ribbon's Colour / Width
+  chips are gone. `colourSwatchRow(current = '')` lights no swatch (mixed). Repeat panel, top to bottom: Source ·
+  Transformation · Apply to · Fill (own row `.fill-entry-row`); Space colouring's alternation reads "Colour every other:
+  Copy · Row · Column". Checks: `stage4-ui.mjs` 39/39 and `stage4-region.mjs` 7/7, touch and mouse.
 - **Baseline correction:** the published release's Plate 113 Repeat fingerprint is `b6c2014136565e92·4729`
   (measured on main 9a4ea59); the `c25d06fd…·4321` value below predates the last release changes.
 
