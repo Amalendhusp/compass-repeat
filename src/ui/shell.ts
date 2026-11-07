@@ -2627,8 +2627,14 @@ export function buildShell(
   // orientation there, how they may differ in colour here. A toggle; while on, the lattice rows
   // step aside for its own few controls and a tap colours a region of the repeated design.
   // UI-4: this row holds the repetition rules only; Fill is its own action, on its own row (Stage 4).
+  // A small visible caption above the four choices (its group already carries the same accessible name).
   const ruleLine = document.createElement('div');
-  ruleLine.className = 'space-row';
+  ruleLine.className = 'space-row rule-line';
+  const ruleCaption = document.createElement('span');
+  ruleCaption.className = 'row-caption';
+  ruleCaption.textContent = 'Transformation';
+  ruleCaption.setAttribute('aria-hidden', 'true');
+  ruleLine.appendChild(ruleCaption);
   ruleLine.appendChild(ruleRow);
   const colouringBtn = document.createElement('button');
   colouringBtn.className = 'space-chip fill-action';
