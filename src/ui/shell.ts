@@ -914,56 +914,26 @@ function showRepeatAppearancePanel(anchor: HTMLElement, controller: AppControlle
 }
 
 /**
- * Intersection Snapshots: a promising arrangement kept on purpose — every construction's place and
+ * Intersection Bookmarks (stored as `intersectionSnapshots`): a promising arrangement kept on purpose — every construction's place and
  * turn, the Spread and its reference, and each copy's colour and extensions — to come back to. Not
  * Undo history: saving or deleting one is never undone; restoring one is a single Undo step.
  */
 const MAX_SNAPSHOTS = 24;
 
-function showIntersectionSnapshotsPanel(anchor: HTMLElement, controller: AppController, arrangement?: { spreadRow: HTMLElement; refresh: () => void }): void {
+function showIntersectionSnapshotsPanel(anchor: HTMLElement, controller: AppController): void {
   mountPopover(
     anchor,
     (menu, close) => {
       menu.classList.add('arrangement-panel');
       const build = () => {
         menu.replaceChildren();
-        // Release R3: the arrangement's own controls live here (not on the canvas): Spread with its
-        // Reference (what 100 % means), the reference image's visibility in Intersect, then bookmarks.
-        if (arrangement) {
-          popoverSectionLabel(menu, 'Arrangement');
-          arrangement.refresh();
-          arrangement.spreadRow.style.display = '';
-          menu.appendChild(arrangement.spreadRow);
-          panelHint(menu, 'Reference: this arrangement becomes Spread 100 %.');
-        }
-        if (controller.doc.underlay) {
-          const v = underlayViewOf(controller.doc, 'intersection');
-          const row = document.createElement('div');
-          row.className = 'popover-toggle-row';
-          const label = document.createElement('span');
-          label.className = 'popover-row-label';
-          label.textContent = 'Reference image';
-          const sw = document.createElement('button');
-          sw.className = 'toggle-switch' + (v.visible ? ' on' : '');
-          sw.innerHTML = '<span class="toggle-knob"></span>';
-          sw.setAttribute('aria-label', `Reference image ${v.visible ? 'shown' : 'hidden'}`);
-          sw.setAttribute('aria-pressed', String(v.visible));
-          sw.addEventListener('click', (e) => {
-            e.stopPropagation();
-            // A view, like the camera: never an Undo step (as in Menu → Reference image…).
-            controller.doc.underlayView = withUnderlayView(controller.doc, 'intersection', { visible: !v.visible });
-            controller.notify();
-            build();
-          });
-          row.appendChild(label);
-          row.appendChild(sw);
-          menu.appendChild(row);
-        }
-        popoverSectionLabel(menu, 'Snapshots');
+        // Stage 3: Bookmarks only — saved arrangements. Spread and its Reference live in the Copies panel;
+        // the reference image's visibility in Menu → Reference image….
+        popoverSectionLabel(menu, 'Bookmarks');
         const list = controller.doc.intersectionSnapshots ?? [];
         const save = document.createElement('button');
         save.className = 'popover-row snapshot-save';
-        save.textContent = list.length >= MAX_SNAPSHOTS ? `Full (${MAX_SNAPSHOTS}) — delete one to save` : 'Save this arrangement';
+        save.textContent = list.length >= MAX_SNAPSHOTS ? `Full (${MAX_SNAPSHOTS}) — delete one to save` : 'Save arrangement';
         save.disabled = list.length >= MAX_SNAPSHOTS;
         save.addEventListener('click', (e) => {
           e.stopPropagation();
@@ -980,12 +950,13 @@ function showIntersectionSnapshotsPanel(anchor: HTMLElement, controller: AppCont
           build();
         });
         menu.appendChild(save);
+        if (list.length === 0) panelHint(menu, 'No bookmarks yet — save an arrangement to come back to it.');
         list.forEach((snap, n) => {
           const row = document.createElement('div');
           row.className = 'snapshot-row';
           const open = document.createElement('button');
           open.className = 'snapshot-open';
-          open.setAttribute('aria-label', `Restore snapshot ${n + 1}`);
+          open.setAttribute('aria-label', `Restore bookmark ${n + 1}`);
           if (snap.thumb) {
             const img = document.createElement('img');
             img.src = snap.thumb;
@@ -1008,14 +979,14 @@ function showIntersectionSnapshotsPanel(anchor: HTMLElement, controller: AppCont
           });
           const del = document.createElement('button');
           del.className = 'snapshot-delete';
-          del.setAttribute('aria-label', `Delete snapshot ${n + 1}`);
+          del.setAttribute('aria-label', `Delete bookmark ${n + 1}`);
           del.innerHTML = '<svg width="14" height="14" viewBox="0 0 14 14" aria-hidden="true"><path d="M3 3 L11 11 M11 3 L3 11" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"/></svg>';
           del.addEventListener('click', (e) => {
             e.stopPropagation();
             close();
             openConfirmSheet({
-              title: `Delete snapshot ${n + 1}?`,
-              body: 'A deleted snapshot cannot be brought back.',
+              title: `Delete bookmark ${n + 1}?`,
+              body: 'A deleted bookmark cannot be brought back.',
               confirmLabel: 'Delete',
               onConfirm: () => {
                 controller.doc.intersectionSnapshots = (controller.doc.intersectionSnapshots ?? []).filter((s) => s.id !== snap.id);
@@ -1035,147 +1006,188 @@ function showIntersectionSnapshotsPanel(anchor: HTMLElement, controller: AppCont
 }
 
 /**
- * Intersection: the copies shown — the primary and each neighbour — with its analysis colour and
- * whether its extensions are drawn (its bounded construction always is). Every change is one commit
- * (Undo / Redo), on `doc.intersection` only. A tap on a copy's colour opens the app's colour row
- * beneath it.
+ * Intersection's Copies panel (Stage 3): first the arrangement as a whole — Spread and its Reference,
+ * which move every copy together — then one compact row per construction (its colour, name and state:
+ * In Repeat, Reflected, its turn, Locked). Choosing a row selects that copy on the canvas and opens its
+ * settings: Include in Repeat, Show extensions, Reflect ↔ / ↕ (never the Original; not while locked),
+ * its colour, Remove (never the Original). Every change is one commit (Undo / Redo), on
+ * `doc.intersection` only.
  */
-function showIntersectionCopiesPanel(anchor: HTMLElement, controller: AppController): void {
+function showIntersectionCopiesPanel(anchor: HTMLElement, controller: AppController, arrangement: { spreadRow: HTMLElement; spreadHint: HTMLElement; refresh: () => void }): void {
   mountPopover(
     anchor,
-    (menu) => {
-      let open: string | null = null;
-      const set = (key: string, patch: { colour?: string; extensions?: boolean }) => {
+    (menu, close) => {
+      menu.classList.add('copies-panel');
+      // The copy whose settings are open — the one selected on the canvas, when the panel opens.
+      let expanded: string | null = controller.intersectionSelected;
+      const commitIx = (next: NonNullable<Doc['intersection']> | null) => {
+        if (!next) return;
         controller.commit((d) => {
-          d.intersection = withCopySetting(d, key, patch);
+          d.intersection = next;
         });
         build();
       };
+      const copiesChanged = (wasCurrent: boolean) => {
+        if (wasCurrent && !referenceCurrent(layoutOf(controller.doc))) showToast('Copies changed — set a new Reference to use Spread');
+      };
+      const toggleRow = (label: string, on: boolean, aria: string, onChange: () => void, title?: string) => {
+        const row = document.createElement('div');
+        row.className = 'popover-toggle-row';
+        const text = document.createElement('span');
+        text.className = 'popover-row-label';
+        text.textContent = label;
+        const sw = document.createElement('button');
+        sw.className = 'toggle-switch' + (on ? ' on' : '');
+        sw.innerHTML = '<span class="toggle-knob"></span>';
+        sw.setAttribute('aria-label', aria);
+        sw.setAttribute('aria-pressed', String(on));
+        if (title) sw.title = title;
+        sw.addEventListener('click', (e) => {
+          e.stopPropagation();
+          onChange();
+        });
+        row.append(text, sw);
+        return row;
+      };
       const build = () => {
         menu.replaceChildren();
-        // Two columns: each copy (its colour), and whether its extensions are drawn — its bounded
-        // construction always is.
-        const header = document.createElement('div');
-        header.className = 'copies-header';
-        popoverSectionLabel(header, 'Copies');
-        // Stage D: which constructions the Intersect Repeat repeats whole (Primary-copies), beside the
-        // Developed Primary.
-        popoverSectionLabel(header, 'In Repeat');
-        popoverSectionLabel(header, 'Extensions');
-        menu.appendChild(header);
-        for (const copy of intersectionCopies(controller.doc)) {
-          const row = document.createElement('div');
-          row.className = 'popover-toggle-row copy-row';
-          const dot = document.createElement('button');
+        const doc = controller.doc;
+
+        // ---- the arrangement: Spread moves every copy in or out together ----
+        popoverSectionLabel(menu, 'Arrangement · moves all copies');
+        arrangement.refresh();
+        arrangement.spreadRow.style.display = '';
+        menu.appendChild(arrangement.spreadRow);
+        arrangement.spreadHint.style.display = '';
+        menu.appendChild(arrangement.spreadHint);
+
+        // ---- the copies: one compact row each; the selected one shows its settings ----
+        popoverSectionLabel(menu, 'Copies');
+        const all = intersectionCopies(doc);
+        for (const copy of all) {
+          const original = copy.key === PRIMARY;
+          const inRepeat = inComposition(doc, copy.key);
+          const open = expanded === copy.key;
+          const turn = Math.round(((((copy.pose.rotation * 180) / Math.PI) % 360) + 360) % 360) % 360;
+          const status: string[] = [];
+          if (inRepeat) status.push('In Repeat');
+          if (copy.pose.mirror) status.push('Reflected');
+          if (turn) status.push(`${turn}°`);
+          if (copy.locked) status.push('Locked');
+          if (!copy.extensions) status.push('No extensions');
+
+          const row = document.createElement('button');
+          row.className = 'copy-row' + (open ? ' open' : '') + (controller.intersectionSelected === copy.key ? ' selected' : '');
+          row.dataset.copy = copy.key;
+          row.setAttribute('aria-expanded', String(open));
+          row.setAttribute('aria-label', `${copy.label}${status.length ? ' · ' + status.join(' · ') : ''}`);
+          const dot = document.createElement('span');
           dot.className = 'copy-colour';
           dot.style.background = copy.colour;
-          dot.setAttribute('aria-label', `${copy.label} colour`);
-          dot.setAttribute('aria-expanded', String(open === copy.key));
-          dot.addEventListener('click', (e) => {
+          const name = document.createElement('span');
+          name.className = 'copy-name';
+          name.textContent = copy.label;
+          const tags = document.createElement('span');
+          tags.className = 'copy-status';
+          for (const t of status) {
+            const tag = document.createElement('span');
+            tag.className = 'copy-tag' + (t === 'Reflected' ? ' reflected' : '');
+            tag.textContent = t === 'Reflected' ? '⇋ Reflected' : t;
+            tags.appendChild(tag);
+          }
+          const chevron = document.createElement('span');
+          chevron.className = 'copy-chevron';
+          chevron.setAttribute('aria-hidden', 'true');
+          chevron.textContent = open ? '⌃' : '⌄';
+          row.append(dot, name, tags, chevron);
+          row.addEventListener('click', (e) => {
             e.stopPropagation();
-            open = open === copy.key ? null : copy.key;
+            // Choosing a copy here selects it on the canvas too; choosing the open one again folds it.
+            if (open) expanded = null;
+            else {
+              expanded = copy.key;
+              controller.intersectionSelected = copy.key;
+              controller.notify();
+            }
             build();
           });
-          const label = document.createElement('span');
-          label.className = 'popover-row-label';
-          label.textContent = copy.pose.mirror ? `${copy.label} · reflected` : copy.label;
-          const sw = document.createElement('button');
-          sw.className = 'toggle-switch' + (copy.extensions ? ' on' : '');
-          sw.innerHTML = '<span class="toggle-knob"></span>';
-          sw.setAttribute('aria-label', `${copy.label} extensions ${copy.extensions ? 'on' : 'off'}`);
-          sw.setAttribute('aria-pressed', String(copy.extensions));
-          sw.addEventListener('click', (e) => {
-            e.stopPropagation();
-            set(copy.key, { extensions: !copy.extensions });
-          });
-          const inRepeat = inComposition(controller.doc, copy.key);
-          const rep = document.createElement('button');
-          rep.className = 'toggle-switch copy-in-repeat' + (inRepeat ? ' on' : '');
-          rep.innerHTML = '<span class="toggle-knob"></span>';
-          rep.setAttribute('aria-label', `${copy.label} in Repeat ${inRepeat ? 'on' : 'off'}`);
-          rep.setAttribute('aria-pressed', String(inRepeat));
-          rep.title = 'Repeat this whole construction, where it stands, with the Developed Primary';
-          rep.addEventListener('click', (e) => {
-            e.stopPropagation();
-            controller.commit((d) => {
-              d.intersection = withPrimaryCopy(d, copy.key, !inRepeat);
-            });
-            build();
-          });
-          row.appendChild(dot);
-          row.appendChild(label);
-          row.appendChild(rep);
-          row.appendChild(sw);
-          // Any copy can be removed again (one Undo step); the Primary stays.
-          const remove = document.createElement('button');
-          remove.className = 'copy-remove';
-          if (copy.key === PRIMARY) {
-            remove.disabled = true;
-            remove.setAttribute('aria-hidden', 'true');
+          menu.appendChild(row);
+          if (!open) continue;
+
+          const detail = document.createElement('div');
+          detail.className = 'copy-detail';
+          detail.appendChild(
+            toggleRow('Include in Repeat', inRepeat, `${copy.label} in Repeat ${inRepeat ? 'on' : 'off'}`, () => {
+              controller.commit((d) => {
+                d.intersection = withPrimaryCopy(d, copy.key, !inRepeat);
+              });
+              build();
+            }, 'Repeat this whole construction, where it stands, with the Developed Primary'),
+          );
+          detail.appendChild(
+            toggleRow('Show extensions', copy.extensions, `${copy.label} extensions ${copy.extensions ? 'on' : 'off'}`, () => commitIx(withCopySetting(controller.doc, copy.key, { extensions: !copy.extensions }))),
+          );
+          if (original) {
+            panelHint(detail, 'The Original stays as drawn — it can’t be reflected or removed.');
           } else {
+            const reflectRow = document.createElement('div');
+            reflectRow.className = 'copy-reflect-row';
+            for (const [axis, text, aria] of [
+              ['h', 'Reflect ↔', 'horizontally (left and right swap)'],
+              ['v', 'Reflect ↕', 'vertically (top and bottom swap)'],
+            ] as const) {
+              const b = document.createElement('button');
+              b.className = 'panel-secondary';
+              b.textContent = text;
+              b.setAttribute('aria-label', `Reflect ${copy.label} ${aria}`);
+              b.disabled = copy.locked;
+              b.addEventListener('click', (e) => {
+                e.stopPropagation();
+                commitIx(withReflection(controller.doc, copy.key, axis));
+              });
+              reflectRow.appendChild(b);
+            }
+            detail.appendChild(reflectRow);
+            if (copy.locked) panelHint(detail, 'Locked — unlock it to move, turn or reflect it.');
+          }
+          const colourLabel = document.createElement('div');
+          colourLabel.className = 'copy-detail-label';
+          colourLabel.textContent = 'Colour';
+          detail.appendChild(colourLabel);
+          const host = document.createElement('div');
+          colourSwatchRow(host, copy.colour, (c) => {
+            if (c) commitIx(withCopySetting(controller.doc, copy.key, { colour: c }));
+          });
+          const swatches = host.firstElementChild as HTMLElement;
+          swatches.classList.add('panel-swatches');
+          swatches.setAttribute('aria-label', `${copy.label} colour`);
+          detail.appendChild(swatches);
+          if (!original) {
+            // Any copy can be removed again (one Undo step); the Original stays.
+            const remove = document.createElement('button');
+            remove.className = 'copy-remove-btn';
+            remove.textContent = `Remove ${copy.label}`;
             remove.setAttribute('aria-label', `Remove ${copy.label}`);
-            remove.innerHTML = '<svg width="14" height="14" viewBox="0 0 14 14" aria-hidden="true"><path d="M3 3 L11 11 M11 3 L3 11" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"/></svg>';
             remove.addEventListener('click', (e) => {
               e.stopPropagation();
               const wasCurrent = referenceCurrent(layoutOf(controller.doc));
               const next = withoutCopy(controller.doc, copy.key);
               if (!next) return;
               if (controller.intersectionSelected === copy.key) controller.intersectionSelected = null;
-              controller.commit((d) => {
-                d.intersection = next;
-              });
-              if (wasCurrent && !referenceCurrent(layoutOf(controller.doc))) showToast('Copies changed — set a new Reference to use Spread');
-              build();
+              expanded = null;
+              commitIx(next);
+              copiesChanged(wasCurrent);
             });
+            detail.appendChild(remove);
           }
-          row.appendChild(remove);
-          menu.appendChild(row);
-          if (open === copy.key) {
-            const host = document.createElement('div');
-            colourSwatchRow(host, copy.colour, (c) => {
-              if (c) set(copy.key, { colour: c });
-            });
-            const swatches = host.firstElementChild as HTMLElement;
-            swatches.classList.add('panel-swatches');
-            swatches.setAttribute('aria-label', `${copy.label} colour`);
-            menu.appendChild(swatches);
-            // Stage 2: reflect the copy about its own centre — across the vertical axis (left and right
-            // swap) or the horizontal axis (top and bottom swap). One Undo step each. Never the Original;
-            // a locked copy stays exactly as it is. (Stage 3 gives these their place in the Copies panel.)
-            if (copy.key !== PRIMARY) {
-              const reflectRow = document.createElement('div');
-              reflectRow.className = 'copy-reflect-row';
-              for (const [axis, text, aria] of [
-                ['h', 'Reflect ↔', 'horizontally (left and right swap)'],
-                ['v', 'Reflect ↕', 'vertically (top and bottom swap)'],
-              ] as const) {
-                const b = document.createElement('button');
-                b.className = 'btn-secondary';
-                b.textContent = text;
-                b.setAttribute('aria-label', `Reflect ${copy.label} ${aria}`);
-                b.disabled = copy.locked;
-                if (copy.locked) b.title = 'Unlock the copy to reflect it';
-                b.addEventListener('click', (e) => {
-                  e.stopPropagation();
-                  const next = withReflection(controller.doc, copy.key, axis);
-                  if (!next) return;
-                  controller.commit((d) => {
-                    d.intersection = next;
-                  });
-                  build();
-                });
-                reflectRow.appendChild(b);
-              }
-              menu.appendChild(reflectRow);
-            }
-          }
+          menu.appendChild(detail);
         }
-        // + Copy: one more construction, in a free spot with a colour of its own (up to six in all).
-        const count = intersectionCopies(controller.doc).length;
+        // + Add copy: one more construction, in a free spot with a colour of its own (up to six in all).
         const add = document.createElement('button');
         add.className = 'popover-row copy-add';
-        add.textContent = count >= MAX_CONSTRUCTIONS ? `${MAX_CONSTRUCTIONS} constructions — the most for now` : '+ Copy';
-        add.disabled = count >= MAX_CONSTRUCTIONS;
+        const full = all.length >= MAX_CONSTRUCTIONS;
+        add.textContent = full ? `${MAX_CONSTRUCTIONS} constructions — the most for now` : `+ Add copy  ·  ${all.length} of ${MAX_CONSTRUCTIONS}`;
+        add.disabled = full;
         add.addEventListener('click', (e) => {
           e.stopPropagation();
           const wasCurrent = referenceCurrent(layoutOf(controller.doc));
@@ -1184,10 +1196,16 @@ function showIntersectionCopiesPanel(anchor: HTMLElement, controller: AppControl
           controller.commit((d) => {
             d.intersection = next;
           });
-          if (wasCurrent && !referenceCurrent(layoutOf(controller.doc))) showToast('Copies changed — set a new Reference to use Spread');
+          // The new copy is selected, its settings open.
+          const added = layoutOf(controller.doc).pieces.at(-1)?.key ?? null;
+          expanded = added;
+          controller.intersectionSelected = added;
+          controller.notify();
+          copiesChanged(wasCurrent);
           build();
         });
         menu.appendChild(add);
+        void close;
       };
       build();
     },
@@ -2084,7 +2102,7 @@ export function buildShell(
   const ixCopiesBtn = document.createElement('button');
   ixCopiesBtn.className = 'icon-btn';
   ixCopiesBtn.setAttribute('aria-label', 'Copies');
-  onTap(ixCopiesBtn, () => togglePanel(ixCopiesBtn, () => showIntersectionCopiesPanel(ixCopiesBtn, controller)));
+  onTap(ixCopiesBtn, () => togglePanel(ixCopiesBtn, () => showIntersectionCopiesPanel(ixCopiesBtn, controller, { spreadRow: ixSpreadRow, spreadHint: ixSpreadHint, refresh: () => refreshIntersectionRows() })));
   leftSide.appendChild(ixCopiesBtn);
   function refreshIxCopiesBtn(): void {
     const copies = intersectionCopies(controller.doc).slice(0, 4);
@@ -2166,7 +2184,7 @@ export function buildShell(
     controller.notify();
   });
 
-  // Intersection: in Grid / guides' slot, Snapshots — discoveries kept on purpose (not Undo history),
+  // Intersection: in Grid / guides' slot, Bookmarks — arrangements kept on purpose (not Undo history),
   // with how many there are.
   const ixSnapshotsBtn = document.createElement('button');
   ixSnapshotsBtn.className = 'icon-btn badge-host';
@@ -2174,12 +2192,12 @@ export function buildShell(
   const ixSnapshotsBadge = document.createElement('span');
   ixSnapshotsBadge.className = 'icon-badge';
   ixSnapshotsBtn.appendChild(ixSnapshotsBadge);
-  onTap(ixSnapshotsBtn, () => togglePanel(ixSnapshotsBtn, () => showIntersectionSnapshotsPanel(ixSnapshotsBtn, controller, { spreadRow: ixSpreadRow, refresh: () => refreshIntersectionRows() })));
+  onTap(ixSnapshotsBtn, () => togglePanel(ixSnapshotsBtn, () => showIntersectionSnapshotsPanel(ixSnapshotsBtn, controller)));
   function refreshIxSnapshotsBtn(): void {
     const n = controller.doc.intersectionSnapshots?.length ?? 0;
     ixSnapshotsBadge.textContent = n ? String(n) : '';
     ixSnapshotsBadge.style.display = n ? '' : 'none';
-    ixSnapshotsBtn.setAttribute('aria-label', `Snapshots · ${n} saved`);
+    ixSnapshotsBtn.setAttribute('aria-label', `Bookmarks · ${n} saved`);
   }
 
   rightSide.appendChild(guidesBtn);
@@ -2790,6 +2808,9 @@ export function buildShell(
   // reference is out of date: Spread rests (and says so) until Reference is set again.
   const ixSpreadRow = document.createElement('div');
   ixSpreadRow.className = 'space-row spread-row';
+  // What Spread's 100 % means now — kept with the row, so it follows a new Reference at once.
+  const ixSpreadHint = document.createElement('div');
+  ixSpreadHint.className = 'panel-note spread-hint';
   const spreadLabel = document.createElement('span');
   spreadLabel.className = 'space-label';
   spreadLabel.textContent = 'Spread';
@@ -2996,7 +3017,7 @@ export function buildShell(
   ixSnapRow.appendChild(alignRow);
   repeatPanel.appendChild(ixSnapRow);
 
-  // Release R3: Spread lives in the bookmark popover (showIntersectionSnapshotsPanel), not on the canvas.
+  // Stage 3: Spread lives in the Copies panel (showIntersectionCopiesPanel), not on the canvas.
 
   /** The Snap row for the current picks — after first dropping any pick that no longer exists
    * (never kept at an old position). */
@@ -3100,6 +3121,7 @@ export function buildShell(
   function refreshIntersectionRows(): void {
     const layout = layoutOf(controller.doc);
     const current = referenceCurrent(layout);
+    ixSpreadHint.textContent = current ? 'Reference makes this layout Spread 100 %.' : 'Copies changed — tap Reference to use Spread again.';
     spreadSlider.disabled = !current;
     ixSpreadRow.classList.toggle('stale', !current);
     referenceBtn.classList.toggle('active', !current);

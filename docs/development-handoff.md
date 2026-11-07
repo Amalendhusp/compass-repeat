@@ -586,6 +586,14 @@ user (D1–D9 as recommended). Do not merge or deploy without explicit approval.
   scratchpad on port 5191 — vs the branch: drawing, Space keys and crossings identical under Uniform /
   Alternate / Mirror / turned motif / Intersect source); `compat-saved.mjs` (an artwork saved by the release,
   opened and re-saved by the branch: identical record).
+- **Stage 3 — Intersect panels.** Copies panel (`showIntersectionCopiesPanel`): "Arrangement · moves all copies"
+  (the shared Spread row + Reference, and a hint that follows it — `ixSpreadHint`), then one row per construction
+  (`.copy-row[data-copy]`: colour, name, tags In Repeat / ⇋ Reflected / turn° / Locked / No extensions). A row
+  selects that copy on the canvas and opens its settings (Include in Repeat, Show extensions, Reflect ↔ / ↕, Colour,
+  Remove); the canvas selection opens with the panel. Original: no Reflect / Remove. Bookmarks popover: Save
+  arrangement + the list only (stored data unchanged: `intersectionSnapshots`); reference-image visibility stays in
+  Menu → Reference image…. Checks: `stage3-ui.mjs` 33/33 touch and mouse (shared setup: `setup.mjs`);
+  `compat-saved.mjs` also restores the release's bookmark through the new popover.
 - **Baseline correction:** the published release's Plate 113 Repeat fingerprint is `b6c2014136565e92·4729`
   (measured on main 9a4ea59); the `c25d06fd…·4321` value below predates the last release changes.
 

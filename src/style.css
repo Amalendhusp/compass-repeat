@@ -352,18 +352,6 @@ canvas.stage {
   color: var(--muted);
   cursor: pointer;
 }
-.copy-row .copy-remove {
-  width: 32px;
-  min-width: 32px;
-  height: 32px;
-  border: none;
-  background: transparent;
-  color: var(--muted);
-  cursor: pointer;
-}
-.copy-row .copy-remove:disabled {
-  visibility: hidden;
-}
 .copy-add {
   font-weight: 600;
 }
@@ -391,23 +379,6 @@ canvas.stage {
 .spread-row.stale .spread-value {
   color: var(--muted);
   font-size: 11px;
-}
-.copies-header {
-  display: flex;
-  justify-content: space-between;
-}
-.copy-row .copy-colour {
-  width: 22px;
-  height: 22px;
-  min-width: 22px;
-  border-radius: 50%;
-  border: 2px solid var(--paper);
-  box-shadow: 0 0 0 1px var(--hairline);
-  padding: 0;
-  cursor: pointer;
-}
-.copy-row .popover-row-label {
-  flex: 1;
 }
 /* The workspace switch: Intersection's shorter name only where three full names can't fit. */
 .ws-short {
@@ -2656,6 +2627,124 @@ canvas.stage {
   color: var(--ink);
 }
 
-/* Stage 2: a copy's Reflect actions, under its colour swatches in the Copies panel. */
-.copy-reflect-row { display: flex; gap: 8px; padding: 4px 0 8px; }
-.copy-reflect-row .btn-secondary { flex: 1; min-height: 36px; }
+/* Stage 3 — Intersection's Copies panel: the arrangement (Spread), then one compact row per copy; the
+ * selected copy's settings open beneath its row. */
+.popover-menu.panel.copies-panel {
+  width: min(340px, calc(100vw - 16px));
+  max-height: calc(100vh - 150px);
+  overflow-y: auto;
+}
+.copies-panel .spread-row {
+  padding: 2px 10px;
+  min-width: 0;
+}
+.copies-panel .spread-row .space-label {
+  font-size: 13px;
+}
+.copies-panel .spread-slider {
+  flex: 1 1 auto;
+  width: auto;
+  min-width: 60px;
+}
+.copies-panel .spread-row .space-chip {
+  flex: none;
+  height: 30px;
+  padding: 0 10px;
+  font-size: 13px;
+}
+.popover-menu.panel.copies-panel {
+  overflow-x: hidden;
+}
+.copy-row {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  width: 100%;
+  min-height: 44px;
+  padding: 4px 10px;
+  border: none;
+  border-radius: 10px;
+  background: transparent;
+  color: var(--ink);
+  font: inherit;
+  text-align: left;
+  cursor: pointer;
+}
+.copy-row.selected {
+  background: var(--well);
+}
+.copy-row .copy-colour {
+  width: 22px;
+  height: 22px;
+  min-width: 22px;
+  border-radius: 50%;
+  border: 2px solid var(--paper);
+  box-shadow: 0 0 0 1px var(--hairline);
+}
+.copy-row .copy-name {
+  font-size: 13.5px;
+  font-weight: 600;
+  white-space: nowrap;
+}
+.copy-row .copy-status {
+  flex: 1;
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: flex-end;
+  gap: 4px;
+}
+.copy-tag {
+  font-size: 11px;
+  line-height: 18px;
+  padding: 0 6px;
+  border-radius: 9px;
+  background: var(--plaster);
+  color: var(--muted);
+  white-space: nowrap;
+}
+.copy-tag.reflected {
+  background: var(--ink);
+  color: var(--paper);
+}
+.copy-row .copy-chevron {
+  width: 14px;
+  color: var(--muted);
+  text-align: center;
+}
+.copy-detail {
+  margin: 0 6px 6px;
+  padding: 2px 0 8px;
+  border-bottom: 1px solid var(--hairline);
+}
+.copy-detail-label {
+  padding: 6px 10px 2px;
+  font-size: 10px;
+  font-weight: 600;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  color: var(--muted);
+}
+.copy-reflect-row {
+  display: flex;
+  gap: 8px;
+  padding: 4px 10px 2px;
+}
+.popover-menu.panel .copy-reflect-row .panel-secondary {
+  flex: 1;
+  height: 36px;
+}
+.popover-menu.panel .copy-reflect-row .panel-secondary:disabled {
+  opacity: 0.45;
+}
+.popover-menu.panel .copy-remove-btn {
+  margin: 8px 10px 0;
+  padding: 0 12px;
+  height: 34px;
+  border: none;
+  border-radius: 10px;
+  background: transparent;
+  color: #a1382b;
+  font: inherit;
+  font-weight: 600;
+  cursor: pointer;
+}
