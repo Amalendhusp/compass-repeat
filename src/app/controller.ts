@@ -243,6 +243,8 @@ export interface FairRun {
 }
 
 export interface LineChoice {
+  /** The chooser's heading (absent: "Which line?"). */
+  title?: string;
   anchorScreen: Vec2;
   candidates: FairRun[];
   focus: number | null;
@@ -339,6 +341,9 @@ export class AppController {
   /** Release R2 — what Intersect Fair offers to develop the Primary from: Fair only (default), or also
    * Construction, or also Extensions. Session state. */
   formLayer: import('../geometry/formSegments.ts').FormLayer = 'fair';
+  /** Fair in Intersect — Whole motif: a tap on a copy includes or excludes its entire Fair motif in the
+   * design (what Repeat repeats from Intersect), instead of taking one segment. Never history. */
+  formWhole = false;
   /** Interlaced (Sprint S3): while on, a tap in Repeat reverses the over/under of the crossing under it.
    * Session state. */
   weaveEdit = false;

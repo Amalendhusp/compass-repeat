@@ -135,7 +135,7 @@ export function renderIntersection(ctx: CanvasRenderingContext2D, controller: Ap
   // translucent and the Developed Primary opaque.
   const developing = controller.tool === 'fair';
   drawArtworkLayer(ctx, layers, (ctx) => {
-    if (developing) drawFairOnly(ctx, doc, view, sc, copies, controller.formLayer);
+    if (developing) drawFairOnly(ctx, doc, view, sc, copies, controller.formLayer, controller.formWhole);
     else drawCopies(ctx, doc, view, sc, copies);
     // Intersect's own construction — over the copies, under the developed Fair; shown while Fair is
     // the tool too (quieter), since Fair develops from it.
@@ -220,7 +220,7 @@ function edgeShown(doc: Doc, copies: IntersectionCopy[], pick: IntersectionPick)
 
 /** Fair in Intersect: each copy's Fair strokes only, in its own colour — translucent (a reference), or
  * stronger for a Primary-copy (repeated whole with the Developed Primary). */
-function drawFairOnly(ctx: CanvasRenderingContext2D, doc: Doc, view: ViewTransform, sc: Scaffold, copies: IntersectionCopy[], layer: FormLayer = 'fair'): void {
+function drawFairOnly(ctx: CanvasRenderingContext2D, doc: Doc, view: ViewTransform, sc: Scaffold, copies: IntersectionCopy[], layer: FormLayer = 'fair', whole = false): void {
   ctx.lineCap = 'round';
   ctx.lineJoin = 'round';
   // Release R2: Construction (and Extensions) offered too — drawn thin beneath the Fair strokes, in each
@@ -248,7 +248,8 @@ function drawFairOnly(ctx: CanvasRenderingContext2D, doc: Doc, view: ViewTransfo
     const fair = new Path2D();
     for (const piece of sc.pieces) if (piece.kind === 'fair') appendPiece(fair, doc, view, copy.pose, piece);
     ctx.strokeStyle = copy.colour;
-    ctx.globalAlpha = inComposition(doc, copy.key) ? PRIMARY_COPY_ALPHA : REFERENCE_FAIR_ALPHA;
+    // Whole motif: in the design or not, as plainly as possible.
+    ctx.globalAlpha = inComposition(doc, copy.key) ? (whole ? 0.95 : PRIMARY_COPY_ALPHA) : whole ? 0.2 : REFERENCE_FAIR_ALPHA;
     ctx.lineWidth = FAIR_WIDTH;
     ctx.stroke(fair);
   }

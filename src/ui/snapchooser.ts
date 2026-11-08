@@ -103,7 +103,7 @@ function modelFor(controller: AppController): Model | null {
   if (lc) {
     return {
       key: lc,
-      title: 'Which line?',
+      title: lc.title ?? 'Which line?',
       options: lc.candidates.map((c, i) => ({ label: c.label, detail: c.detail, colour: RUN_COLOURS[i % RUN_COLOURS.length]! })),
       setFocus: (i) => {
         lc.focus = i;
