@@ -36,7 +36,7 @@ import { onTap } from './tap.ts';
 import { color, fairPalette, stroke } from '../render/tokens.ts';
 import { suggestedFamily, type LatticeFamily } from '../geometry/lattice.ts';
 import { rotationFractionLabel } from '../render/repeatRenderer.ts';
-import { inComposition, withPrimaryCopy, withArrangement, asReference, intersectionCopies, layoutOf, MAX_CONSTRUCTIONS, placedAt, PRIMARY, referenceCurrent, sliderToSpread, SPREAD_SLIDER_MAX, spreadToSlider, withAddedCopy, withCopySetting, withLayout, withLock, withoutCopy, withSpreadAround, isLocked, withReflection } from '../geometry/intersection.ts';
+import { inComposition, withArrangement, asReference, intersectionCopies, layoutOf, MAX_CONSTRUCTIONS, placedAt, PRIMARY, referenceCurrent, sliderToSpread, SPREAD_SLIDER_MAX, spreadToSlider, withAddedCopy, withCopySetting, withLayout, withLock, withoutCopy, withSpreadAround, isLocked, withHidden, withReflection } from '../geometry/intersection.ts';
 import { canMoveAgainst, convertPick, isPointPick, planMatchEdge, planSnap, resolvePick, type PickKind } from '../geometry/intersectionSnap.ts';
 import { PICK_REACH_PX } from '../interaction/tools/intersectionTool.ts';
 import { repeatSource, type RepeatSource } from '../geometry/repeatUnit.ts';
@@ -1000,7 +1000,7 @@ function showIntersectionSnapshotsPanel(anchor: HTMLElement, controller: AppCont
 function showIntersectionCopiesPanel(anchor: HTMLElement, controller: AppController, arrangement: { spreadRow: HTMLElement; spreadHint: HTMLElement; refresh: () => void }): void {
   mountPopover(
     anchor,
-    (menu, close) => {
+    (menu) => {
       menu.classList.add('copies-panel');
       // The copy whose settings are open — the one selected on the canvas, when the panel opens.
       let expanded: string | null = controller.intersectionSelected;
@@ -1014,164 +1014,60 @@ function showIntersectionCopiesPanel(anchor: HTMLElement, controller: AppControl
       const copiesChanged = (wasCurrent: boolean) => {
         if (wasCurrent && !referenceCurrent(layoutOf(controller.doc))) showToast('Copies changed — set a new Reference to use Spread');
       };
-      const toggleRow = (label: string, on: boolean, aria: string, onChange: () => void, title?: string) => {
-        const row = document.createElement('div');
-        row.className = 'popover-toggle-row';
-        const text = document.createElement('span');
-        text.className = 'popover-row-label';
-        text.textContent = label;
-        const sw = document.createElement('button');
-        sw.className = 'toggle-switch' + (on ? ' on' : '');
-        sw.innerHTML = '<span class="toggle-knob"></span>';
-        sw.setAttribute('aria-label', aria);
-        sw.setAttribute('aria-pressed', String(on));
-        if (title) sw.title = title;
-        sw.addEventListener('click', (e) => {
-          e.stopPropagation();
-          onChange();
-        });
-        row.append(text, sw);
-        return row;
-      };
+      let coloursOpen = false;
       const build = () => {
         menu.replaceChildren();
         const doc = controller.doc;
-
-        // ---- the arrangement: Spread moves every copy in or out together ----
-        popoverSectionLabel(menu, 'Arrangement · moves all copies');
-        arrangement.refresh();
-        arrangement.spreadRow.style.display = '';
-        menu.appendChild(arrangement.spreadRow);
-        arrangement.spreadHint.style.display = '';
-        menu.appendChild(arrangement.spreadHint);
-
-        // ---- the copies: one compact row each; the selected one shows its settings ----
-        popoverSectionLabel(menu, 'Copies');
         const all = intersectionCopies(doc);
-        for (const copy of all) {
-          const original = copy.key === PRIMARY;
-          const inRepeat = inComposition(doc, copy.key);
-          const open = expanded === copy.key;
-          const turn = Math.round(((((copy.pose.rotation * 180) / Math.PI) % 360) + 360) % 360) % 360;
-          const status: string[] = [];
-          if (inRepeat) status.push('In Repeat');
-          if (copy.pose.mirror) status.push('Reflected');
-          if (turn) status.push(`${turn}°`);
-          if (copy.locked) status.push('Locked');
-          if (!copy.extensions) status.push('No extensions');
+        const selected = all.find((c) => c.key === expanded) ?? null;
 
-          const row = document.createElement('button');
-          row.className = 'copy-row' + (open ? ' open' : '') + (controller.intersectionSelected === copy.key ? ' selected' : '');
-          row.dataset.copy = copy.key;
-          row.setAttribute('aria-expanded', String(open));
-          row.setAttribute('aria-label', `${copy.label}${status.length ? ' · ' + status.join(' · ') : ''}`);
+        // ---- one row of copies: colour, ⇋ reflected, dashed = hidden, ◆ = whole motif in the design ----
+        const chips = document.createElement('div');
+        chips.className = 'copy-chips';
+        chips.setAttribute('role', 'group');
+        chips.setAttribute('aria-label', 'Copies');
+        for (const copy of all) {
+          const inDesign = inComposition(doc, copy.key);
+          const status = [copy.hidden ? 'hidden' : 'shown', inDesign ? 'whole motif in the design' : '', copy.pose.mirror ? 'reflected' : '', copy.locked ? 'locked' : ''].filter(Boolean);
+          const chipBtn = document.createElement('button');
+          chipBtn.className = 'copy-chip' + (copy.key === expanded ? ' selected' : '') + (copy.hidden ? ' hidden-copy' : '');
+          chipBtn.dataset.copy = copy.key;
+          chipBtn.setAttribute('aria-pressed', String(copy.key === expanded));
+          chipBtn.setAttribute('aria-label', `${copy.label} · ${status.join(' · ')}`);
           const dot = document.createElement('span');
-          dot.className = 'copy-colour';
-          dot.style.background = copy.colour;
-          const name = document.createElement('span');
-          name.className = 'copy-name';
-          name.textContent = copy.label;
-          const tags = document.createElement('span');
-          tags.className = 'copy-status';
-          for (const t of status) {
-            const tag = document.createElement('span');
-            tag.className = 'copy-tag' + (t === 'Reflected' ? ' reflected' : '');
-            tag.textContent = t === 'Reflected' ? '⇋ Reflected' : t;
-            tags.appendChild(tag);
+          dot.className = 'copy-chip-dot';
+          if (!copy.hidden) dot.style.background = copy.colour;
+          else dot.style.borderColor = copy.colour;
+          if (copy.pose.mirror) dot.textContent = '⇋';
+          if (inDesign) {
+            const diamond = document.createElement('span');
+            diamond.className = 'copy-chip-diamond';
+            diamond.textContent = '◆';
+            diamond.setAttribute('aria-hidden', 'true');
+            dot.appendChild(diamond);
           }
-          const chevron = document.createElement('span');
-          chevron.className = 'copy-chevron';
-          chevron.setAttribute('aria-hidden', 'true');
-          chevron.textContent = open ? '⌃' : '⌄';
-          row.append(dot, name, tags, chevron);
-          row.addEventListener('click', (e) => {
+          const name = document.createElement('span');
+          name.className = 'copy-chip-name';
+          name.textContent = copy.key === PRIMARY ? 'Original' : copy.label.replace('Copy ', '');
+          chipBtn.append(dot, name);
+          chipBtn.addEventListener('click', (e) => {
             e.stopPropagation();
-            // Choosing a copy here selects it on the canvas too; choosing the open one again folds it.
-            if (open) expanded = null;
-            else {
-              expanded = copy.key;
-              controller.intersectionSelected = copy.key;
-              controller.notify();
-            }
+            // Choosing a copy here selects it on the canvas too; choosing it again closes it.
+            expanded = expanded === copy.key ? null : copy.key;
+            coloursOpen = false;
+            controller.intersectionSelected = expanded;
+            controller.notify();
             build();
           });
-          menu.appendChild(row);
-          if (!open) continue;
-
-          const detail = document.createElement('div');
-          detail.className = 'copy-detail';
-          detail.appendChild(
-            toggleRow('Include in Repeat', inRepeat, `${copy.label} in Repeat ${inRepeat ? 'on' : 'off'}`, () => {
-              controller.commit((d) => {
-                d.intersection = withPrimaryCopy(d, copy.key, !inRepeat);
-              });
-              build();
-            }, 'Repeat this whole construction, where it stands, with the Developed Primary'),
-          );
-          detail.appendChild(
-            toggleRow('Show extensions', copy.extensions, `${copy.label} extensions ${copy.extensions ? 'on' : 'off'}`, () => commitIx(withCopySetting(controller.doc, copy.key, { extensions: !copy.extensions }))),
-          );
-          if (original) {
-            panelHint(detail, 'The Original stays as drawn — it can’t be reflected or removed.');
-          } else {
-            const reflectRow = document.createElement('div');
-            reflectRow.className = 'copy-reflect-row';
-            for (const [axis, text, aria] of [
-              ['h', 'Reflect ↔', 'horizontally (left and right swap)'],
-              ['v', 'Reflect ↕', 'vertically (top and bottom swap)'],
-            ] as const) {
-              const b = document.createElement('button');
-              b.className = 'panel-secondary';
-              b.textContent = text;
-              b.setAttribute('aria-label', `Reflect ${copy.label} ${aria}`);
-              b.disabled = copy.locked;
-              b.addEventListener('click', (e) => {
-                e.stopPropagation();
-                commitIx(withReflection(controller.doc, copy.key, axis));
-              });
-              reflectRow.appendChild(b);
-            }
-            detail.appendChild(reflectRow);
-            if (copy.locked) panelHint(detail, 'Locked — unlock it to move, turn or reflect it.');
-          }
-          const colourLabel = document.createElement('div');
-          colourLabel.className = 'copy-detail-label';
-          colourLabel.textContent = 'Colour';
-          detail.appendChild(colourLabel);
-          const host = document.createElement('div');
-          colourSwatchRow(host, copy.colour, (c) => {
-            if (c) commitIx(withCopySetting(controller.doc, copy.key, { colour: c }));
-          });
-          const swatches = host.firstElementChild as HTMLElement;
-          swatches.classList.add('panel-swatches');
-          swatches.setAttribute('aria-label', `${copy.label} colour`);
-          detail.appendChild(swatches);
-          if (!original) {
-            // Any copy can be removed again (one Undo step); the Original stays.
-            const remove = document.createElement('button');
-            remove.className = 'copy-remove-btn';
-            remove.textContent = `Remove ${copy.label}`;
-            remove.setAttribute('aria-label', `Remove ${copy.label}`);
-            remove.addEventListener('click', (e) => {
-              e.stopPropagation();
-              const wasCurrent = referenceCurrent(layoutOf(controller.doc));
-              const next = withoutCopy(controller.doc, copy.key);
-              if (!next) return;
-              if (controller.intersectionSelected === copy.key) controller.intersectionSelected = null;
-              expanded = null;
-              commitIx(next);
-              copiesChanged(wasCurrent);
-            });
-            detail.appendChild(remove);
-          }
-          menu.appendChild(detail);
+          chips.appendChild(chipBtn);
         }
         // + Add copy: one more construction, in a free spot with a colour of its own (up to six in all).
         const add = document.createElement('button');
-        add.className = 'popover-row copy-add';
+        add.className = 'copy-chip copy-add-chip';
         const full = all.length >= MAX_CONSTRUCTIONS;
-        add.textContent = full ? `${MAX_CONSTRUCTIONS} constructions — the most for now` : `+ Add copy  ·  ${all.length} of ${MAX_CONSTRUCTIONS}`;
         add.disabled = full;
+        add.setAttribute('aria-label', full ? `${MAX_CONSTRUCTIONS} constructions — the most for now` : `Add copy · ${all.length} of ${MAX_CONSTRUCTIONS}`);
+        add.innerHTML = '<span class="copy-chip-dot">+</span><span class="copy-chip-name">Add</span>';
         add.addEventListener('click', (e) => {
           e.stopPropagation();
           const wasCurrent = referenceCurrent(layoutOf(controller.doc));
@@ -1180,7 +1076,7 @@ function showIntersectionCopiesPanel(anchor: HTMLElement, controller: AppControl
           controller.commit((d) => {
             d.intersection = next;
           });
-          // The new copy is selected, its settings open.
+          // The new copy is selected, its few settings open.
           const added = layoutOf(controller.doc).pieces.at(-1)?.key ?? null;
           expanded = added;
           controller.intersectionSelected = added;
@@ -1188,8 +1084,108 @@ function showIntersectionCopiesPanel(anchor: HTMLElement, controller: AppControl
           copiesChanged(wasCurrent);
           build();
         });
-        menu.appendChild(add);
-        void close;
+        chips.appendChild(add);
+        menu.appendChild(chips);
+
+        // ---- the selected copy: Colour · Reflect ↔ · Shown / Hidden (and, quietly, Remove) ----
+        if (!selected) {
+          panelHint(menu, 'Choose a copy for its colour, reflection and visibility. Move, turn and lock it on the canvas.');
+        } else {
+          const original = selected.key === PRIMARY;
+          const head = document.createElement('div');
+          head.className = 'copy-head';
+          head.textContent = `${selected.label}${selected.locked ? ' · locked' : ''}${inComposition(doc, selected.key) ? ' · ◆ whole motif in the design' : ''}`;
+          menu.appendChild(head);
+          const actions = document.createElement('div');
+          actions.className = 'copy-actions';
+          const action = (label: string, aria: string, run: () => void, opts2: { pressed?: boolean; disabled?: boolean; dot?: string } = {}) => {
+            const b = document.createElement('button');
+            b.className = 'copy-action' + (opts2.pressed ? ' on' : '');
+            if (opts2.dot) {
+              const d = document.createElement('span');
+              d.className = 'copy-action-dot';
+              d.style.background = opts2.dot;
+              b.appendChild(d);
+            }
+            b.appendChild(document.createTextNode(label));
+            b.setAttribute('aria-label', aria);
+            if (opts2.pressed !== undefined) b.setAttribute('aria-pressed', String(opts2.pressed));
+            b.disabled = !!opts2.disabled;
+            b.addEventListener('click', (e) => {
+              e.stopPropagation();
+              run();
+            });
+            actions.appendChild(b);
+            return b;
+          };
+          action('Colour', `${selected.label} colour`, () => {
+            coloursOpen = !coloursOpen;
+            build();
+          }, { dot: selected.colour, pressed: coloursOpen });
+          // One reflection: left ↔ right. The Original stays as drawn; a locked copy stays as it is.
+          const reflect = action('Reflect ↔', `Reflect ${selected.label} horizontally (left and right swap)`, () => commitIx(withReflection(controller.doc, selected.key, 'h')), {
+            pressed: selected.pose.mirror,
+            disabled: original || selected.locked,
+          });
+          if (original) reflect.title = 'The Original stays as drawn';
+          else if (selected.locked) reflect.title = 'Locked — unlock it on the canvas to reflect it';
+          action(selected.hidden ? 'Hidden' : 'Shown', `${selected.label} ${selected.hidden ? 'hidden' : 'shown'}`, () => commitIx(withHidden(controller.doc, selected.key, !selected.hidden)), { pressed: !selected.hidden });
+          menu.appendChild(actions);
+          if (coloursOpen) {
+            const host = document.createElement('div');
+            colourSwatchRow(host, selected.colour, (c) => {
+              if (c) commitIx(withCopySetting(controller.doc, selected.key, { colour: c }));
+            });
+            const swatches = host.firstElementChild as HTMLElement;
+            swatches.classList.add('panel-swatches');
+            swatches.setAttribute('aria-label', `${selected.label} colours`);
+            menu.appendChild(swatches);
+          }
+          if (selected.hidden) panelHint(menu, 'Hidden: not drawn, picked or developed from, and out of Repeat while hidden. Everything about it is kept.');
+          if (!original) {
+            // Any copy can be removed again (one Undo step); the Original stays.
+            const remove = document.createElement('button');
+            remove.className = 'copy-remove-link';
+            remove.textContent = `Remove ${selected.label}`;
+            remove.setAttribute('aria-label', `Remove ${selected.label}`);
+            remove.addEventListener('click', (e) => {
+              e.stopPropagation();
+              const wasCurrent = referenceCurrent(layoutOf(controller.doc));
+              const next = withoutCopy(controller.doc, selected.key);
+              if (!next) return;
+              if (controller.intersectionSelected === selected.key) controller.intersectionSelected = null;
+              expanded = null;
+              commitIx(next);
+              copiesChanged(wasCurrent);
+            });
+            menu.appendChild(remove);
+          }
+        }
+
+        // ---- slim footer: Spread (moves every copy) with its Reference, and one Extensions switch ----
+        const foot = document.createElement('div');
+        foot.className = 'copies-foot';
+        arrangement.refresh();
+        arrangement.spreadRow.style.display = '';
+        foot.appendChild(arrangement.spreadRow);
+        arrangement.spreadHint.style.display = '';
+        foot.appendChild(arrangement.spreadHint);
+        // Extensions for every copy at once (an older artwork's per-copy settings are kept until this is
+        // used; a mix shows as off, with a word).
+        const extOn = all.every((c) => c.extensions);
+        const mixed = !extOn && all.some((c) => c.extensions);
+        popoverToggleRow(foot, mixed ? 'Extensions · some copies' : 'Extensions', () => extOn, (on) => {
+          controller.commit((d) => {
+            let ix = d.intersection ?? null;
+            for (const c of intersectionCopies(d)) {
+              const tmp = { ...d, intersection: ix ?? d.intersection };
+              ix = withCopySetting(tmp, c.key, { extensions: on });
+            }
+            if (ix) d.intersection = ix;
+          });
+          build();
+        }, 'Show or hide every copy’s extended lines (dashed)');
+        menu.appendChild(foot);
       };
       build();
     },

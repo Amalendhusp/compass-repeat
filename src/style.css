@@ -368,9 +368,6 @@ canvas.stage {
   color: var(--muted);
   cursor: pointer;
 }
-.copy-add {
-  font-weight: 600;
-}
 /* A small count on a top-bar icon (Intersection's Snapshots). */
 .badge-host {
   position: relative;
@@ -2478,9 +2475,6 @@ canvas.stage {
 .copies-header > .popover-section-label:last-child {
   margin-right: 32px; /* over the switch, clear of the remove button */
 }
-.copy-row .toggle-switch {
-  margin: 0 12px;
-}
 
 /* Stage D (D10): Repeat from an empty Intersect composition — what is missing, and the ways on. */
 .empty-composition {
@@ -2687,96 +2681,135 @@ canvas.stage {
 .popover-menu.panel.copies-panel {
   overflow-x: hidden;
 }
-.copy-row {
+/* The copies, side by side: a colour dot each (⇋ reflected, dashed = hidden, ◆ = whole motif in the
+ * design, ring = selected), then a small + to add one. */
+.copy-chips {
   display: flex;
+  flex-wrap: wrap;
+  gap: 4px;
+  padding: 4px 4px 2px;
+}
+.copy-chip {
+  display: flex;
+  flex-direction: column;
   align-items: center;
-  gap: 10px;
-  width: 100%;
-  min-height: 44px;
-  padding: 4px 10px;
+  gap: 3px;
+  min-width: 44px;
+  padding: 4px 2px;
   border: none;
   border-radius: 10px;
   background: transparent;
   color: var(--ink);
   font: inherit;
-  text-align: left;
   cursor: pointer;
 }
-.copy-row.selected {
-  background: var(--well);
-}
-.copy-row .copy-colour {
-  width: 22px;
-  height: 22px;
-  min-width: 22px;
+.copy-chip-dot {
+  position: relative;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 30px;
+  height: 30px;
   border-radius: 50%;
-  border: 2px solid var(--paper);
-  box-shadow: 0 0 0 1px var(--hairline);
+  border: 2px solid transparent;
+  color: var(--paper);
+  font-size: 14px;
+  font-weight: 700;
 }
-.copy-row .copy-name {
-  font-size: 13.5px;
+.copy-chip.selected .copy-chip-dot {
+  box-shadow: 0 0 0 2px var(--paper), 0 0 0 4px var(--ink);
+}
+.copy-chip.hidden-copy .copy-chip-dot {
+  border-style: dashed;
+  color: var(--muted);
+}
+.copy-chip-diamond {
+  position: absolute;
+  right: -5px;
+  bottom: -4px;
+  font-size: 11px;
+  line-height: 1;
+  color: var(--ink);
+  text-shadow: 0 0 2px var(--paper), 0 0 2px var(--paper);
+}
+.copy-chip-name {
+  font-size: 11px;
+  line-height: 14px;
+  color: var(--muted);
+}
+.copy-chip.selected .copy-chip-name {
+  color: var(--ink);
   font-weight: 600;
-  white-space: nowrap;
 }
-.copy-row .copy-status {
+.copy-add-chip .copy-chip-dot {
+  border: 1px solid var(--hairline);
+  color: var(--muted);
+  font-weight: 500;
+  font-size: 18px;
+}
+.copy-add-chip:disabled {
+  opacity: 0.4;
+  cursor: default;
+}
+.copy-head {
+  padding: 6px 10px 4px;
+  font-size: 12.5px;
+  font-weight: 600;
+  color: var(--ink);
+}
+.copy-actions {
+  display: flex;
+  gap: 6px;
+  padding: 0 8px 4px;
+}
+.copy-action {
   flex: 1;
   display: flex;
-  flex-wrap: wrap;
-  justify-content: flex-end;
-  gap: 4px;
-}
-.copy-tag {
-  font-size: 11px;
-  line-height: 18px;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
+  height: 36px;
   padding: 0 6px;
-  border-radius: 9px;
-  background: var(--plaster);
-  color: var(--muted);
+  border: none;
+  border-radius: 10px;
+  background: var(--well);
+  color: var(--ink);
+  font: inherit;
+  font-size: 13px;
+  font-weight: 500;
   white-space: nowrap;
+  cursor: pointer;
 }
-.copy-tag.reflected {
+.copy-action.on {
   background: var(--ink);
   color: var(--paper);
 }
-.copy-row .copy-chevron {
+.copy-action:disabled {
+  opacity: 0.4;
+  cursor: default;
+}
+.copy-action-dot {
   width: 14px;
-  color: var(--muted);
-  text-align: center;
+  height: 14px;
+  border-radius: 50%;
+  box-shadow: 0 0 0 1.5px var(--paper);
 }
-.copy-detail {
-  margin: 0 6px 6px;
-  padding: 2px 0 8px;
-  border-bottom: 1px solid var(--hairline);
-}
-.copy-detail-label {
-  padding: 6px 10px 2px;
-  font-size: 10px;
-  font-weight: 600;
-  letter-spacing: 0.06em;
-  text-transform: uppercase;
-  color: var(--muted);
-}
-.copy-reflect-row {
-  display: flex;
-  gap: 8px;
-  padding: 4px 10px 2px;
-}
-.popover-menu.panel .copy-reflect-row .panel-secondary {
-  flex: 1;
-  height: 36px;
-}
-.popover-menu.panel .copy-reflect-row .panel-secondary:disabled {
-  opacity: 0.45;
-}
-.popover-menu.panel .copy-remove-btn {
-  margin: 8px 10px 0;
-  padding: 0 12px;
-  height: 34px;
+.popover-menu.panel .copy-remove-link {
+  display: block;
+  margin: 2px 8px 0 auto;
+  padding: 4px 6px;
   border: none;
-  border-radius: 10px;
   background: transparent;
   color: #a1382b;
   font: inherit;
-  font-weight: 600;
+  font-size: 12.5px;
   cursor: pointer;
+}
+.copies-foot {
+  margin-top: 6px;
+  padding-top: 4px;
+  border-top: 1px solid var(--hairline);
+}
+.copies-foot .popover-hint {
+  padding-top: 0;
 }
