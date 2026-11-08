@@ -671,8 +671,32 @@ Approved decisions D1 (independent Intersect construction) and D4 (one Extension
 - **Never Construct, never Repeat.** Nothing reads the layer outside Intersect except Undo, the draft, Timelapse
   state and project files (validated: `snapshotProblem`, and every layer point must resolve).
 - **Old artworks.** Unchanged: construction drawn in Intersect before this change stays in Construct (no migration).
-- **Not yet:** selecting / deleting layer geometry with Select (Undo removes the last step).
-- **Checks:** `layer.mjs` 22/22 and `layer-fair.mjs` 13/13, phone and desktop.
+- **Select / delete / recolour** (`intersectSelect` in main.ts): a press nearer Intersect construction than any
+  shown copy (16 px reach, 4 px in its favour) goes to Construct's own Select on the layer; else the copy tool
+  (and the construction selection clears). `renderLayerSelectRibbon`: Delete (whole shapes with dependents,
+  confirmed; pieces; points). `lens()` points the top-right colour control at the layer. Developed Fair stays.
+- **Checks:** `layer.mjs` 22/22, `layer-fair.mjs` 13/13, `layer-select.mjs` 21/21, phone and desktop.
+
+## Intersect Fair composition, Show/Hide and the compact Copies panel (November 2026)
+
+- **What Repeat takes from Intersect** = developed Intersect Fair + whole source motifs in the design. Whole
+  motifs are the stored `primaryCopy` flag (formerly "Include in Repeat"), unchanged in meaning: the Original is
+  in by default, copies out; a legacy artwork keeps every instance until its first change (asForm keeps them).
+  Construction never repeats.
+- **Whole motif** (`controller.formWhole`; Fair's ribbon in Intersect, first): a tap toggles a copy's whole motif
+  (`withPrimaryCopy`), one Undo step; drawn 0.95 / 0.2 strong / faint while on; overlapping copies → "Which
+  copy?" chooser (`LineChoice.title`). Hidden copies are never offered.
+- **Show/Hide** (`intersection.copies[key].hidden: true`, absent when shown; `withHidden`, `shownCopies`):
+  hidden copies are not drawn, picked, snapped to, offered to Fair, fitted or repeated (`repeatComposition`
+  filters them). Pose, colour, lock and `primaryCopy` are kept. Bookmarks now record `visibility: true`; an older
+  bookmark (none) keeps the copies' current visibility on restore (`withArrangement(…, recordsVisibility)`).
+- **Copies panel** (`showIntersectionCopiesPanel`): chips (colour; ⇋ reflected; dashed hidden; ◆ whole motif in
+  the design; ring selected) + Add; the selected copy's Colour · Reflect ↔ (`withReflection 'h'` only; never the
+  Original or a locked copy) · Shown/Hidden, and Remove; footer: Spread + Reference, one Extensions switch for all
+  copies (writes every copy's `extensions`; an older mix shows "Extensions · some copies" until used). Older ↕
+  reflections keep their pose and show ⇋.
+- **Checks:** `hidden.mjs` 15, `whole.mjs` 18, `copies-panel.mjs` 28, `repeat-cases.mjs` 8 (the four cases),
+  phone and desktop; `stage2-ui.mjs` / `stage3-ui.mjs` updated to the chip panel.
 
 ## Exact next step
 
