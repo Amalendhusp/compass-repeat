@@ -15,7 +15,7 @@ import { intersectFairTool } from './interaction/tools/intersectFair.ts';
 import { drawInteraction, render } from './render/renderer.ts';
 import { renderRepeat } from './render/repeatRenderer.ts';
 import { renderIntersection } from './render/intersectionRenderer.ts';
-import { intersectionCopies, layoutOf } from './geometry/intersection.ts';
+import { layoutOf, shownCopies } from './geometry/intersection.ts';
 import { instanceDistances, layerContextLinesNear, layerContextPointNear, layerCopiesNear } from './geometry/intersectionLink.ts';
 import { curveCandidatesAt, pickPointTarget } from './interaction/hittest.ts';
 import { hasLayerGeometry, layerController, layerDoc } from './geometry/intersectLayer.ts';
@@ -201,7 +201,7 @@ function fitIntersectionView(controller: AppController, canvas: HTMLCanvasElemen
   doc.intersectionView ??= { zoom: 1, pan: { x: 0, y: 0 } };
   const pivot = doc.frame.origin;
   const r = motifRadius(doc);
-  const discs = intersectionCopies(doc).map((c) => ({ x: pivot.x + c.pose.translate.x, y: pivot.y + c.pose.translate.y, r }));
+  const discs = shownCopies(doc).map((c) => ({ x: pivot.x + c.pose.translate.x, y: pivot.y + c.pose.translate.y, r }));
   // Intersect's own construction is part of what is shown, so part of what is fitted.
   const layer = hasLayerGeometry(doc) ? layerDoc(doc) : null;
   const both = (turn: number) => {
@@ -353,7 +353,7 @@ function boot(doc: Doc, opts: { fitToScreen: boolean; history?: { undo: Doc[]; r
         const L = layerDoc(doc);
         const layerD = Math.min(pickPointTarget(L, view, sp, { explicitOnly: true })?.screenD ?? Infinity, curveCandidatesAt(L, view, sp, LAYER_REACH_PX)[0]?.d ?? Infinity);
         if (layerD <= LAYER_REACH_PX) {
-          const near = instanceDistances(doc, intersectionCopies(doc), screenToWorld(view, sp), LAYER_REACH_PX / view.zoom);
+          const near = instanceDistances(doc, shownCopies(doc), screenToWorld(view, sp), LAYER_REACH_PX / view.zoom);
           const copyD = Math.min(Infinity, ...[...near.values()].map((d) => d * view.zoom));
           if (layerD <= copyD + LAYER_FAVOUR_PX) {
             if (c.intersectionSelected !== null) c.intersectionSelected = null;
@@ -380,18 +380,18 @@ function boot(doc: Doc, opts: { fitToScreen: boolean; history?: { undo: Doc[]; r
     point(view, sp, radiusPx) {
       if (!linkedTool()) return null;
       const doc = controller.doc;
-      const hit = layerContextPointNear(doc, layerDoc(doc), intersectionCopies(doc), screenToWorld(view, sp), radiusPx / view.zoom);
+      const hit = layerContextPointNear(doc, layerDoc(doc), shownCopies(doc), screenToWorld(view, sp), radiusPx / view.zoom);
       return hit && { at: hit.at, screenD: hit.d * view.zoom, label: hit.label };
     },
     lines(view, sp, radiusPx) {
       if (!linkedTool()) return [];
       const doc = controller.doc;
-      return layerContextLinesNear(doc, intersectionCopies(doc), screenToWorld(view, sp), radiusPx / view.zoom).map((l) => ({ a: l.a, b: l.b, screenD: l.d * view.zoom }));
+      return layerContextLinesNear(doc, shownCopies(doc), screenToWorld(view, sp), radiusPx / view.zoom).map((l) => ({ a: l.a, b: l.b, screenD: l.d * view.zoom }));
     },
     near(view, sp, radiusPx) {
       if (!linkedTool()) return false;
       const doc = controller.doc;
-      return layerCopiesNear(doc, intersectionCopies(doc), screenToWorld(view, sp), radiusPx / view.zoom);
+      return layerCopiesNear(doc, shownCopies(doc), screenToWorld(view, sp), radiusPx / view.zoom);
     },
   });
   const pointer = new PointerManager(

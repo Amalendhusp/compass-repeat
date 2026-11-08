@@ -74,6 +74,9 @@ export interface IntersectionCopy {
   /** Locked: it stays exactly where it is — never dragged, turned, aligned onto another or spread —
    * while it stays selectable and a reference others can be aligned to. */
   locked: boolean;
+  /** Hidden (Show/Hide): not drawn in Intersect, never picked, snapped to or offered to Fair, and its
+   * whole motif is out of Repeat while hidden. Its pose, colour and inclusion are all kept. */
+  hidden: boolean;
 }
 
 /** Every construction as shown — including a live move/turn (`controller.intersectionDrag`) and a
@@ -96,8 +99,31 @@ export function intersectionCopies(doc: Doc, live?: { drag?: { key: string; x: n
       extensions: saved[piece.key]?.extensions ?? true,
       pose: { i, j, translate: at, rotation: drag ? drag.rotation : piece.rotation, mirror: piece.mirror === true },
       locked,
+      hidden: saved[piece.key]?.hidden === true,
     };
   });
+}
+
+/** The copies Intersect shows (Show/Hide) — what is drawn, picked, snapped to and developed from. */
+export function shownCopies(doc: Doc, live?: Parameters<typeof intersectionCopies>[1]): IntersectionCopy[] {
+  return intersectionCopies(doc, live).filter((c) => !c.hidden);
+}
+
+/** Whether copy `key` is hidden (Show/Hide). */
+export function isHidden(doc: Doc, key: string): boolean {
+  return doc.intersection?.copies?.[key]?.hidden === true;
+}
+
+/** The artwork's Intersection with copy `key` hidden or shown again. Only the flag changes: its place,
+ * turn, reflection, colour, lock and whether its whole motif is in the design are all kept (absent when
+ * shown, so an artwork that never hid anything keeps exactly its stored shape). */
+export function withHidden(doc: Doc, key: string, hidden: boolean): NonNullable<Doc['intersection']> {
+  const ix = { ...baseOf(doc), copies: structuredClone(doc.intersection?.copies ?? {}) } as NonNullable<Doc['intersection']>;
+  const own = { ...ix.copies[key] };
+  if (hidden) own.hidden = true;
+  else delete own.hidden;
+  ix.copies[key] = own;
+  return ix;
 }
 
 /** The arrangement with one construction placed (as shown) and turned — its reference updated so it
@@ -254,7 +280,7 @@ export function intersectionBounds(doc: Doc): { minX: number; minY: number; maxX
   let minY = Infinity;
   let maxX = -Infinity;
   let maxY = -Infinity;
-  for (const { pose } of intersectionCopies(doc)) {
+  for (const { pose } of shownCopies(doc)) {
     const cx = pivot.x + pose.translate.x;
     const cy = pivot.y + pose.translate.y;
     minX = Math.min(minX, cx - r);
@@ -315,7 +341,17 @@ export function withConstruction(doc: Doc, construction: import('../model/types.
 
 /** The artwork's Intersection with a restored arrangement (a bookmark): positions, turns and copy
  * settings replaced; the Developed Primary — and everything else — kept. */
-export function withArrangement(doc: Doc, copies: NonNullable<Doc['intersection']>['copies'], layout: IntersectionLayout): NonNullable<Doc['intersection']> {
+export function withArrangement(doc: Doc, copies: NonNullable<Doc['intersection']>['copies'], layout: IntersectionLayout, recordsVisibility = false): NonNullable<Doc['intersection']> {
+  // A bookmark made before Show/Hide existed says nothing about visibility: the copies keep theirs.
+  if (!recordsVisibility) {
+    const now = doc.intersection?.copies ?? {};
+    copies = Object.fromEntries(
+      [...new Set([...Object.keys(copies), ...Object.keys(now)])].filter((k) => copies[k] || now[k]?.hidden).map((k) => {
+        const { hidden: _h, ...rest } = copies[k] ?? {};
+        return [k, now[k]?.hidden ? { ...rest, hidden: true as const } : rest];
+      }),
+    );
+  }
   // A bookmark saved before Primary-copies existed records none: the current ones are kept for the
   // copies it restores (it never quietly takes a copy out of, or into, Repeat).
   if (formMode(doc) === 'form' && !Object.values(copies).some((c) => c.primaryCopy !== undefined)) {

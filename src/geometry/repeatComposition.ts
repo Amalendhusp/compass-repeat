@@ -47,7 +47,7 @@ export function repeatComposition(doc: Doc): RepeatComposition {
     if (repeatSourceOf(doc) !== 'intersect') comp = { source: 'motif', members: [{ key: 'motif', pose: IDENTITY, owner: 'construct' }] };
     else {
       const members: CompositionMember[] = intersectionCopies(doc)
-        .filter((c) => inComposition(doc, c.key))
+        .filter((c) => inComposition(doc, c.key) && !c.hidden)
         .map((c) => ({ key: c.key, pose: c.pose, owner: 'construct' as const }));
       if (developedSegments(doc).length > 0) members.push({ key: DEVELOPED, pose: IDENTITY, owner: 'developed' });
       comp = { source: 'intersect', members };

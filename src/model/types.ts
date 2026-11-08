@@ -206,7 +206,10 @@ export interface IntersectionSnapshot {
   id: string;
   at: number;
   layout: IntersectionLayout;
-  copies: Record<string, { colour?: string; extensions?: boolean; locked?: boolean; primaryCopy?: boolean }>;
+  copies: Record<string, { colour?: string; extensions?: boolean; locked?: boolean; primaryCopy?: boolean; hidden?: true }>;
+  /** Show/Hide is recorded in this bookmark (bookmarks made before Show/Hide existed keep the copies'
+   * visibility as it is when restored). */
+  visibility?: true;
   /** A small picture of it (JPEG data URL), if one could be drawn. */
   thumb?: string;
 }
@@ -419,7 +422,7 @@ export interface Doc {
    * the copy's key; the primary is "0,0"), and the arrangement itself. Absent or partial = defaults
    * (see geometry/intersection.ts). Part of Undo; never part of the recorded artwork (it is a way of
    * exploring, not the design). */
-  intersection?: { copies: Record<string, { colour?: string; extensions?: boolean; locked?: boolean; primaryCopy?: boolean }>; layout?: IntersectionLayout; form?: IntersectionForm; construction?: IntersectConstruction };
+  intersection?: { copies: Record<string, { colour?: string; extensions?: boolean; locked?: boolean; primaryCopy?: boolean; hidden?: true }>; layout?: IntersectionLayout; form?: IntersectionForm; construction?: IntersectConstruction };
   /** Intersection Snapshots: discoveries kept on purpose while exploring — not history, so Undo /
    * Redo never adds or removes one (carried across them like the cameras). */
   intersectionSnapshots?: IntersectionSnapshot[];

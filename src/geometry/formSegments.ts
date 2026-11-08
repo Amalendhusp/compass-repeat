@@ -14,7 +14,7 @@
 // when a developed segment lies exactly along it.
 
 import type { DevelopedSegment, Doc, Vec2 } from '../model/types.ts';
-import { intersectionCopies } from './intersection.ts';
+import { shownCopies } from './intersection.ts';
 import { hasLayerGeometry, LAYER_ORIGIN, layerDoc } from './intersectLayer.ts';
 import { arcPoint, boxOf, closestOn, dot, endsOf, hits, len, motifPieces, motifRuns, motifScale, norm, placePrim, sub, TAU, type Placed, type Prim } from './fairGeometry.ts';
 
@@ -61,7 +61,7 @@ interface Run {
 function buildSegments(doc: Doc, layer: FormLayer): FormSegment[] {
   const eps = formEps(doc);
   const pivot = doc.frame.origin;
-  const copies = intersectionCopies(doc);
+  const copies = shownCopies(doc);
   const place = (own: { prim: Prim; entity: string }[], kind?: 'construction' | 'extension'): Run[] =>
     copies.flatMap((copy) =>
       own.map((r) => {

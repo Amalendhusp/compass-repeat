@@ -25,7 +25,7 @@ import type { AppController, ViewTransform } from '../../app/controller.ts';
 import { screenToWorld, worldToScreen } from '../../app/controller.ts';
 import { motifRadius, snapRotation } from '../../geometry/lattice.ts';
 import { dist } from '../../geometry/vec.ts';
-import { intersectionCopies, layoutOf, placedAt, withLayout, type IntersectionCopy } from '../../geometry/intersection.ts';
+import { shownCopies, layoutOf, placedAt, withLayout, type IntersectionCopy } from '../../geometry/intersection.ts';
 import { instanceDistances } from '../../geometry/intersectionLink.ts';
 import { showToast } from '../../ui/toast.ts';
 import { canMoveAgainst, pickAtTap, pickCarrier, samePick, withEdgePick, withPick, type IntersectionPick } from '../../geometry/intersectionSnap.ts';
@@ -48,7 +48,7 @@ const CYCLE_SLOP_PX = 10;
  * (nearest first), then those whose frame the finger is merely inside (nearest centre first). */
 function instancesAt(controller: AppController, view: ViewTransform, sp: Vec2): { key: string; score: number }[] {
   const doc = controller.doc;
-  const copies = intersectionCopies(doc);
+  const copies = shownCopies(doc);
   const near = instanceDistances(doc, copies, screenToWorld(view, sp), INSTANCE_REACH_PX / view.zoom);
   const inside = motifRadius(doc) * view.zoom;
   const out: { key: string; score: number }[] = [];
@@ -190,7 +190,7 @@ export const intersectionTool: ToolModule = {
     return 'Drag a construction to move it, or its handle to turn it';
   },
   beginGesture(controller, view, sp): Gesture | null {
-    const copies = intersectionCopies(controller.doc);
+    const copies = shownCopies(controller.doc);
     // The selected construction's rotation handle first (it is drawn over everything): Rotate only.
     const selected = copies.find((c) => c.key === controller.intersectionSelected);
     if (selected && !selected.locked && dist(sp, rotationHandle(controller.doc, view, selected)) <= HANDLE_TOUCH_PX) {
@@ -257,7 +257,7 @@ function pickUnder(controller: AppController, view: ViewTransform, sp: Vec2): In
   // Match Edge: [moving edge, target edge]; a target is an edge of another construction.
   const accept = (p: IntersectionPick) =>
     !reference || samePick(reference, p) || (!!moving && samePick(moving, p)) || (edge ? p.kind === 'line' && reference.kind === 'line' && p.copy !== reference.copy : canMoveAgainst(reference, p));
-  return pickAtTap(controller.doc, intersectionCopies(controller.doc), screenToWorld(view, sp), PICK_REACH_PX / view.zoom, controller.intersectionPickKind, accept);
+  return pickAtTap(controller.doc, shownCopies(controller.doc), screenToWorld(view, sp), PICK_REACH_PX / view.zoom, controller.intersectionPickKind, accept);
 }
 
 /** Picks what is under a tap (see withPick); the construction that would move — else the one

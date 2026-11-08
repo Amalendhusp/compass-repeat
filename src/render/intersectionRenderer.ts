@@ -32,7 +32,7 @@ import { hasLayerGeometry, layerController } from '../geometry/intersectLayer.ts
 import { resolveEntityGeom } from '../geometry/kernel.ts';
 import { defaultSegmentKind, deriveSegments } from '../geometry/segments.ts';
 import { motifRadius, poseArcAngle, transformPoint, type InstancePose } from '../geometry/lattice.ts';
-import { developedSegments, inComposition, intersectionBounds, intersectionCopies, type IntersectionCopy } from '../geometry/intersection.ts';
+import { developedSegments, inComposition, intersectionBounds, shownCopies, type IntersectionCopy } from '../geometry/intersection.ts';
 import { pickedEdge, planMatchEdge, resolvePick, type IntersectionPick, type ResolvedPick, type ShownLine } from '../geometry/intersectionSnap.ts';
 import { color, stroke } from './tokens.ts';
 
@@ -115,7 +115,7 @@ export function renderIntersection(ctx: CanvasRenderingContext2D, controller: Ap
   layers?.underlay(ctx, view);
 
   const sc = scaffold(doc);
-  const copies = intersectionCopies(doc, { drag: controller.intersectionDrag, spread: controller.intersectionSpreadDraft });
+  const copies = shownCopies(doc, { drag: controller.intersectionDrag, spread: controller.intersectionSpreadDraft });
   ctx.lineCap = 'round';
   ctx.lineJoin = 'round';
   // Picks, worked out from the copies as shown right now (so they follow a live move or Spread).

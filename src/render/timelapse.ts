@@ -38,7 +38,7 @@ import { loadEvents, loadMeta, type ProcessEvent } from '../persist/processStore
 import { walkProcess } from '../persist/processReplay.ts';
 import { captureState, stateHash, stateToDoc, type ArtworkState } from '../persist/processState.ts';
 import { drawnShapes } from '../geometry/bounds.ts';
-import { developedSegments, intersectionCopies } from '../geometry/intersection.ts';
+import { developedSegments, shownCopies } from '../geometry/intersection.ts';
 import { transformPoint, type InstancePose } from '../geometry/lattice.ts';
 
 const MAX_SIDE = 1080; // px, the video's longest side
@@ -133,7 +133,7 @@ function drawnBox(mode: 'construct' | 'intersect', state: ArtworkState, liveDoc:
   const { points, discs } = drawnShapes(doc, construction);
   let box: Box | null = null;
   const place = (p: Vec2, pose: InstancePose | null) => (pose ? transformPoint(doc.frame.origin, pose, p) : p);
-  for (const pose of mode === 'construct' ? [null] : intersectionCopies(doc).map((c) => c.pose)) {
+  for (const pose of mode === 'construct' ? [null] : shownCopies(doc).map((c) => c.pose)) {
     for (const p of points) {
       const q = place(p, pose);
       box = grow(box, q.x, q.y);

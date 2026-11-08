@@ -926,6 +926,7 @@ function showIntersectionSnapshotsPanel(anchor: HTMLElement, controller: AppCont
             at: Date.now(),
             layout: structuredClone(layoutOf(doc)),
             copies: structuredClone(doc.intersection?.copies ?? {}),
+            visibility: true as const,
             thumb: intersectionThumbnail(doc),
           };
           doc.intersectionSnapshots = [...list, snap];
@@ -956,7 +957,7 @@ function showIntersectionSnapshotsPanel(anchor: HTMLElement, controller: AppCont
             controller.commit((d) => {
               // A bookmark restores the ARRANGEMENT — positions, turns, Primary-copy states — never the
               // Developed Primary, which stays as it is (Stage D, decision D8).
-              d.intersection = withArrangement(d, structuredClone(snap.copies), structuredClone(snap.layout));
+              d.intersection = withArrangement(d, structuredClone(snap.copies), structuredClone(snap.layout), snap.visibility === true);
             });
             close();
           });
