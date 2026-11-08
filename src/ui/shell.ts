@@ -1976,9 +1976,14 @@ export function buildShell(
     regions: Extract<SelectCandidate, { kind: 'region' }>[];
     label: string;
   }
+  /** Whose geometry a selection, the colour control and the construction tools' ribbon act on: in
+   * Intersect, Intersect's own construction layer (geometry/intersectLayer.ts) — never Construct. */
+  const lens = (): AppController =>
+    controller.doc.view.workspace === 'intersection' && (['select', 'circle', 'line', 'arc', 'divide'] as ToolId[]).includes(controller.tool) ? layerController(controller) : controller;
   function selectionColouring(): SelectionColouring | null {
-    if (controller.tool !== 'select' || controller.doc.view.workspace !== 'construct') return null;
-    const doc = controller.doc;
+    const ws = controller.doc.view.workspace;
+    if (controller.tool !== 'select' || (ws !== 'construct' && ws !== 'intersection')) return null;
+    const doc = lens().doc;
     const sel = controller.selection.filter((c) => c.kind !== 'point');
     if (sel.length === 0) return null;
     const keys = selectionKeys(doc, sel);
@@ -2010,7 +2015,7 @@ export function buildShell(
   const strokeOf = (doc: Doc, k: SegmentKey) => doc.segmentStates.get(k)?.stroke ?? doc.fairDefaults;
   /** The colours a selection shows now: its fills (regions), else its construction and Fair colours. */
   function selectionColours(sc: SelectionColouring): (string | null)[] {
-    const doc = controller.doc;
+    const doc = lens().doc;
     if (sc.regions.length) return [...new Set(sc.regions.map((r) => getRegionFill(doc, r.sig) ?? null))];
     return [...new Set([...sc.entities.map((e) => e.colour ?? color.construction), ...sc.fairKeys.map((k) => strokeOf(doc, k).colour)].map((c) => c.toLowerCase()))];
   }
@@ -2063,6 +2068,7 @@ export function buildShell(
       menu.classList.add('appearance-panel');
       const doc = controller.doc;
       if (sc) {
+        const doc = lens().doc; // in Intersect: its own construction layer
         // A selection: its own colours — one Undo step each — and nothing about the next drawing (that
         // returns as soon as the selection is cleared).
         popoverSectionLabel(menu, `Selected · ${sc.label}`);
@@ -2073,7 +2079,7 @@ export function buildShell(
         if (sc.regions.length) {
           popoverSectionLabel(menu, 'Fill');
           colourSwatchRow(menu, currentOf(sc.regions.map((r) => getRegionFill(doc, r.sig) ?? null)), (colour) =>
-            controller.commit((d) => {
+            lens().commit((d) => {
               for (const r of sc.regions) {
                 if (colour === null) {
                   removeRegionFill(d, r.sig);
@@ -2089,7 +2095,7 @@ export function buildShell(
           if (sc.regions.length) popoverSectionLabel(menu, 'Line');
           const current = currentOf([...sc.entities.map((e) => e.colour ?? null), ...sc.fairKeys.map((k) => doc.segmentStates.get(k)?.stroke?.colour ?? null)]);
           colourSwatchRow(menu, current, (colour) =>
-            controller.commit((d) => {
+            lens().commit((d) => {
               if (sc.entities.length) setEntityColour(d, sc.entities.map((e) => e.id), colour);
               for (const k of sc.fairKeys) setSegmentStroke(d, k, colour ?? color.ink, d.segmentStates.get(k)?.stroke?.width ?? d.fairDefaults.width);
             }),
@@ -2104,7 +2110,7 @@ export function buildShell(
             value: strokeOf(doc, sc.fairKeys[0]!).width,
             format: (v) => `${v} px`,
             onCommit: (width) =>
-              controller.commit((d) => {
+              lens().commit((d) => {
                 for (const k of sc.fairKeys) setSegmentStroke(d, k, d.segmentStates.get(k)?.stroke?.colour ?? d.fairDefaults.colour, width);
               }),
           });
@@ -3400,10 +3406,10 @@ export function buildShell(
 
   /** Phase 5.2 item 5: removes the whole shape(s) — confirmed first only when that would also take
    * other constructions built on them (Undo restores either way). */
-  function confirmDelete(plan: DeletionPlan, rootCount: number, noun: string, after: () => void): void {
+  function confirmDelete(plan: DeletionPlan, rootCount: number, noun: string, after: () => void, target: AppController = controller): void {
     const extra = plan.entityIds.size - rootCount;
     const run = () => {
-      controller.commit((d) => applyDeletionPlan(d, plan));
+      target.commit((d) => applyDeletionPlan(d, plan));
       after();
     };
     if (extra <= 0) {
@@ -3461,7 +3467,55 @@ export function buildShell(
     }
   }
 
+  /** Select in Intersect, with Intersect's own construction selected: what it is, and Delete — whole
+   * shapes (with what is built on them, confirmed), pieces, or a point. Colour: the top-right control.
+   * Developed Fair taken from it stays (it is Intersect's own fixed geometry). */
+  function renderLayerSelectRibbon(): void {
+    const g = layerController(controller);
+    const doc = g.doc;
+    const sel = controller.selection;
+    if (sel.length === 0) return;
+    if (sel.length === 1 && sel[0]!.kind === 'point') {
+      cue('Intersect construction · point');
+      const plan = computePointDeletionPlan(doc, sel[0]!.id);
+      if (!plan) return;
+      chip('Delete', () => {
+        const run = () => {
+          g.commit((d) => applyPointDeletionPlan(d, plan));
+          controller.select([]);
+        };
+        if (plan.entityIds.size === 0) return run();
+        openConfirmSheet({
+          title: 'Delete this point?',
+          body: `Also removes ${plan.entityIds.size} construction${plan.entityIds.size === 1 ? '' : 's'} built on it. Undo will bring ${plan.entityIds.size === 1 ? 'it' : 'them'} back.`,
+          confirmLabel: 'Delete',
+          onConfirm: run,
+        });
+      });
+      return;
+    }
+    const keys = selectionKeys(doc, sel);
+    const scope = selectionScope(doc, sel, keys);
+    cue(`Intersect construction${scope.label ? ` · ${scope.label}` : ''}`);
+    const entityIds = selectionEntityIds(doc, sel, keys);
+    if (!scope.whole) {
+      if (keys.length > 0)
+        chip(`Delete ${scope.noun}`, () => {
+          g.commit((d) => {
+            for (const k of keys) trimSegment(d, k.split(':')[0]!, k);
+          });
+          controller.select([]);
+        });
+      return;
+    }
+    const plan = computeEntitiesDeletionPlan(doc, entityIds);
+    if (!plan) return;
+    const noun = entityIds.length === 1 ? (doc.entities.find((e) => e.id === plan.rootEntityId)?.kind === 'circle' ? 'this circle' : 'this line') : `${entityIds.length} shapes`;
+    chip(`Delete ${scope.noun}`, () => confirmDelete(plan, entityIds.length, noun, () => controller.select([]), g));
+  }
+
   function renderSelectRibbon(): void {
+    if (controller.doc.view.workspace === 'intersection') return renderLayerSelectRibbon();
     const doc = controller.doc;
     const sel = controller.selection;
 
@@ -3578,8 +3632,7 @@ export function buildShell(
 
   /** Who the construction tools' ribbon edits: in Intersect, Intersect's own construction layer
    * (geometry/intersectLayer.ts) — never Construct; elsewhere the artwork itself. */
-  const geo = (): AppController =>
-    controller.doc.view.workspace === 'intersection' && (['circle', 'line', 'arc', 'divide'] as ToolId[]).includes(controller.tool) ? layerController(controller) : controller;
+  const geo = lens;
 
   function renderDivideRibbon(): void {
     const state = controller.divide;
@@ -3818,7 +3871,10 @@ export function buildShell(
     refreshReferenceButtons();
 
     appearanceBtn.style.display = inRepeat ? '' : 'none';
-    ccBtn.style.display = controller.doc.view.workspace === 'construct' ? '' : 'none';
+    // Intersect: the colour of its own construction — a selection of it, or the drawing colour while a
+    // construction tool is in hand.
+    const ixColour = inIntersection && ((controller.tool === 'select' && controller.selection.length > 0) || (['circle', 'line', 'arc', 'divide'] as ToolId[]).includes(controller.tool));
+    ccBtn.style.display = controller.doc.view.workspace === 'construct' || ixColour ? '' : 'none';
     refreshCcBtn();
     guidesBtn.style.display = inRepeat ? '' : 'none';
     handlesBtn.style.display = inRepeat ? '' : 'none';
@@ -3827,7 +3883,7 @@ export function buildShell(
 
     dock.style.display = inRepeat ? 'none' : 'flex';
     dockButtonEls.get('fill')!.style.display = inIntersection ? 'none' : '';
-    contextSlot.style.display = inRepeat || (inIntersection && !building) ? 'none' : 'flex';
+    contextSlot.style.display = inRepeat || (inIntersection && !building && controller.selection.length === 0) ? 'none' : 'flex';
     lineStrip.style.display = !inRepeat && controller.tool === 'line' ? '' : 'none';
     for (const [id, b] of lineGuideBtns) b.classList.toggle('active', controller.lineGuide === id);
     repeatPanel.style.display = placing ? 'flex' : 'none';
@@ -3869,8 +3925,9 @@ export function buildShell(
         refreshIxSnapshotsBtn();
         refreshIntersectionRows();
         refreshSnapRow();
-        // The Snap row belongs to arranging (Select); a construction tool has its own ribbon.
-        if (building) {
+        // The Snap row belongs to arranging (Select); a construction tool has its own ribbon — and so
+        // does a selection of Intersect's own construction (Select): what it is, and Delete.
+        if (building || controller.selection.length > 0) {
           ixSnapRow.style.display = 'none';
           renderRibbon();
         }

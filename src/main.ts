@@ -16,7 +16,8 @@ import { drawInteraction, render } from './render/renderer.ts';
 import { renderRepeat } from './render/repeatRenderer.ts';
 import { renderIntersection } from './render/intersectionRenderer.ts';
 import { intersectionCopies, layoutOf } from './geometry/intersection.ts';
-import { layerContextLinesNear, layerContextPointNear, layerCopiesNear } from './geometry/intersectionLink.ts';
+import { instanceDistances, layerContextLinesNear, layerContextPointNear, layerCopiesNear } from './geometry/intersectionLink.ts';
+import { curveCandidatesAt, pickPointTarget } from './interaction/hittest.ts';
 import { hasLayerGeometry, layerController, layerDoc } from './geometry/intersectLayer.ts';
 import { setContextProvider } from './interaction/context.ts';
 import type { ToolModule } from './interaction/tools/types.ts';
@@ -266,6 +267,8 @@ function boot(doc: Doc, opts: { fitToScreen: boolean; history?: { undo: Doc[]; r
         },
     onSwitchWorkspace: (ws) => {
       if (controller.doc.view.workspace === ws) return;
+      // A selection belongs to the geometry it was made in (Construct's, or Intersect's own layer).
+      if (controller.selection.length) controller.selection = [];
       // Phase 5 item 2: the frame only ever SUGGESTS a lattice, and only the very first time —
       // ensureRepeatDefaults() itself is idempotent (guarded by `family` already being set), so
       // check "was it already configured" first, purely to decide whether THIS entry deserves an
@@ -333,6 +336,35 @@ function boot(doc: Doc, opts: { fitToScreen: boolean; history?: { undo: Doc[]; r
   function getToolView(): ViewTransform {
     return getView();
   }
+  /**
+   * Select in Intersect. A press on Intersect's own construction (nearer it than any copy's drawn
+   * geometry, with a small margin in its favour) selects it with Construct's own Select — on the layer
+   * (delete, recolour); anywhere else arranges the copies, as before (and clears a construction
+   * selection). While an alignment is being picked, presses always go to the copies.
+   */
+  const LAYER_REACH_PX = 16;
+  const LAYER_FAVOUR_PX = 4;
+  const intersectSelect: ToolModule = {
+    id: 'select',
+    hint: (c) => intersectionTool.hint(c),
+    beginGesture(c, view, sp) {
+      const doc = c.doc;
+      if (c.intersectionPickKind === 'instance' && hasLayerGeometry(doc)) {
+        const L = layerDoc(doc);
+        const layerD = Math.min(pickPointTarget(L, view, sp, { explicitOnly: true })?.screenD ?? Infinity, curveCandidatesAt(L, view, sp, LAYER_REACH_PX)[0]?.d ?? Infinity);
+        if (layerD <= LAYER_REACH_PX) {
+          const near = instanceDistances(doc, intersectionCopies(doc), screenToWorld(view, sp), LAYER_REACH_PX / view.zoom);
+          const copyD = Math.min(Infinity, ...[...near.values()].map((d) => d * view.zoom));
+          if (layerD <= copyD + LAYER_FAVOUR_PX) {
+            if (c.intersectionSelected !== null) c.intersectionSelected = null;
+            return selectTool.beginGesture(layerController(c), view, sp);
+          }
+        }
+      }
+      if (c.selection.length) c.selection = [];
+      return intersectionTool.beginGesture(c, view, sp);
+    },
+  };
   /** A construction tool in Intersect works on Intersect's own construction layer (never Construct):
    * the same tool, handed the layer controller (geometry/intersectLayer.ts). */
   function onLayer(tool: ToolModule): ToolModule {
@@ -374,7 +406,7 @@ function boot(doc: Doc, opts: { fitToScreen: boolean; history?: { undo: Doc[]; r
       if (ws === 'intersection') {
         const linked = linkedTool();
         if (linked) return onLayer(linked);
-        return controller.tool === 'fair' ? intersectFairTool : intersectionTool;
+        return controller.tool === 'fair' ? intersectFairTool : intersectSelect;
       }
       return tools[controller.tool] ?? null;
     },
@@ -440,7 +472,7 @@ function boot(doc: Doc, opts: { fitToScreen: boolean; history?: { undo: Doc[]; r
     ctx!.restore();
     // Intersect, a construction tool at work: its own feedback (previews, the layer's points, snap
     // marks) on Intersect's own construction layer.
-    if (linkedTool()) {
+    if (linkedTool() || (controller.doc.view.workspace === 'intersection' && controller.tool === 'select' && controller.selection.length > 0)) {
       ctx!.save();
       if (view.screen) {
         ctx!.translate(view.screen.w / 2, view.screen.h / 2);
