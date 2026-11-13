@@ -25,7 +25,7 @@
 
 import type { Doc, RepeatSystem, Vec2 } from '../model/types.ts';
 import { Arrangement, patternPeriod, planarSubs, repeatStrokes, type Edge, type Source, type Sub } from './spaces.ts';
-import { evenShift, instancePose, motifExtent, motifRadius, ruleKey, transformPoint } from './lattice.ts';
+import { evenShift, instancePose, motifExtent, motifRadius, poseScale, ruleKey, transformPoint } from './lattice.ts';
 import { repeatUnit } from './repeatUnit.ts';
 
 /** One strand through a crossing: the points leaving it each way (crossing point excluded) and how far
@@ -92,6 +92,8 @@ function contentKey(doc: Doc, strokes: { id: string; pts: Vec2[] }[]): string {
   const r = (x: number) => Math.round(x / q);
   const rep = doc.repeat;
   const parts: (string | number | undefined)[] = ['weave', rep.family, ruleKey(rep.rule), r(rep.a.x), r(rep.a.y), r(rep.b.x), r(rep.b.y), Math.round(rep.motif.rotation * 1e9), r(doc.frame.origin.x), r(doc.frame.origin.y), r(doc.frame.radius)];
+  // The motif's scale, only when not 1 (every key made before scale existed is unchanged).
+  if (poseScale(rep.motif) !== 1) parts.push(`scale:${poseScale(rep.motif)}`);
   for (const s of strokes) parts.push(s.id, ...s.pts.flatMap((p) => [r(p.x), r(p.y)]));
   return parts.join(',');
 }
@@ -101,9 +103,11 @@ function build(doc: Doc, strokes: { id: string; pts: Vec2[]; member: number }[])
   const { a, b } = repeat;
   const det = a.x * b.y - a.y * b.x;
   if (!strokes.length || Math.abs(det) < 1e-9) return EMPTY;
-  const R = motifRadius(doc);
+  // Sizes as drawn: the Repeat motif's scale sets every tolerance and reach.
+  const S = poseScale(repeat.motif);
+  const R = motifRadius(doc) * S;
   const tol = R * 0.003;
-  const E = repeatUnit(doc)?.extent ?? motifExtent(doc);
+  const E = (repeatUnit(doc)?.extent ?? motifExtent(doc)) * S;
   const pivot = doc.frame.origin;
   const { u, v, alt } = patternPeriod(repeat);
 

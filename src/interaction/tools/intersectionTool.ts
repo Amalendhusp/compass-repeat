@@ -23,7 +23,7 @@
 import type { Vec2 } from '../../model/types.ts';
 import type { AppController, ViewTransform } from '../../app/controller.ts';
 import { screenToWorld, worldToScreen } from '../../app/controller.ts';
-import { motifRadius, snapRotation } from '../../geometry/lattice.ts';
+import { motifRadius, poseScale, snapRotation } from '../../geometry/lattice.ts';
 import { dist } from '../../geometry/vec.ts';
 import { shownCopies, layoutOf, placedAt, withLayout, type IntersectionCopy } from '../../geometry/intersection.ts';
 import { instanceDistances } from '../../geometry/intersectionLink.ts';
@@ -56,7 +56,7 @@ function instancesAt(controller: AppController, view: ViewTransform, sp: Vec2): 
     const g = near.get(c.key);
     const fromCentre = dist(sp, centreOf(controller, view, c));
     if (g !== undefined) out.push({ key: c.key, score: g * view.zoom });
-    else if (fromCentre <= inside) out.push({ key: c.key, score: 1000 + fromCentre });
+    else if (fromCentre <= inside * poseScale(c.pose)) out.push({ key: c.key, score: 1000 + fromCentre });
   }
   return out.sort((a, b) => a.score - b.score);
 }
@@ -218,7 +218,7 @@ export const intersectionTool: ToolModule = {
     let best = Infinity;
     for (const c of copies) {
       const d = dist(sp, centreOf(controller, view, c));
-      if (d <= reach && d < best) {
+      if (d <= reach * poseScale(c.pose) && d < best) {
         best = d;
         hit = c;
       }

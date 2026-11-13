@@ -23,7 +23,7 @@ import type { Doc, Vec2 } from '../model/types.ts';
 import { resolveEntityGeom } from './kernel.ts';
 import { deriveSegments } from './segments.ts';
 import { pointInPolygon } from './regions.ts';
-import { instancePose, motifExtent, motifRadius, transformPoint } from './lattice.ts';
+import { instancePose, motifExtent, motifRadius, poseScale, transformPoint } from './lattice.ts';
 import { Arrangement } from './spaces.ts';
 
 // Finer than Design Space (R·0.003): construction regions can be far smaller than the gaps
@@ -165,9 +165,11 @@ export function faceContains(face: ConstructionFace, w: Vec2): boolean {
 /** The closed construction region around world point `w`, for the document's current Repeat. */
 export function constructionSpaceAt(doc: Doc, w: Vec2): ConstructionSpaceResult {
   const t0 = performance.now();
-  const R = motifRadius(doc);
+  // Sizes as drawn: the Repeat motif's scale (the scaffold itself is sampled in the motif's own units).
+  const S = poseScale(doc.repeat.motif);
+  const R = motifRadius(doc) * S;
   const tol = R * TOLERANCE;
-  const sc = scaffold(doc, tol);
+  const sc = scaffold(doc, tol / S);
   const done = (r: Omit<ConstructionSpaceResult, 'ms'>): ConstructionSpaceResult => ({ ...r, ms: performance.now() - t0 });
   if (sc.strokes.length === 0 && sc.infinite.length === 0) return done({ face: null, reason: 'empty', copies: 0, edges: 0 });
   const { a, b } = doc.repeat;
@@ -206,7 +208,7 @@ function faceInBox(doc: Doc, sc: Scaffold, w: Vec2, anchor: Vec2, half: number, 
   const pivot = doc.frame.origin;
   const { a, b } = doc.repeat;
   // Copies whose construction reaches the neighbourhood.
-  const radius = Math.max(sc.reach, motifExtent(doc));
+  const radius = Math.max(sc.reach, motifExtent(doc)) * poseScale(doc.repeat.motif);
   const ox = anchor.x - pivot.x;
   const oy = anchor.y - pivot.y;
   const fi = (ox * b.y - oy * b.x) / det;

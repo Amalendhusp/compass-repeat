@@ -19,7 +19,7 @@
 import type { Doc, FaceSig, RepeatColouring, Vec2 } from '../model/types.ts';
 import { screenToWorld, type ViewTransform } from '../app/controller.ts';
 import { computeFairRegions, findRegionAt } from './regions.ts';
-import { composePose, visibleInstances, type InstancePose } from './lattice.ts';
+import { composePose, poseScale, visibleInstances, type InstancePose } from './lattice.ts';
 import { repeatUnit } from './repeatUnit.ts';
 import { computeSpaces, spaceAt, unitRegionAt, unitRegions, type SpaceClass } from './spaces.ts';
 import { repeatSourceOf } from './repeatSetup.ts';
@@ -71,7 +71,8 @@ export function intoMotif(pivot: Vec2, pose: InstancePose, w: Vec2): Vec2 {
   const x = dx * c - dy * s;
   let y = dx * s + dy * c;
   if (pose.mirror) y = -y;
-  return { x: x + pivot.x, y: y + pivot.y };
+  const k = poseScale(pose);
+  return k === 1 ? { x: x + pivot.x, y: y + pivot.y } : { x: x / k + pivot.x, y: y / k + pivot.y };
 }
 
 export interface RegionHit {

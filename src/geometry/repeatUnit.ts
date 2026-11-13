@@ -12,7 +12,7 @@
 // build from, not geometry.
 
 import type { Doc, Vec2 } from '../model/types.ts';
-import { motifExtent, type InstancePose } from './lattice.ts';
+import { motifExtent, poseScale, type InstancePose } from './lattice.ts';
 import { developedFeatures, repeatComposition, type CompositionMember } from './repeatComposition.ts';
 import { closestOn, endsOf, len, motifRuns, placePrim, sub, type Prim } from './fairGeometry.ts';
 import { developedSegments } from './intersection.ts';
@@ -55,7 +55,7 @@ export function repeatUnit(doc: Doc): RepeatUnit | null {
     const members = comp.map((m) => m.pose);
     const developed = all.some((m) => m.owner === 'developed') ? notDrawnBy(doc, developedFeatures(doc).map((f) => f.prim), comp) : [];
     const reaches = [
-      ...members.map((m) => Math.hypot(m.translate.x, m.translate.y) + motifExtent(doc)),
+      ...members.map((m) => Math.hypot(m.translate.x, m.translate.y) + motifExtent(doc) * poseScale(m)),
       ...developed.map((p) => reachOf(doc.frame.origin, p)),
     ];
     const devIds = developed.length ? `|dev:${developedSegments(doc).map((s) => s.id).join(',')}` : '';
@@ -64,12 +64,18 @@ export function repeatUnit(doc: Doc): RepeatUnit | null {
       keys: comp.map((m) => m.key),
       // Nothing to repeat (an empty composition): one motif's reach, so nothing downstream divides by zero.
       extent: reaches.length ? Math.max(...reaches) : motifExtent(doc),
-      key: members.map((m) => `${m.translate.x},${m.translate.y},${m.rotation}${m.mirror ? ",m" : ""}`).join(';') + devIds,
+      key: members.map((m) => `${m.translate.x},${m.translate.y},${m.rotation}${m.mirror ? ",m" : ""}${m.scale !== undefined ? `,s${m.scale}` : ''}`).join(';') + devIds,
       developed,
     };
     cache.set(doc, unit);
   }
   return unit;
+}
+
+/** How far Repeat's drawn artwork reaches from each lattice position: the unit's (or the motif's) own
+ * reach, at the Repeat motif's scale. */
+export function repeatReach(doc: Doc): number {
+  return (repeatUnit(doc)?.extent ?? motifExtent(doc)) * poseScale(doc.repeat.motif);
 }
 
 /** How far a primitive reaches from `pivot`. */

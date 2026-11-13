@@ -17,7 +17,7 @@
 // is kept exactly as shown, and Spread waits for a new Reference (referenceCurrent()).
 
 import type { Doc, IntersectionLayout, Vec2 } from '../model/types.ts';
-import { defaultLatticeVectors, motifRadius, type InstancePose } from './lattice.ts';
+import { defaultLatticeVectors, motifRadius, poseScale, scaleField, type InstancePose } from './lattice.ts';
 
 /** The Primary's key; every copy has its own key too (colour and Extensions are kept by key). */
 export const PRIMARY = '0,0';
@@ -97,7 +97,7 @@ export function intersectionCopies(doc: Doc, live?: { drag?: { key: string; x: n
       label: n === 0 ? 'Original' : `Copy ${n}`,
       colour: saved[piece.key]?.colour ?? LEGACY_COLOURS[piece.key] ?? PALETTE[n % PALETTE.length]!,
       extensions: saved[piece.key]?.extensions ?? true,
-      pose: { i, j, translate: at, rotation: drag ? drag.rotation : piece.rotation, mirror: piece.mirror === true },
+      pose: { i, j, translate: at, rotation: drag ? drag.rotation : piece.rotation, mirror: piece.mirror === true, ...scaleField(piece.scale) },
       locked,
       hidden: saved[piece.key]?.hidden === true,
     };
@@ -283,10 +283,11 @@ export function intersectionBounds(doc: Doc): { minX: number; minY: number; maxX
   for (const { pose } of shownCopies(doc)) {
     const cx = pivot.x + pose.translate.x;
     const cy = pivot.y + pose.translate.y;
-    minX = Math.min(minX, cx - r);
-    maxX = Math.max(maxX, cx + r);
-    minY = Math.min(minY, cy - r);
-    maxY = Math.max(maxY, cy + r);
+    const rs = r * poseScale(pose);
+    minX = Math.min(minX, cx - rs);
+    maxX = Math.max(maxX, cx + rs);
+    minY = Math.min(minY, cy - rs);
+    maxY = Math.max(maxY, cy + rs);
   }
   return { minX, minY, maxX, maxY };
 }

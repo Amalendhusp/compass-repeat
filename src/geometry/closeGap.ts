@@ -17,7 +17,7 @@
 //   marks the correction invalid (it is never silently replaced by another).
 
 import type { Doc, Vec2 } from '../model/types.ts';
-import { alternationOf, instancePose, isAlternateCopy } from './lattice.ts';
+import { alternationOf, instancePose, isAlternateCopy, poseScale } from './lattice.ts';
 import { add, boxOf, crossingsOf, cross, insideOutline, len, motifScale, nearPairs, placeAll, relate, sub, type Feature, type Placed } from './fairGeometry.ts';
 import { compositionFeatures } from './repeatComposition.ts';
 
@@ -73,7 +73,8 @@ export interface Tolerances {
   maxGap: number;
 }
 export function tolerances(doc: Doc, maxGapFraction = 0.04): Tolerances {
-  const R = motifScale(doc);
+  // Repeat draws the motif at its own scale, so a gap is judged against the motif as drawn.
+  const R = motifScale(doc) * poseScale(doc.repeat.motif);
   return { eps: R * 1e-7, maxGap: R * maxGapFraction };
 }
 

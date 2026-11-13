@@ -50,7 +50,7 @@ import { genId } from './model/id.ts';
 import { setupCanvasDPR } from './render/canvasSetup.ts';
 import { attachDiagnostics } from './ui/diagnostics.ts';
 import { computeVisibleBounds, discBounds, turned } from './geometry/bounds.ts';
-import { composePose, ensureRepeatDefaults, firstEntryBounds, fitInstances, motifRadius } from './geometry/lattice.ts';
+import { composePose, ensureRepeatDefaults, firstEntryBounds, fitInstances, motifRadius, poseScale } from './geometry/lattice.ts';
 import { refreshSuggestedSpacing } from './geometry/repeatSetup.ts';
 import { repeatUnit } from './geometry/repeatUnit.ts';
 import { preventSafariPageZoom } from './interaction/preventPageZoom.ts';
@@ -172,13 +172,13 @@ function fitRepeatView(controller: AppController, canvas: HTMLCanvasElement, ove
   const discs = fitInstances(doc).flatMap((lattice) => [
     ...members.map((member) => {
       const pose = member ? composePose(lattice, member) : lattice;
-      return { x: pivot.x + pose.translate.x, y: pivot.y + pose.translate.y, r };
+      return { x: pivot.x + pose.translate.x, y: pivot.y + pose.translate.y, r: r * poseScale(pose) };
     }),
     // Stage D: the Developed Primary stands about the lattice position, as far as it reaches.
-    ...(unit?.developed.length ? [{ x: pivot.x + lattice.translate.x, y: pivot.y + lattice.translate.y, r: unit.extent }] : []),
+    ...(unit?.developed.length ? [{ x: pivot.x + lattice.translate.x, y: pivot.y + lattice.translate.y, r: unit.extent * poseScale(lattice) }] : []),
   ]);
   // An empty Intersect composition draws nothing: fit the lattice positions themselves.
-  if (discs.length === 0) for (const lattice of fitInstances(doc)) discs.push({ x: pivot.x + lattice.translate.x, y: pivot.y + lattice.translate.y, r });
+  if (discs.length === 0) for (const lattice of fitInstances(doc)) discs.push({ x: pivot.x + lattice.translate.x, y: pivot.y + lattice.translate.y, r: r * poseScale(lattice) });
   fitViewState(doc.repeatView, (turn) => discBounds(discs, turn), doc.frame.radius, doc.frame.origin, canvas, overlay);
   controller.notifyView();
 }
@@ -201,7 +201,7 @@ function fitIntersectionView(controller: AppController, canvas: HTMLCanvasElemen
   doc.intersectionView ??= { zoom: 1, pan: { x: 0, y: 0 } };
   const pivot = doc.frame.origin;
   const r = motifRadius(doc);
-  const discs = shownCopies(doc).map((c) => ({ x: pivot.x + c.pose.translate.x, y: pivot.y + c.pose.translate.y, r }));
+  const discs = shownCopies(doc).map((c) => ({ x: pivot.x + c.pose.translate.x, y: pivot.y + c.pose.translate.y, r: r * poseScale(c.pose) }));
   // Intersect's own construction is part of what is shown, so part of what is fitted.
   const layer = hasLayerGeometry(doc) ? layerDoc(doc) : null;
   const both = (turn: number) => {

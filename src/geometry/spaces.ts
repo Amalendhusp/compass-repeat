@@ -36,7 +36,7 @@ import type { Doc, RepeatSystem, Vec2 } from '../model/types.ts';
 import { resolveEntityGeom } from './kernel.ts';
 import { deriveSegments } from './segments.ts';
 import { computeFairRegions, pointInPolygon } from './regions.ts';
-import { alternationOf, evenShift, instancePose, motifExtent, motifRadius, ruleKey, transformPoint, type Alternation, type InstancePose } from './lattice.ts';
+import { alternationOf, evenShift, instancePose, motifExtent, motifRadius, poseScale, ruleKey, transformPoint, type Alternation, type InstancePose } from './lattice.ts';
 import { compositionFeatures, repeatComposition } from './repeatComposition.ts';
 import { repeatSourceOf } from './repeatSetup.ts';
 import { repeatUnit } from './repeatUnit.ts';
@@ -504,7 +504,8 @@ function toMotif(pivot: Vec2, pose: InstancePose, p: Vec2): Vec2 {
   const lx = qx * c - qy * s;
   let ly = qx * s + qy * c;
   if (pose.mirror) ly = -ly;
-  return { x: lx + pivot.x, y: ly + pivot.y };
+  const k = poseScale(pose);
+  return k === 1 ? { x: lx + pivot.x, y: ly + pivot.y } : { x: lx / k + pivot.x, y: ly / k + pivot.y };
 }
 
 /** Whether the motif's Fair strokes map onto themselves under the rule's alternation (a half-turn
@@ -559,10 +560,12 @@ function build(doc: Doc, repeat: RepeatSystem, strokes: Stroke[], intersect: boo
   const det = a.x * b.y - a.y * b.x;
   if (strokes.length === 0 || Math.abs(det) < 1e-9) return empty;
 
-  const R = motifRadius(doc);
+  // Sizes as drawn: the Repeat motif's scale (1 = as constructed) sets every tolerance and reach.
+  const S = poseScale(repeat.motif);
+  const R = motifRadius(doc) * S;
   const tol = R * 0.003;
   // How far what stands at each lattice position reaches: the motif, or the whole Intersect unit.
-  const E = intersect ? (repeatUnit(doc)?.extent ?? motifExtent(doc)) : motifExtent(doc);
+  const E = (intersect ? (repeatUnit(doc)?.extent ?? motifExtent(doc)) : motifExtent(doc)) * S;
   const pivot = doc.frame.origin;
   const { u, v, parity, alt } = patternPeriod(repeat);
 
@@ -605,7 +608,7 @@ function build(doc: Doc, repeat: RepeatSystem, strokes: Stroke[], intersect: boo
   // Spaces: bounded faces outside every copy's own regions, far enough in to be complete. The
   // Construct motif's regions are its Fill regions; an Intersect unit's are the faces of the unit
   // on its own (its members split where they cross, exactly — no bridges inside a unit).
-  const ownRegions: Vec2[][] = intersect ? unitFaces(strokes, tol, cell) : computeFairRegions(doc).map((r) => r.samplePoints);
+  const ownRegions: Vec2[][] = intersect ? unitFaces(strokes, tol / S, cell / S) : computeFairRegions(doc).map((r) => r.samplePoints);
   const nearCopies = (p: Vec2) => copies.filter((pose) => Math.hypot(pivot.x + pose.translate.x - p.x, pivot.y + pose.translate.y - p.y) <= E * 1.05);
   const byKey = new Map<string, Face[]>();
   const gaps = new Map<string, number>();
@@ -633,7 +636,7 @@ function build(doc: Doc, repeat: RepeatSystem, strokes: Stroke[], intersect: boo
 
   // Alternate/Mirror with a motif that looks the same either way: classes that are translates by
   // the full lattice are one Space after all — coloured together.
-  if (parity && classes.length > 1 && motifInvariant(strokes, pivot, repeat.rule, tol)) {
+  if (parity && classes.length > 1 && motifInvariant(strokes, pivot, repeat.rule, tol / S)) {
     const parent = new Map(classes.map((c) => [c.key, c.key] as const));
     const find = (k: string): string => (parent.get(k) === k ? k : find(parent.get(k)!));
     for (let p = 0; p < classes.length; p++) {
@@ -705,6 +708,8 @@ function contentKey(doc: Doc, repeat: RepeatSystem, strokes: Stroke[], intersect
   const q = motifRadius(doc) * 1e-6;
   const r = (x: number) => Math.round(x / q);
   const parts: (string | number | undefined)[] = [intersect ? 'unit' : 'motif', GAP_FRACTION, repeat.family, ruleKey(repeat.rule), r(repeat.a.x), r(repeat.a.y), r(repeat.b.x), r(repeat.b.y), Math.round(repeat.motif.rotation * 1e9), r(doc.frame.origin.x), r(doc.frame.origin.y), r(doc.frame.radius)];
+  // The motif's scale, only when not 1 (so every key made before scale existed is unchanged).
+  if (poseScale(repeat.motif) !== 1) parts.push(`scale:${poseScale(repeat.motif)}`);
   for (const s of strokes) parts.push(s.entityId, ...s.pts.flatMap((p) => [r(p.x), r(p.y)]));
   return parts.join(',');
 }

@@ -9,7 +9,7 @@
 import type { Doc, Vec2 } from '../model/types.ts';
 import { resolveEntityGeom } from './kernel.ts';
 import { deriveSegments, effectiveSegmentKind } from './segments.ts';
-import { motifRadius, transformPoint, type InstancePose } from './lattice.ts';
+import { motifRadius, poseLength, transformPoint, type InstancePose } from './lattice.ts';
 
 export const TAU = Math.PI * 2;
 
@@ -146,7 +146,7 @@ export function placePrim(p: Prim, pivot: Vec2, pose: InstancePose): Prim {
   const c = T(p.c);
   // Mirroring reverses the direction of travel; the turn adds to every angle.
   const a0 = pose.mirror ? -(p.a0 + p.sw) + pose.rotation : p.a0 + pose.rotation;
-  return { k: 'arc', c, r: p.r, a0: norm(a0), sw: p.sw };
+  return { k: 'arc', c, r: poseLength(pose, p.r), a0: norm(a0), sw: p.sw };
 }
 
 export function placeAll(features: Feature[], pivot: Vec2, pose: InstancePose): Placed[] {

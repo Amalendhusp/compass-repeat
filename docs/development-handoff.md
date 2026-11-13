@@ -698,6 +698,32 @@ Approved decisions D1 (independent Intersect construction) and D4 (one Extension
 - **Checks:** `hidden.mjs` 15, `whole.mjs` 18, `copies-panel.mjs` 28, `repeat-cases.mjs` 8 (the four cases),
   phone and desktop; `stage2-ui.mjs` / `stage3-ui.mjs` updated to the chip panel.
 
+## Bounding boxes, Stage 2a: the scale foundation (November 2026)
+
+Plan approved 2026-11-13 (Intersect copy box; Repeat Uniform box, Alternate kept with its old Transformation rows;
+no Rows/Columns keyframes yet). Stage 2a adds scale underneath, with no interface yet.
+
+- **Data:** `InstancePose.scale?` (absent = 1). Stored as `layout.pieces[].scale?` (a copy; written only when not
+  1) and the existing `repeat.motif.scale` (always 1 until now; now applied). `poseScale` reads malformed values as
+  1; `scaleField` keeps 25–400 % and writes nothing for 1. Pivots unchanged: a copy's own frame centre; Repeat's
+  frame centre for both sources.
+- **Maths** (`lattice.ts`): transformPoint / poseVector scale; inverse, compose and relativePlacement include it;
+  `poseLength` for radii and distances. At scale 1 every result is bit-identical (× 1 and ÷ 1 are exact).
+- **Callers:** arc radii (placePrim, both renderers), distances measured in a copy's own frame
+  (instanceDistances, instanceUnder, contextual pieces), Snap's shown lines (unit direction, extents × scale), hit
+  areas and the rotation ring, Intersect bounds and Fit, Repeat reach (visibleInstances, `repeatReach`), Fit,
+  circle contact, Spaces / weave / Fill openings / construction spaces / Close Gap tolerances (all × the Repeat
+  scale, keys gain `scale:` only when not 1), Spaces' and colouring's inverse, Timelapse bounds.
+- **Line weight is constant:** Repeat's screen bitmap is drawn with the scale inside it and stamped with turn and
+  mirror only.
+- **Fair:** developed Fair is stored geometry and never moves or scales with a copy. A whole-motif copy's Fair is
+  its motif placed by its pose, so it scales with it. Repeat's doubled-stroke filter means a developed piece that
+  a copy drew at 100 % is drawn again when that copy is scaled.
+- **Match Edge:** `EdgePlan.lengthsDiffer` (the middles meet; ends can't). The warning is shown in Stage 2b.
+- **Checks:** `scale1-compare.mjs` (checkpoint tag on port 5192 vs branch, and the branch with `scale: 1` written:
+  306 exact comparisons over nine scenarios), `scale-math.mjs` 38 (maths; a 2× / ½× copy; the field at ½× / 2× equals
+  the 100 % field scaled, for both sources).
+
 ## Exact next step
 
 Release refinements R1–R5 done on `feature/release-candidate`; release candidate on the phone-preview server. Stop

@@ -106,8 +106,9 @@ export interface RepeatSystem {
 export interface IntersectionLayout {
   /** The Primary first ("0,0"), then each copy, in the order added. `mirror`: the copy is reflected
    * (across its own horizontal axis, before its turn) — written only when true, never on the Primary,
-   * so every arrangement made before reflection existed keeps exactly its shape. */
-  pieces: { key: string; x: number; y: number; rotation: number; mirror?: true }[];
+   * so every arrangement made before reflection existed keeps exactly its shape. `scale`: the copy's
+   * uniform scale about its own frame centre (0.25–4) — written only when not 1, so likewise. */
+  pieces: { key: string; x: number; y: number; rotation: number; mirror?: true; scale?: number }[];
   /** Which constructions the reference was set with. When the copies present differ (one added or
    * removed since), the reference is out of date and Spread waits for a new one. Absent in
    * arrangements saved before copies could be added — those are always current. */

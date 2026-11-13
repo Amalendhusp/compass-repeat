@@ -26,6 +26,8 @@ import {
   motifExtent,
   motifRadius,
   poseArcAngle,
+  poseLength,
+  poseScale,
   transformPoint,
   visibleInstances,
   visibleLatticeRange,
@@ -65,7 +67,7 @@ function pathTransformedPiece(ctx: CanvasRenderingContext2D, view: ViewTransform
   ctx.beginPath();
   if (g.kind === 'circle') {
     const centreS = worldToScreen(view, transformPoint(pivot, pose, g.centre));
-    const r = g.radius * view.zoom;
+    const r = poseLength(pose, g.radius) * view.zoom;
     if (fromParam === undefined || toParam === undefined) {
       ctx.arc(centreS.x, centreS.y, r, 0, Math.PI * 2);
       return;
@@ -109,7 +111,7 @@ function drawFrameOutline(ctx: CanvasRenderingContext2D, view: ViewTransform, pi
   if (doc.frame.kind === 'circle') {
     const c = worldToScreen(view, transformPoint(pivot, pose, pivot));
     ctx.beginPath();
-    ctx.arc(c.x, c.y, doc.frame.radius * view.zoom, 0, Math.PI * 2);
+    ctx.arc(c.x, c.y, poseLength(pose, doc.frame.radius) * view.zoom, 0, Math.PI * 2);
     ctx.stroke();
   } else {
     const n = doc.frame.kind === 'square' ? 4 : doc.frame.kind === 'hexagon' ? 6 : 3;
@@ -297,7 +299,7 @@ function drawRotationRing(ctx: CanvasRenderingContext2D, controller: AppControll
   const doc = controller.doc;
   const pivot = doc.frame.origin;
   const centre = worldToScreen(view, pivot);
-  const r = motifRadius(doc) * view.zoom + 26;
+  const r = motifRadius(doc) * poseScale(doc.repeat.motif) * view.zoom + 26;
   const rotation = controller.repeatRotateDrag?.rawRotation ?? doc.repeat.motif.rotation;
 
   ctx.save();
@@ -730,15 +732,17 @@ const LOD_COPIES = 150;
  * mirrored per copy as its pose says). While fingers are pinching/panning, the last bitmap is simply
  * scaled (`allowStale`) and redrawn sharp on release. Null when it would be too large to be worth it.
  */
-function motifSprite(doc: Doc, display: RepeatDisplay, zoom: number, detail: number, allowStale: boolean, unit: RepeatUnit | null, group: 0 | 1, pass: StampPass, layered: boolean): Sprite | null {
+function motifSprite(doc: Doc, display: RepeatDisplay, zoom: number, detail: number, allowStale: boolean, unit: RepeatUnit | null, group: 0 | 1, pass: StampPass, layered: boolean, motifScale = 1): Sprite | null {
   // With a unit (Repeat from Intersect) the bitmap is the whole unit, about the lattice position.
-  const key = `${display.artwork}|${display.fillOpacity}|${pass.key}:${pass.fills ? 'f' : ''}${pass.strokes ? 's' : ''}:${pass.layer.colour ?? ''}/${pass.layer.width ?? ''}|${detail}${unit ? `|unit:${unit.key}` : ''}`;
+  // The Repeat motif's scale is drawn INTO the bitmap (its geometry scaled, its strokes their own
+  // width), so stamping it only turns and mirrors — line weight never changes with scale.
+  const key = `${display.artwork}|${display.fillOpacity}|${pass.key}:${pass.fills ? 'f' : ''}${pass.strokes ? 's' : ''}:${pass.layer.colour ?? ''}/${pass.layer.width ?? ''}|${detail}${unit ? `|unit:${unit.key}` : ''}${motifScale !== 1 ? `|scale:${motifScale}` : ''}`;
   const slot = `${group}|${pass.key}`;
   const sprite = sprites.get(slot) ?? null;
   const sameKind = !!sprite && sprite.key.includes('|unit:') === !!unit;
   if (sprite && sprite.doc === doc && ((allowStale && sameKind) || (sprite.key === key && Math.abs(sprite.zoom / zoom - 1) < 0.005))) return sprite;
   const flat = flatMotif(doc);
-  const half = ((unit ? unit.extent : motifExtent(doc)) + (pass.layer.width ?? flat.maxStroke)) * zoom + 2; // CSS px
+  const half = ((unit ? unit.extent : motifExtent(doc)) * motifScale + (pass.layer.width ?? flat.maxStroke)) * zoom + 2; // CSS px
   const scale = effectiveDpr() * detail;
   const px = Math.ceil(half * 2 * scale);
   if (px > (layered ? MAX_LAYERED_SPRITE_PX : MAX_SPRITE_PX) || px < 4) return null;
@@ -751,8 +755,9 @@ function motifSprite(doc: Doc, display: RepeatDisplay, zoom: number, detail: num
   sctx.clearRect(0, 0, px, px);
   const pivot = doc.frame.origin;
   const local: ViewTransform = { zoom: zoom * scale, pan: { x: -pivot.x, y: -pivot.y }, w: px, h: px };
-  if (unit) drawUnit(sctx, doc, local, IDENTITY, unit, flat, display, pass.fills, pass.strokes, group, pass.layer);
-  else drawCopy(sctx, doc, local, IDENTITY, flat, display, pass.fills, pass.strokes, null, paintFor(doc.repeatSetup?.colour, null, group), pass.layer);
+  const base: InstancePose = motifScale === 1 ? IDENTITY : { ...IDENTITY, scale: motifScale };
+  if (unit) drawUnit(sctx, doc, local, base, unit, flat, display, pass.fills, pass.strokes, group, pass.layer);
+  else drawCopy(sctx, doc, local, base, flat, display, pass.fills, pass.strokes, null, paintFor(doc.repeatSetup?.colour, null, group), pass.layer);
   const made: Sprite = { canvas, doc, key, zoom, cssSize: px / scale };
   sprites.set(slot, made);
   return made;
@@ -816,7 +821,7 @@ export function renderRepeat(ctx: CanvasRenderingContext2D, controller: AppContr
   const bitmapFor = (group: 0 | 1, pass: StampPass): Sprite | null => {
     if (exp) return null;
     used.add(`${group}|${pass.key}`);
-    return motifSprite(doc, display, view.zoom, detail, controller.viewGesture, unit, group, pass, layered);
+    return motifSprite(doc, display, view.zoom, detail, controller.viewGesture, unit, group, pass, layered, poseScale(repeat.motif));
   };
 
   drawArtworkLayer(ctx, layers, (ctx) => {

@@ -7,7 +7,7 @@
 import type { Vec2 } from '../../model/types.ts';
 import type { AppController, ViewTransform } from '../../app/controller.ts';
 import { screenToWorld, worldToScreen } from '../../app/controller.ts';
-import { motifRadius, snapRotation } from '../../geometry/lattice.ts';
+import { motifRadius, poseScale, snapRotation } from '../../geometry/lattice.ts';
 import { dist } from '../../geometry/vec.ts';
 import { computeSpaces } from '../../geometry/spaces.ts';
 import { fillOpeningsAt } from '../../geometry/repeatGaps.ts';
@@ -256,7 +256,7 @@ export const repeatTool: ToolModule = {
     }
 
     const centreScreen = worldToScreen(view, pivot);
-    const ringRadius = motifRadius(doc) * view.zoom + 26;
+    const ringRadius = motifRadius(doc) * poseScale(doc.repeat.motif) * view.zoom + 26;
     if (Math.abs(dist(screenPos, centreScreen) - ringRadius) <= RING_HIT_BAND) return rotateRingGesture(controller, view, screenPos);
 
     return null;

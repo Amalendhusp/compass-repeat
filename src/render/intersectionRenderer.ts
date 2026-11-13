@@ -31,7 +31,7 @@ import { CHOICE_MARKER_R, drawConstructionOnly, drawLabelPill, drawNumberBadge, 
 import { hasLayerGeometry, layerController } from '../geometry/intersectLayer.ts';
 import { resolveEntityGeom } from '../geometry/kernel.ts';
 import { defaultSegmentKind, deriveSegments } from '../geometry/segments.ts';
-import { motifRadius, poseArcAngle, transformPoint, type InstancePose } from '../geometry/lattice.ts';
+import { motifRadius, poseArcAngle, poseLength, poseScale, transformPoint, type InstancePose } from '../geometry/lattice.ts';
 import { developedSegments, inComposition, intersectionBounds, shownCopies, type IntersectionCopy } from '../geometry/intersection.ts';
 import { pickedEdge, planMatchEdge, resolvePick, type IntersectionPick, type ResolvedPick, type ShownLine } from '../geometry/intersectionSnap.ts';
 import { color, stroke } from './tokens.ts';
@@ -76,7 +76,7 @@ function appendPiece(path: Path2D, doc: Doc, view: ViewTransform, pose: Instance
   const g = resolveEntityGeom(doc, piece.entity);
   if (g.kind === 'circle') {
     const c = worldToScreen(view, transformPoint(pivot, pose, g.centre));
-    const r = g.radius * view.zoom;
+    const r = poseLength(pose, g.radius) * view.zoom;
     const from = piece.from === undefined ? 0 : poseArcAngle(pose, piece.from);
     const to = piece.to === undefined ? Math.PI * 2 : poseArcAngle(pose, piece.to);
     path.moveTo(c.x + r * Math.cos(from), c.y + r * Math.sin(from));
@@ -97,7 +97,8 @@ function appendWholeLine(path: Path2D, doc: Doc, view: ViewTransform, pose: Inst
   const g = resolveEntityGeom(doc, entity);
   if (g.kind !== 'line') return;
   const pivot = doc.frame.origin;
-  const far = (Math.hypot(view.w, view.h) / view.zoom) * 2 + motifRadius(doc) * 4;
+  // Far enough, in the construction's own (unscaled) units, to cross the whole view.
+  const far = ((Math.hypot(view.w, view.h) / view.zoom) * 2) / poseScale(pose) + motifRadius(doc) * 4;
   const a = worldToScreen(view, transformPoint(pivot, pose, { x: g.a.x - g.dir.x * far, y: g.a.y - g.dir.y * far }));
   const b = worldToScreen(view, transformPoint(pivot, pose, { x: g.a.x + g.dir.x * far, y: g.a.y + g.dir.y * far }));
   path.moveTo(a.x, a.y);
@@ -511,16 +512,17 @@ function drawPointMark(ctx: CanvasRenderingContext2D, view: ViewTransform, r: Ex
   ctx.restore();
 }
 
-/** The radius (screen px) of a construction's rotation ring — just outside its frame, as Repeat's. */
-export function ringRadius(doc: Doc, view: ViewTransform): number {
-  return motifRadius(doc) * view.zoom + 26;
+/** The radius (screen px) of a construction's rotation ring — just outside its frame (at its scale),
+ * as Repeat's. */
+export function ringRadius(doc: Doc, view: ViewTransform, copy?: IntersectionCopy): number {
+  return motifRadius(doc) * (copy ? poseScale(copy.pose) : 1) * view.zoom + 26;
 }
 
 /** Where a construction's rotation handle sits on its ring (screen) — "up" at zero rotation. */
 export function rotationHandle(doc: Doc, view: ViewTransform, copy: IntersectionCopy): Vec2 {
   const pivot = doc.frame.origin;
   const centre = worldToScreen(view, { x: pivot.x + copy.pose.translate.x, y: pivot.y + copy.pose.translate.y });
-  const r = ringRadius(doc, view);
+  const r = ringRadius(doc, view, copy);
   const a = -Math.PI / 2 + copy.pose.rotation;
   return { x: centre.x + r * Math.cos(a), y: centre.y + r * Math.sin(a) };
 }
@@ -529,7 +531,7 @@ export function rotationHandle(doc: Doc, view: ViewTransform, copy: Intersection
 function drawRotationRing(ctx: CanvasRenderingContext2D, doc: Doc, view: ViewTransform, copy: IntersectionCopy, active: boolean, handle = true): void {
   const pivot = doc.frame.origin;
   const centre = worldToScreen(view, { x: pivot.x + copy.pose.translate.x, y: pivot.y + copy.pose.translate.y });
-  const r = ringRadius(doc, view);
+  const r = ringRadius(doc, view, copy);
   ctx.save();
   ctx.strokeStyle = copy.colour;
   ctx.globalAlpha = 0.45;

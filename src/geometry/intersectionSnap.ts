@@ -32,7 +32,7 @@
 import type { Doc, Entity, EntityId, PointId, Vec2 } from '../model/types.ts';
 import { epsilon, findPoint, projectOntoEntity, resolveEntityGeom, resolvePoint } from './kernel.ts';
 import { defaultSegmentKind, deriveSegments, paramInRange } from './segments.ts';
-import { inversePoint, poseVector, transformPoint } from './lattice.ts';
+import { inversePoint, poseScale, poseVector, transformPoint } from './lattice.ts';
 import type { IntersectionCopy } from './intersection.ts';
 
 /** One straight line of one construction, in world space, as shown. */
@@ -196,7 +196,12 @@ function shownLine(doc: Doc, copy: IntersectionCopy, l: LocalLine): ShownLine | 
     if (parts.length === 0) return null;
     extent = [Math.min(...parts.map((r) => r[0])), Math.max(...parts.map((r) => r[1]))];
   }
-  return { copyKey: copy.key, entityId: l.entityId, p: transformPoint(doc.frame.origin, copy.pose, l.a), u: poseVector(copy.pose, l.dir), extent };
+  // A scaled copy: the direction stays a unit one, and its extents (lengths along it) scale.
+  const s = poseScale(copy.pose);
+  const v = poseVector(copy.pose, l.dir);
+  const u = s === 1 ? v : { x: v.x / s, y: v.y / s };
+  if (s !== 1 && extent) extent = [extent[0] * s, extent[1] * s];
+  return { copyKey: copy.key, entityId: l.entityId, p: transformPoint(doc.frame.origin, copy.pose, l.a), u, extent };
 }
 
 /** Every line of one construction that is shown, placed by its pose. */
@@ -522,6 +527,9 @@ export type EdgePlan =
       shift: Vec2;
       /** Already coincident. */
       matched: boolean;
+      /** The two edges, as shown, are not the same length (a scaled copy, or two different edges):
+       * their middles meet, but their ends cannot all coincide. */
+      lengthsDiffer: boolean;
       /** The two edges as shown now (world): moving, then target. */
       edges: [[Vec2, Vec2], [Vec2, Vec2]];
     };
@@ -578,6 +586,7 @@ export function planMatchEdge(doc: Doc, copies: IntersectionCopy[], moving: Inte
     turn: turnBy,
     shift,
     matched: Math.abs(turnBy) < PARALLEL_EPS && Math.hypot(shift.x, shift.y) < COINCIDENT_EPS,
+    lengthsDiffer: Math.abs(Math.hypot(dw.x, dw.y) - Math.hypot(dv.x, dv.y)) > Math.max(Math.hypot(dv.x, dv.y), Math.hypot(dw.x, dw.y)) * 1e-6,
     edges: [
       [w1, w2],
       [v1, v2],

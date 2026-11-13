@@ -18,7 +18,7 @@
 import type { Camera, Doc, Entity, Vec2 } from '../model/types.ts';
 import { resolveEntityGeom } from './kernel.ts';
 import { defaultSegmentKind, deriveSegments, paramInRange } from './segments.ts';
-import { inversePoint, poseArcRange, poseVector, relativePlacement, transformPoint, type InstancePose } from './lattice.ts';
+import { inversePoint, poseArcRange, poseLength, poseScale, poseVector, relativePlacement, transformPoint, type InstancePose } from './lattice.ts';
 import type { IntersectionCopy } from './intersection.ts';
 import { localPoints, pointOnDrawn, pointShown } from './intersectionSnap.ts';
 
@@ -37,9 +37,10 @@ export function instanceCamera(camera: Camera, pivot: Vec2, pose: InstancePose):
   // A camera can turn but not reflect: a reflected instance is never edited through (main.ts — the
   // construction tools work only on the Original and unreflected copies).
   if (pose.mirror) throw new Error('instanceCamera: a reflected instance has no camera');
+  const s = poseScale(pose);
   const r = turn({ x: pivot.x + pose.translate.x + camera.pan.x, y: pivot.y + pose.translate.y + camera.pan.y }, -pose.rotation);
   const rotation = (camera.rotation ?? 0) + pose.rotation;
-  return { zoom: camera.zoom, pan: { x: r.x - pivot.x, y: r.y - pivot.y }, ...(rotation ? { rotation } : null) };
+  return { zoom: camera.zoom * s, pan: { x: r.x / s - pivot.x, y: r.y / s - pivot.y }, ...(rotation ? { rotation } : null) };
 }
 
 // ---- what a copy draws, as pieces (once per document) ----
@@ -182,13 +183,15 @@ function placedNear(doc: Doc, copies: IntersectionCopy[], active: IntersectionCo
     // The finger, in this copy's own frame — so its pieces are tested where they are stored.
     const local = inversePoint(pivot, rel, m);
     const place = (p: Vec2): Vec2 => transformPoint(pivot, rel, p);
+    // Distances in the copy's own frame, at its scale relative to the active frame.
+    const s = poseScale(rel);
     for (const p of localPieces(doc)) {
       if (p.ext && !copy.extensions) continue;
-      if (distToPiece(p, local) > reach) continue;
+      if (distToPiece(p, local) * s > reach) continue;
       if (p.kind === 'line') out.push({ copy: copy.key, kind: 'line', a: place(p.a), d: poseVector(rel, p.d), t0: p.t0, t1: p.t1, whole: p.whole });
       else {
         const [from, to] = poseArcRange(rel, p.from, p.to);
-        out.push({ copy: copy.key, kind: 'arc', c: place(p.c), r: p.r, from: norm(from), to: norm(to), full: p.full });
+        out.push({ copy: copy.key, kind: 'arc', c: place(p.c), r: poseLength(rel, p.r), from: norm(from), to: norm(to), full: p.full });
       }
     }
   }
@@ -263,15 +266,17 @@ export function instanceUnder(doc: Doc, copies: IntersectionCopy[], fromKey: str
   let best: { key: string; d: number } | null = null;
   for (const copy of copies) {
     if (copy.key === fromKey) continue;
-    const local = inversePoint(pivot, relativePlacement(from.pose, copy.pose), m);
+    const rel = relativePlacement(from.pose, copy.pose);
+    const local = inversePoint(pivot, rel, m);
+    const s = poseScale(rel);
     for (const p of localPieces(doc)) {
       if (p.ext && !copy.extensions) continue;
       if (p.kind === 'arc' && !p.full && !paramInRange(Math.atan2(local.y - p.c.y, local.x - p.c.x), p.from, p.to, true)) continue;
-      const d = distToPiece(p, local);
+      const d = distToPiece(p, local) * s;
       if (d <= reach && (!best || d < best.d)) best = { key: copy.key, d };
     }
     for (const p of localPoints(doc)) {
-      const d = Math.hypot(local.x - p.at.x, local.y - p.at.y);
+      const d = Math.hypot(local.x - p.at.x, local.y - p.at.y) * s;
       if (d <= reach && (!best || d < best.d) && pointShown(doc, p.id, p.at, copy.extensions)) best = { key: copy.key, d };
     }
   }
@@ -287,14 +292,16 @@ export function instanceDistances(doc: Doc, copies: IntersectionCopy[], w: Vec2,
   const out = new Map<string, number>();
   for (const copy of copies) {
     const local = inversePoint(pivot, copy.pose, w);
+    // Measured in the copy's own frame, then at its scale: world distances.
+    const s = poseScale(copy.pose);
     let best = Infinity;
     for (const p of localPieces(doc)) {
       if (p.ext && !copy.extensions) continue;
       if (p.kind === 'arc' && !p.full && !paramInRange(Math.atan2(local.y - p.c.y, local.x - p.c.x), p.from, p.to, true)) continue;
-      best = Math.min(best, distToPiece(p, local));
+      best = Math.min(best, distToPiece(p, local) * s);
     }
     for (const p of localPoints(doc)) {
-      const d = Math.hypot(local.x - p.at.x, local.y - p.at.y);
+      const d = Math.hypot(local.x - p.at.x, local.y - p.at.y) * s;
       if (d < best && pointShown(doc, p.id, p.at, copy.extensions)) best = d;
     }
     if (best <= reach) out.set(copy.key, best);

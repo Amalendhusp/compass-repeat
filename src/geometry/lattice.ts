@@ -81,6 +81,28 @@ export interface InstancePose {
   translate: Vec2;
   rotation: number; // radians, base motif rotation + this instance's orientation-rule rotation
   mirror: boolean;
+  /** Uniform scale about the pivot (applied with the reflection and turn, before the shift). Absent =
+   * 1 — and every function here then computes exactly what it always has (× 1 and ÷ 1 are exact), so a
+   * placement without scale is the rigid placement it always was. */
+  scale?: number;
+}
+
+export const MIN_SCALE = 0.25;
+export const MAX_SCALE = 4;
+
+/** A placement's scale: 1 when absent — or when not a usable number, so nothing malformed can ever
+ * collapse or invert a motif. */
+export function poseScale(pose: { scale?: number }): number {
+  const s = pose.scale;
+  return typeof s === 'number' && Number.isFinite(s) && s > 0 ? s : 1;
+}
+
+/** A stored scale as placements carry it: absent when 1 (so a pose, a cache key or a record made from
+ * an unscaled motif keeps exactly its old shape), otherwise kept within the offered range. */
+export function scaleField(scale: number | undefined): { scale?: number } {
+  const s = poseScale({ scale });
+  if (s === 1) return {};
+  return { scale: Math.min(MAX_SCALE, Math.max(MIN_SCALE, s)) };
 }
 
 const odd = (n: number) => ((n % 2) + 2) % 2 === 1;
@@ -141,6 +163,7 @@ export function instancePose(repeat: RepeatSystem, i: number, j: number): Instan
     translate: { x: repeat.a.x * i + repeat.b.x * j, y: repeat.a.y * i + repeat.b.y * j },
     rotation: repeat.motif.rotation + adj.rotation,
     mirror: adj.mirror,
+    ...scaleField(repeat.motif.scale),
   };
 }
 
@@ -151,16 +174,25 @@ export function instancePose(repeat: RepeatSystem, i: number, j: number): Instan
  * reverses the inner turn), and lands inner's shift where `outer` carries it.
  */
 export function composePose(outer: InstancePose, inner: InstancePose): InstancePose {
-  const y = outer.mirror ? -inner.translate.y : inner.translate.y;
+  // Scale: outer's scale also carries inner's shift; the two scales multiply.
+  const so = poseScale(outer);
+  const y = (outer.mirror ? -inner.translate.y : inner.translate.y) * so;
+  const x = inner.translate.x * so;
   const c = Math.cos(outer.rotation);
   const n = Math.sin(outer.rotation);
   return {
     i: outer.i,
     j: outer.j,
-    translate: { x: outer.translate.x + inner.translate.x * c - y * n, y: outer.translate.y + inner.translate.x * n + y * c },
+    translate: { x: outer.translate.x + x * c - y * n, y: outer.translate.y + x * n + y * c },
     rotation: outer.mirror ? outer.rotation - inner.rotation : outer.rotation + inner.rotation,
     mirror: outer.mirror !== inner.mirror,
+    ...productScale(so, poseScale(inner)),
   };
+}
+
+function productScale(a: number, b: number): { scale?: number } {
+  const s = a * b;
+  return s === 1 ? {} : { scale: s };
 }
 
 /** How placement `b` looks from inside placement `a` — the placement a⁻¹ ∘ b, so that
@@ -168,24 +200,35 @@ export function composePose(outer: InstancePose, inner: InstancePose): InstanceP
 export function relativePlacement(a: InstancePose, b: InstancePose): InstancePose {
   const t = poseVectorInverse(a, { x: b.translate.x - a.translate.x, y: b.translate.y - a.translate.y });
   const by = b.rotation - a.rotation;
-  return { i: b.i, j: b.j, translate: t, rotation: a.mirror ? -by : by, mirror: a.mirror !== b.mirror };
+  const sa = poseScale(a);
+  const sb = poseScale(b);
+  return { i: b.i, j: b.j, translate: t, rotation: a.mirror ? -by : by, mirror: a.mirror !== b.mirror, ...(sa === sb ? {} : { scale: sb / sa }) };
 }
 
-/** A direction (or offset) as a placement carries it: mirrored, then turned — no shift. */
+/** An offset as a placement carries it: mirrored, scaled, then turned — no shift. (A unit direction
+ * comes out at the placement's scale: normalise it where only its direction matters.) */
 export function poseVector(pose: InstancePose, v: Vec2): Vec2 {
-  const y = pose.mirror ? -v.y : v.y;
+  const s = poseScale(pose);
+  const y = (pose.mirror ? -v.y : v.y) * s;
+  const x = v.x * s;
   const c = Math.cos(pose.rotation);
   const n = Math.sin(pose.rotation);
-  return { x: v.x * c - y * n, y: v.x * n + y * c };
+  return { x: x * c - y * n, y: x * n + y * c };
 }
 
-/** The inverse of poseVector: turned back, then un-mirrored. */
+/** The inverse of poseVector: turned back, unscaled, then un-mirrored. */
 export function poseVectorInverse(pose: InstancePose, v: Vec2): Vec2 {
+  const s = poseScale(pose);
   const c = Math.cos(pose.rotation);
   const n = Math.sin(pose.rotation);
-  const x = v.x * c + v.y * n;
-  const y = -v.x * n + v.y * c;
+  const x = (v.x * c + v.y * n) / s;
+  const y = (-v.x * n + v.y * c) / s;
   return { x, y: pose.mirror ? -y : y };
+}
+
+/** How a placement changes a length (a radius, a distance) — its scale. */
+export function poseLength(pose: InstancePose, length: number): number {
+  return length * poseScale(pose);
 }
 
 /** Where a world position lies in the construction's own (unplaced) coordinates — transformPoint's
@@ -205,8 +248,9 @@ export function poseArcRange(pose: InstancePose, from: number, to: number): [num
  * mirror (reflect across the pivot's local x-axis) applies before rotation, matching the angle
  * convention `poseArcAngles` below relies on. */
 export function transformPoint(pivot: Vec2, pose: InstancePose, p: Vec2): Vec2 {
-  let lx = p.x - pivot.x;
-  let ly = p.y - pivot.y;
+  const s = poseScale(pose);
+  let lx = (p.x - pivot.x) * s;
+  let ly = (p.y - pivot.y) * s;
   if (pose.mirror) ly = -ly;
   const cos = Math.cos(pose.rotation);
   const sin = Math.sin(pose.rotation);
@@ -232,7 +276,7 @@ const MAX_INSTANCES = 400; // a hard safety cap — never render/iterate more th
 export function visibleInstances(doc: Doc, view: ViewTransform, unitReach?: number): InstancePose[] {
   // `unitReach`: how far what is drawn at each lattice position reaches from it, when that is more
   // than one motif (Repeat from an Intersect arrangement — geometry/repeatUnit.ts).
-  const reach = unitReach ?? motifExtent(doc);
+  const reach = (unitReach ?? motifExtent(doc)) * poseScale(doc.repeat.motif);
   const range = visibleLatticeRange(doc, view, reach);
   if (!range) return [instancePose(doc.repeat, 0, 0)]; // degenerate basis — just the reference
   const { i0, i1, j0, j1 } = range;
@@ -342,7 +386,7 @@ export function fitInstances(doc: Doc): InstancePose[] {
  * handles have room to be dragged, never flooding the screen with a full field on first look. */
 export function firstEntryBounds(doc: Doc): { minX: number; minY: number; maxX: number; maxY: number } {
   const pivot = doc.frame.origin;
-  const r = motifRadius(doc) * 1.8; // the reference motif plus a peek of the handle direction — not a whole neighbour ring
+  const r = motifRadius(doc) * poseScale(doc.repeat.motif) * 1.8; // the reference motif plus a peek of the handle direction — not a whole neighbour ring
   return { minX: pivot.x - r, maxX: pivot.x + r, minY: pivot.y - r, maxY: pivot.y + r };
 }
 
@@ -351,7 +395,7 @@ export function firstEntryBounds(doc: Doc): { minX: number; minY: number; maxX: 
  * geometry/bounds.ts's computeVisibleBounds feeds Construct's Fit. */
 export function fitBounds(doc: Doc): { minX: number; minY: number; maxX: number; maxY: number } {
   const pivot = doc.frame.origin;
-  const r = motifRadius(doc);
+  const r = motifRadius(doc) * poseScale(doc.repeat.motif);
   let minX = Infinity;
   let minY = Infinity;
   let maxX = -Infinity;
@@ -490,7 +534,7 @@ export function contactModel(doc: Doc, dir: 'a' | 'b'): ContactModel {
   const snapEps = R * 0.03;
 
   if (doc.frame.kind === 'circle') {
-    const twoR = doc.frame.radius * 2;
+    const twoR = doc.frame.radius * 2 * poseScale(doc.repeat.motif);
     return {
       classify(t) {
         const d = Math.hypot(t.x, t.y);
