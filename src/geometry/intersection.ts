@@ -81,7 +81,7 @@ export interface IntersectionCopy {
 
 /** Every construction as shown — including a live move/turn (`controller.intersectionDrag`) and a
  * Spread being dragged (`spreadDraft`), neither yet committed. */
-export function intersectionCopies(doc: Doc, live?: { drag?: { key: string; x: number; y: number; rotation: number } | null; spread?: number | null }): IntersectionCopy[] {
+export function intersectionCopies(doc: Doc, live?: { drag?: { key: string; x: number; y: number; rotation: number; scale?: number } | null; spread?: number | null }): IntersectionCopy[] {
   const layout = layoutOf(doc);
   const saved = doc.intersection?.copies ?? {};
   const spread = live?.spread ?? layout.spread;
@@ -97,7 +97,7 @@ export function intersectionCopies(doc: Doc, live?: { drag?: { key: string; x: n
       label: n === 0 ? 'Original' : `Copy ${n}`,
       colour: saved[piece.key]?.colour ?? LEGACY_COLOURS[piece.key] ?? PALETTE[n % PALETTE.length]!,
       extensions: saved[piece.key]?.extensions ?? true,
-      pose: { i, j, translate: at, rotation: drag ? drag.rotation : piece.rotation, mirror: piece.mirror === true, ...scaleField(piece.scale) },
+      pose: { i, j, translate: at, rotation: drag ? drag.rotation : piece.rotation, mirror: piece.mirror === true, ...scaleField(drag?.scale ?? piece.scale) },
       locked,
       hidden: saved[piece.key]?.hidden === true,
     };
@@ -234,6 +234,46 @@ const wrapAngle = (a: number) => Math.atan2(Math.sin(a), Math.cos(a));
 /** Whether a copy is reflected. */
 export function isReflected(doc: Doc, key: string): boolean {
   return layoutOf(doc).pieces.some((p) => p.key === key && p.mirror === true);
+}
+
+/** A copy's scale (1 when it has none). */
+export function copyScale(doc: Doc, key: string): number {
+  return poseScale(layoutOf(doc).pieces.find((p) => p.key === key) ?? {});
+}
+
+/** The artwork's Intersection with one copy scaled about its own centre (25–400 %; 1 stores nothing,
+ * so a copy scaled back to 100 % is stored exactly as before). Its place, turn and reflection are kept.
+ * Never a locked copy (null). */
+export function withCopyScale(doc: Doc, key: string, scale: number): NonNullable<Doc['intersection']> | null {
+  if (isLocked(doc, key)) return null;
+  const layout = layoutOf(doc);
+  if (!layout.pieces.some((p) => p.key === key)) return null;
+  const pieces = layout.pieces.map((p) => {
+    if (p.key !== key) return { ...p };
+    const { scale: _old, ...rest } = p;
+    return { ...rest, ...scaleField(scale) };
+  });
+  return withLayout(doc, { ...layout, pieces });
+}
+
+/** Whether a copy is as constructed: 100 %, no turn, not reflected. */
+export function isAsConstructed(doc: Doc, key: string): boolean {
+  const p = layoutOf(doc).pieces.find((x) => x.key === key);
+  return !!p && p.rotation === 0 && !p.mirror && poseScale(p) === 1;
+}
+
+/** Reset: the copy back to 100 %, no turn and no reflection — where it is (its place, colour,
+ * visibility and whether its whole motif is in the design are all kept). Never a locked copy (null). */
+export function withCopyReset(doc: Doc, key: string): NonNullable<Doc['intersection']> | null {
+  if (isLocked(doc, key)) return null;
+  const layout = layoutOf(doc);
+  if (!layout.pieces.some((p) => p.key === key)) return null;
+  const pieces = layout.pieces.map((p) => {
+    if (p.key !== key) return { ...p };
+    const { mirror: _m, scale: _s, ...rest } = p;
+    return { ...rest, rotation: 0 };
+  });
+  return withLayout(doc, { ...layout, pieces });
 }
 
 /**

@@ -724,6 +724,35 @@ no Rows/Columns keyframes yet). Stage 2a adds scale underneath, with no interfac
   306 exact comparisons over nine scenarios), `scale-math.mjs` 38 (maths; a 2× / ½× copy; the field at ½× / 2× equals
   the 100 % field scaled, for both sources).
 
+## Bounding boxes, Stage 2b: an Intersect copy's bounding box (November 2026)
+
+- **Opening and closing** (`controller.intersectionBox`, session only): a long-press of 450 ms without moving
+  (`holdForBox`), or a right-click or Control-click (`PointerManager.onContextPress` → `openBoxAt`), on a copy in
+  Select. It opens on the selected copy when the press is on it, else the nearest. It never moves on to the next
+  of several overlapping copies; a tap does that. A tap or click outside it, selecting another copy, an alignment
+  (Parallel / Point Snap / Match Edge), another tool or leaving Intersect closes it (`openBox` normalises).
+- **Box** (`render/copyBox.ts`): canvas-aligned around the copy's frame and Fair and its rotation ring (corners
+  stay ≥ 44 px from the ring's handle); kept inside the canvas and above the dock and its buttons
+  (`ViewTransform.usableBottom`, set by `getView` while a box is open). Grey ground under the copies; dashed
+  outline and handles over everything.
+- **Handles**, answered before everything (also before Intersect's own construction, in `intersectSelect`):
+  top-left Reflect ↔ (`withReflection 'h'`; never the Original or a locked copy); top-right Delete (`withoutCopy`;
+  never the Original); bottom-left Lock / Unlock; bottom-right Scale. Each is one Undo step. Scale is a drag
+  (`draggedScale`: proportional to the finger's distance from the copy's centre, 25–400 %, snapping to 100 % within 4 %;
+  stored with `withCopyScale`, nothing stored at 100 %). The live draft is `intersectionDrag` mode `'scale'` with
+  a readout pill "Scale n %".
+- **Copies panel**: Colour · Shown/Hidden (eye) · Reset (`withCopyReset`: 100 %, no turn, no reflection, same
+  place; off while locked or as constructed) · Delete (bin; not for the Original). Reflect ↔ moved to the box.
+- **Match Edge**: when a scaled copy's edges differ in length (`EdgePlan.lengthsDiffer`), the status line and a
+  toast on applying say that the middles meet, not the ends.
+- **Timelapse kinds**: `intersect-scale`, `intersect-reflect`, `intersect-reset`, `repeat-scale`,
+  `repeat-reflect` (new moments only; recorded histories keep theirs).
+- **Developed Fair** is unchanged by any of this. Stored pieces stay where they are, and Intersect always draws
+  them. Repeat draws a piece again once a scaled copy no longer draws the same line.
+- **Checks:** `box.mjs` phone 41 (touch) and desktop 39 (mouse, right-click, Control-click); `copies-panel.mjs`,
+  `stage2-ui.mjs`, `stage3-ui.mjs` updated (Reflect through the box handle; Delete; Reset). `setup.mjs`
+  `motifRetry` reloads when headless touch emulation drops a touch during setup.
+
 ## Exact next step
 
 Release refinements R1–R5 done on `feature/release-candidate`; release candidate on the phone-preview server. Stop

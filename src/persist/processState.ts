@@ -378,7 +378,17 @@ export function describeChange(a: ArtworkState, b: ArtworkState, source: Process
   const rb = b.repeat;
   if (ra.family !== rb.family) tags.push(ra.family === undefined ? 'repeat-setup' : 'repeat-family');
   else if (!same(ra.a, rb.a) || !same(ra.b, rb.b) || ra.rowOffset !== rb.rowOffset) tags.push('repeat-spacing');
-  if (!same(ra.motif, rb.motif)) tags.push('repeat-rotation');
+  if (!same(ra.motif, rb.motif)) {
+    // The motif's turn, scale or reflection (each its own moment; anything else, as ever, a turn).
+    const ma = ra.motif as { rotation?: number; scale?: number; mirror?: unknown } | undefined;
+    const mb = rb.motif as { rotation?: number; scale?: number; mirror?: unknown } | undefined;
+    const scaleOf = (m: typeof ma) => (typeof m?.scale === 'number' && m.scale > 0 ? m.scale : 1);
+    const before = tags.length;
+    if (ma?.rotation !== mb?.rotation) tags.push('repeat-rotation');
+    if (scaleOf(ma) !== scaleOf(mb)) tags.push('repeat-scale');
+    if (!same(ma?.mirror, mb?.mirror)) tags.push('repeat-reflect');
+    if (tags.length === before) tags.push('repeat-rotation');
+  }
   if (!same(ra.rule, rb.rule)) tags.push('repeat-rule');
   if (!same(ra.gapFills, rb.gapFills)) tags.push('repeat-space');
   if (!same(a.appearance, b.appearance)) tags.push('appearance');
@@ -394,7 +404,7 @@ export function describeChange(a: ArtworkState, b: ArtworkState, source: Process
 
   // Intersect's arrangement: what happened to the instances.
   if (!same(a.intersect, b.intersect)) {
-    type Piece = { key: string; x: number; y: number; rotation: number };
+    type Piece = { key: string; x: number; y: number; rotation: number; mirror?: true; scale?: number };
     type Layout = { pieces?: Piece[]; spread?: number } | undefined;
     const la = (a.intersect as { layout?: Layout } | undefined)?.layout;
     const lb = (b.intersect as { layout?: Layout } | undefined)?.layout;
@@ -410,6 +420,12 @@ export function describeChange(a: ArtworkState, b: ArtworkState, source: Process
         if (!p) continue;
         if (p.x !== q.x || p.y !== q.y) tags.push('intersect-move');
         if (p.rotation !== q.rotation) tags.push('intersect-rotate');
+        const scaleOf = (x: Piece) => (typeof x.scale === 'number' && x.scale > 0 ? x.scale : 1);
+        if (scaleOf(p) !== scaleOf(q)) tags.push('intersect-scale');
+        if (!!p.mirror !== !!q.mirror) tags.push('intersect-reflect');
+        // Reset: back to 100 %, no turn and no reflection, where it was.
+        const plain = (x: Piece) => x.rotation === 0 && !x.mirror && scaleOf(x) === 1;
+        if (plain(q) && !plain(p) && p.x === q.x && p.y === q.y) tags.push('intersect-reset');
       }
       if (la && lb && la.spread !== lb.spread) tags.push('intersect-spread');
     }
@@ -423,6 +439,6 @@ export function describeChange(a: ArtworkState, b: ArtworkState, source: Process
 
   const unique = [...new Set(tags)];
   if (source === 'undo' || source === 'redo' || source === 'baseline' || source === 'resync') return { kind: source, tags: unique };
-  const priority = ['arc', 'circle', 'line', 'divide', 'delete', 'trim', 'fair', 'unfair', 'stroke', 'fill', 'edit-point', 'edit', 'intersect-copies', 'intersect-arrange', 'intersect-move', 'intersect-rotate', 'intersect-spread', 'intersect-primary', 'intersect-style', 'intersect', 'repeat-setup', 'repeat-source', 'repeat-family', 'repeat-spacing', 'repeat-rotation', 'repeat-rule', 'repeat-space', 'repeat-colour', 'repeat-stroke', 'appearance', 'segment'];
+  const priority = ['arc', 'circle', 'line', 'divide', 'delete', 'trim', 'fair', 'unfair', 'stroke', 'fill', 'edit-point', 'edit', 'intersect-copies', 'intersect-arrange', 'intersect-reset', 'intersect-reflect', 'intersect-scale', 'intersect-move', 'intersect-rotate', 'intersect-spread', 'intersect-primary', 'intersect-style', 'intersect', 'repeat-setup', 'repeat-source', 'repeat-family', 'repeat-spacing', 'repeat-rotation', 'repeat-scale', 'repeat-reflect', 'repeat-rule', 'repeat-space', 'repeat-colour', 'repeat-stroke', 'appearance', 'segment'];
   return { kind: priority.find((t) => unique.includes(t)) ?? 'other', tags: unique };
 }

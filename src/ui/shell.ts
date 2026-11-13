@@ -36,7 +36,7 @@ import { onTap } from './tap.ts';
 import { color, fairPalette, stroke } from '../render/tokens.ts';
 import { suggestedFamily, type LatticeFamily } from '../geometry/lattice.ts';
 import { rotationFractionLabel } from '../render/repeatRenderer.ts';
-import { inComposition, withArrangement, asReference, intersectionCopies, layoutOf, MAX_CONSTRUCTIONS, placedAt, PRIMARY, referenceCurrent, sliderToSpread, SPREAD_SLIDER_MAX, spreadToSlider, withAddedCopy, withCopySetting, withLayout, withLock, withoutCopy, withSpreadAround, isLocked, withHidden, withReflection } from '../geometry/intersection.ts';
+import { inComposition, withArrangement, asReference, intersectionCopies, layoutOf, MAX_CONSTRUCTIONS, placedAt, PRIMARY, referenceCurrent, sliderToSpread, SPREAD_SLIDER_MAX, spreadToSlider, withAddedCopy, withCopySetting, withLayout, withLock, withoutCopy, withSpreadAround, isLocked, withHidden, isAsConstructed, withCopyReset, copyScale } from '../geometry/intersection.ts';
 import { canMoveAgainst, convertPick, isPointPick, planMatchEdge, planSnap, resolvePick, type PickKind } from '../geometry/intersectionSnap.ts';
 import { PICK_REACH_PX } from '../interaction/tools/intersectionTool.ts';
 import { repeatSource, type RepeatSource } from '../geometry/repeatUnit.ts';
@@ -997,6 +997,10 @@ function showIntersectionSnapshotsPanel(anchor: HTMLElement, controller: AppCont
  * its colour, Remove (never the Original). Every change is one commit (Undo / Redo), on
  * `doc.intersection` only.
  */
+const EYE_ICON = '<svg viewBox="0 0 16 16" width="14" height="14" fill="none" stroke="currentColor" stroke-width="1.5"><path d="M1.5 8s2.4-4.5 6.5-4.5S14.5 8 14.5 8 12.1 12.5 8 12.5 1.5 8 1.5 8z"/><circle cx="8" cy="8" r="2"/></svg>';
+const EYE_OFF_ICON = '<svg viewBox="0 0 16 16" width="14" height="14" fill="none" stroke="currentColor" stroke-width="1.5"><path d="M1.5 8s2.4-4.5 6.5-4.5S14.5 8 14.5 8 12.1 12.5 8 12.5 1.5 8 1.5 8z"/><path d="M2.5 13.5l11-11"/></svg>';
+const BIN_ICON = '<svg viewBox="0 0 16 16" width="14" height="14" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"><path d="M2.5 4h11M6 4V2.5h4V4M4 4l.7 9.5h6.6L12 4M6.8 6.5v5M9.2 6.5v5"/></svg>';
+
 function showIntersectionCopiesPanel(anchor: HTMLElement, controller: AppController, arrangement: { spreadRow: HTMLElement; spreadHint: HTMLElement; refresh: () => void }): void {
   mountPopover(
     anchor,
@@ -1087,9 +1091,9 @@ function showIntersectionCopiesPanel(anchor: HTMLElement, controller: AppControl
         chips.appendChild(add);
         menu.appendChild(chips);
 
-        // ---- the selected copy: Colour · Reflect ↔ · Shown / Hidden (and, quietly, Remove) ----
+        // ---- the selected copy: Colour · Shown / Hidden · Reset · Delete ----
         if (!selected) {
-          panelHint(menu, 'Choose a copy for its colour, reflection and visibility. Move, turn and lock it on the canvas.');
+          panelHint(menu, 'Choose a copy for its colour, visibility, Reset and Delete. Move and turn it on the canvas; hold it (or right-click) to reflect, lock or scale it.');
         } else {
           const original = selected.key === PRIMARY;
           const head = document.createElement('div');
@@ -1098,7 +1102,7 @@ function showIntersectionCopiesPanel(anchor: HTMLElement, controller: AppControl
           menu.appendChild(head);
           const actions = document.createElement('div');
           actions.className = 'copy-actions';
-          const action = (label: string, aria: string, run: () => void, opts2: { pressed?: boolean; disabled?: boolean; dot?: string } = {}) => {
+          const action = (label: string, aria: string, run: () => void, opts2: { pressed?: boolean; disabled?: boolean; dot?: string; icon?: string } = {}) => {
             const b = document.createElement('button');
             b.className = 'copy-action' + (opts2.pressed ? ' on' : '');
             if (opts2.dot) {
@@ -1106,6 +1110,13 @@ function showIntersectionCopiesPanel(anchor: HTMLElement, controller: AppControl
               d.className = 'copy-action-dot';
               d.style.background = opts2.dot;
               b.appendChild(d);
+            }
+            if (opts2.icon) {
+              const i = document.createElement('span');
+              i.className = 'copy-action-icon';
+              i.setAttribute('aria-hidden', 'true');
+              i.innerHTML = opts2.icon;
+              b.appendChild(i);
             }
             b.appendChild(document.createTextNode(label));
             b.setAttribute('aria-label', aria);
@@ -1122,14 +1133,27 @@ function showIntersectionCopiesPanel(anchor: HTMLElement, controller: AppControl
             coloursOpen = !coloursOpen;
             build();
           }, { dot: selected.colour, pressed: coloursOpen });
-          // One reflection: left ↔ right. The Original stays as drawn; a locked copy stays as it is.
-          const reflect = action('Reflect ↔', `Reflect ${selected.label} horizontally (left and right swap)`, () => commitIx(withReflection(controller.doc, selected.key, 'h')), {
-            pressed: selected.pose.mirror,
-            disabled: original || selected.locked,
+          action(selected.hidden ? 'Hidden' : 'Shown', `${selected.label} ${selected.hidden ? 'hidden' : 'shown'}`, () => commitIx(withHidden(controller.doc, selected.key, !selected.hidden)), { pressed: !selected.hidden, icon: selected.hidden ? EYE_OFF_ICON : EYE_ICON });
+          // Reset: 100 %, no turn, no reflection — where it is (colour, visibility and the design kept).
+          const asConstructed = isAsConstructed(doc, selected.key);
+          const reset = action('Reset', `Reset ${selected.label} (100 %, no turn, no reflection; it stays where it is)`, () => commitIx(withCopyReset(controller.doc, selected.key)), {
+            disabled: selected.locked || asConstructed,
           });
-          if (original) reflect.title = 'The Original stays as drawn';
-          else if (selected.locked) reflect.title = 'Locked — unlock it on the canvas to reflect it';
-          action(selected.hidden ? 'Hidden' : 'Shown', `${selected.label} ${selected.hidden ? 'hidden' : 'shown'}`, () => commitIx(withHidden(controller.doc, selected.key, !selected.hidden)), { pressed: !selected.hidden });
+          if (selected.locked) reset.title = 'Locked — unlock it to reset it';
+          else if (asConstructed) reset.title = 'Already as constructed';
+          if (!original) {
+            // Any copy can be deleted (one Undo step); the Original stays.
+            action('Delete', `Delete ${selected.label}`, () => {
+              const wasCurrent = referenceCurrent(layoutOf(controller.doc));
+              const next = withoutCopy(controller.doc, selected.key);
+              if (!next) return;
+              if (controller.intersectionSelected === selected.key) controller.intersectionSelected = null;
+              expanded = null;
+              commitIx(next);
+              showToast(`${selected.label} deleted · Undo brings it back`);
+              copiesChanged(wasCurrent);
+            }, { icon: BIN_ICON });
+          }
           menu.appendChild(actions);
           if (coloursOpen) {
             const host = document.createElement('div');
@@ -1142,24 +1166,6 @@ function showIntersectionCopiesPanel(anchor: HTMLElement, controller: AppControl
             menu.appendChild(swatches);
           }
           if (selected.hidden) panelHint(menu, 'Hidden: not drawn, picked or developed from, and out of Repeat while hidden. Everything about it is kept.');
-          if (!original) {
-            // Any copy can be removed again (one Undo step); the Original stays.
-            const remove = document.createElement('button');
-            remove.className = 'copy-remove-link';
-            remove.textContent = `Remove ${selected.label}`;
-            remove.setAttribute('aria-label', `Remove ${selected.label}`);
-            remove.addEventListener('click', (e) => {
-              e.stopPropagation();
-              const wasCurrent = referenceCurrent(layoutOf(controller.doc));
-              const next = withoutCopy(controller.doc, selected.key);
-              if (!next) return;
-              if (controller.intersectionSelected === selected.key) controller.intersectionSelected = null;
-              expanded = null;
-              commitIx(next);
-              copiesChanged(wasCurrent);
-            });
-            menu.appendChild(remove);
-          }
         }
 
         // ---- slim footer: Spread (moves every copy) with its Reference, and one Extensions switch ----
@@ -2989,6 +2995,7 @@ export function buildShell(
   /** Taps pick `kind` from now on; what is picked becomes that kind where it was tapped. */
   function setPickKind(kind: PickKind): void {
     if (controller.intersectionPickKind === kind) return;
+    controller.intersectionBox = null; // an alignment is not arranging: the bounding box closes
     // Match Edge picks in its own order (the moving edge first): its picks and the others' never
     // turn into one another — switching in or out starts afresh; so does starting or ending an
     // alignment from instance selection.
@@ -3097,7 +3104,12 @@ export function buildShell(
     controller.commit((d) => {
       d.intersection = withLayout(d, placedAt(layoutOf(d), plan.moving, plan.translate, plan.rotation));
     });
+    if (scaledMismatch(plan)) showToast('Edges of different lengths (a copy is scaled) · their middles meet, not their ends', 3200, 'warning');
   });
+  /** Match Edge between edges of different lengths, where a copy's scale is (part of) why. */
+  function scaledMismatch(plan: { lengthsDiffer: boolean; moving: string; target: string }): boolean {
+    return plan.lengthsDiffer && (copyScale(controller.doc, plan.moving) !== 1 || copyScale(controller.doc, plan.target) !== 1);
+  }
   onTap(snapClearBtn, () => {
     controller.intersectionPicks = [];
     controller.intersectionPickKind = 'instance'; // back to arranging whole instances
@@ -3141,7 +3153,14 @@ export function buildShell(
       snapControls.style.display = 'none';
       alignRow.style.display = '';
       if (!sel) return;
-      snapText.textContent = sel.locked ? `${sel.label} locked · stays in place` : `${sel.label} selected · drag to move, handle to turn`;
+      // While its bounding box is open, how to use and close it; otherwise how to open it.
+      const boxOpen = controller.intersectionBox === sel.key;
+      const more = window.matchMedia?.('(pointer: coarse)').matches ? 'hold for more' : 'right-click for more';
+      snapText.textContent = boxOpen
+        ? `${sel.label} · reflect, delete, lock or scale at the corners · tap outside to close`
+        : sel.locked
+          ? `${sel.label} locked · stays in place · ${more}`
+          : `${sel.label} selected · drag to move, handle to turn · ${more}`;
       snapDot.style.display = '';
       snapDot.style.background = sel.colour;
       // A padlock (closed while locked) — compact enough for the row on a phone; the status says it.
@@ -3169,6 +3188,7 @@ export function buildShell(
       else if (edgePlan.kind === 'none') edgeText = edgePlan.note;
       else if (edgePlan.matched) edgeText = 'Edges matched';
       else if (isLocked(controller.doc, edgePlan.moving)) edgeText = `${labelOf(edgePlan.moving)} is locked · unlock it to move`;
+      else if (scaledMismatch(edgePlan)) edgeText = `${labelOf(edgePlan.moving)} onto ${labelOf(edgePlan.target)} · ⚠ a scaled copy’s edges differ in length: their middles meet, not their ends`;
       else edgeText = `Match Edge moves ${labelOf(edgePlan.moving)} onto ${labelOf(edgePlan.target)}`;
       const dotKey = edgePlan?.kind === 'edge' ? edgePlan.moving : reference?.kind === 'line' ? reference.copy : '';
       snapText.textContent = edgeText;

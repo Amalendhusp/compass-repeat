@@ -420,8 +420,12 @@ export class AppController {
   repeatRotateDrag: { rawRotation: number } | null = null;
   /** Intersection: the construction being moved or turned, as shown (un-committed) — and the one
    * selected (its rotation ring is shown). Session state, never saved. */
-  intersectionDrag: { key: string; x: number; y: number; rotation: number; mode: 'move' | 'turn' } | null = null;
+  intersectionDrag: { key: string; x: number; y: number; rotation: number; mode: 'move' | 'turn' | 'scale'; scale?: number } | null = null;
   intersectionSelected: string | null = null;
+  /** Intersection: the copy whose bounding box is open (long-press / right-click on it) — its corner
+   * handles Reflect · Delete · Lock · Scale. Shown only while that copy is the selected one and Select
+   * arranges copies (interaction/copyBox.ts — openBox). Session state, never saved. */
+  intersectionBox: string | null = null;
   /** Intersection: the Spread slider while it is being dragged (un-committed). */
   intersectionSpreadDraft: number | null = null;
   /** Intersection: the lines or points picked for Snap — the reference first, then the moving one.
@@ -684,6 +688,7 @@ export class AppController {
         : null;
     this.lineChoice = null;
     this.formPress = null;
+    this.intersectionBox = null;
     this.incircle = null;
     this.copyRadius = null;
     this.noPoint = null;
@@ -794,6 +799,9 @@ export interface ViewTransform {
   h: number;
   /** The canvas's own size and the camera's turn, when turned. */
   screen?: { w: number; h: number; turn: number };
+  /** How far down the canvas a finger can reach (canvas px), above what floats over its bottom (the
+   * dock and its buttons) — given while an Intersect bounding box is open (render/copyBox.ts). */
+  usableBottom?: number;
 }
 
 /** The view for a workspace camera on a canvas of w × h (CSS px). */

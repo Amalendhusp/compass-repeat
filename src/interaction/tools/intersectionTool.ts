@@ -14,6 +14,12 @@
 // wins a near-tie (so it stays put under repeated taps); a second tap at the same place moves on to
 // the next instance there — so even one entirely covered by others can be reached.
 //
+// The bounding box (Stage 2b — render/copyBox.ts): a long-press on a copy (or a right-click, from
+// main.ts) opens it on that copy — the selected one when the press is on it, else the nearest, as a
+// tap would choose but never moving on to the next overlapping one. Its corner handles are answered
+// first of all (they are drawn over everything); a tap or click outside the box closes it, and so
+// does selecting another copy. Moving and turning work exactly as before while it is open.
+//
 // A tap (a press that never leaves the drag slop) picks geometry for an explicit Snap
 // (geometry/intersectionSnap.ts): the line — or, with the Snap row's switch on Point, the point —
 // under the finger. Choosing by kind rather than by distance matters: in a dense construction there
@@ -25,11 +31,12 @@ import type { AppController, ViewTransform } from '../../app/controller.ts';
 import { screenToWorld, worldToScreen } from '../../app/controller.ts';
 import { motifRadius, poseScale, snapRotation } from '../../geometry/lattice.ts';
 import { dist } from '../../geometry/vec.ts';
-import { shownCopies, layoutOf, placedAt, withLayout, type IntersectionCopy } from '../../geometry/intersection.ts';
+import { copyScale, layoutOf, placedAt, referenceCurrent, shownCopies, withCopyScale, withLayout, withLock, withoutCopy, withReflection, type IntersectionCopy } from '../../geometry/intersection.ts';
 import { instanceDistances } from '../../geometry/intersectionLink.ts';
 import { showToast } from '../../ui/toast.ts';
 import { canMoveAgainst, pickAtTap, pickCarrier, samePick, withEdgePick, withPick, type IntersectionPick } from '../../geometry/intersectionSnap.ts';
 import { rotationHandle } from '../../render/intersectionRenderer.ts';
+import { boxHandleAt, draggedScale, insideOpenBox, scaleLabel, type CopyBox } from '../../render/copyBox.ts';
 import type { Gesture, ToolModule } from './types.ts';
 
 /** The rotation handle answers within this of its centre (px) — a 44 px touch target. */
@@ -43,6 +50,9 @@ const INSTANCE_REACH_PX = 16;
 const OVERLAP_TIE_PX = 4;
 /** A second tap this close (px) to the last one moves on to the next overlapping instance. */
 const CYCLE_SLOP_PX = 10;
+
+/** A press held this long without moving opens the copy's bounding box (as Select's long-press). */
+export const BOX_HOLD_MS = 450;
 
 /** The instances a press at `sp` could mean, best first: those whose drawn geometry is within reach
  * (nearest first), then those whose frame the finger is merely inside (nearest centre first). */
@@ -65,6 +75,8 @@ let lastTap: { at: Vec2; key: string } | null = null;
 
 /** A tap that selects an instance (see the top of this file). */
 function selectAt(controller: AppController, view: ViewTransform, sp: Vec2): void {
+  // A tap outside the open bounding box closes it (selecting another copy would too — copyBox.openBox).
+  if (controller.intersectionBox && !insideOpenBox(controller, view, sp)) controller.intersectionBox = null;
   const cands = instancesAt(controller, view, sp);
   const selected = controller.intersectionSelected;
   if (cands.length === 0) {
@@ -126,7 +138,7 @@ function moveGesture(controller: AppController, view: ViewTransform, copy: Inter
     onMove(sp) {
       if (!moving && dist(sp, down) <= DRAG_SLOP_PX) return;
       moving = true;
-      controller.intersectionSelected = copy.key;
+      controller.intersectionSelected = copy.key; // (moving another copy closes an open box — copyBox.openBox)
       controller.intersectionDrag = { key: copy.key, x: start.x + (sp.x - down.x) / view.zoom, y: start.y + (sp.y - down.y) / view.zoom, rotation: copy.pose.rotation, mode: 'move' };
       controller.notifyView();
     },
@@ -184,6 +196,144 @@ function turnGesture(controller: AppController, view: ViewTransform, copy: Inter
   };
 }
 
+/**
+ * Opens the bounding box on the copy under `sp` (a long-press, or a right-click): the selected copy
+ * when the press is on it, else the nearest — never the next of several overlapping (a tap moves on
+ * to that). False when no copy is there (and any open box closes).
+ */
+export function openBoxAt(controller: AppController, view: ViewTransform, sp: Vec2): boolean {
+  const cands = instancesAt(controller, view, sp);
+  if (cands.length === 0) {
+    if (controller.intersectionBox) {
+      controller.intersectionBox = null;
+      controller.notify();
+    }
+    return false;
+  }
+  const top = cands[0]!;
+  const tied = cands.filter((c) => c.score <= top.score + OVERLAP_TIE_PX);
+  const selected = controller.intersectionSelected;
+  const key = selected && tied.some((c) => c.key === selected) ? selected : top.key;
+  if (tied.length > 1) showToast('Overlapping · tap to choose another copy, then hold');
+  lastTap = null;
+  controller.intersectionSelected = key;
+  controller.intersectionBox = key;
+  controller.notify();
+  return true;
+}
+
+/** A press held still for BOX_HOLD_MS opens the bounding box instead of doing what `inner` would. */
+function holdForBox(controller: AppController, view: ViewTransform, down: Vec2, inner: Gesture): Gesture {
+  let held = false;
+  let moved = false;
+  const timer = setTimeout(() => {
+    if (moved) return;
+    held = true;
+    inner.onCancel();
+    openBoxAt(controller, view, down);
+  }, BOX_HOLD_MS);
+  return {
+    onMove(sp) {
+      if (held) return;
+      if (!moved && dist(sp, down) > DRAG_SLOP_PX) {
+        moved = true;
+        clearTimeout(timer);
+      }
+      inner.onMove(sp);
+    },
+    onUp(sp, wasDrag) {
+      clearTimeout(timer);
+      if (!held) inner.onUp(sp, wasDrag);
+    },
+    onCancel() {
+      clearTimeout(timer);
+      if (!held) inner.onCancel();
+    },
+  };
+}
+
+/** Why a handle can't be used now. */
+function handleRefusal(copy: IntersectionCopy, id: CopyBox['handles'][number]['id']): string {
+  if (copy.locked) return `${copy.label} is locked · unlock it to ${id === 'reflect' ? 'reflect' : 'scale'} it`;
+  return 'The Original stays as constructed';
+}
+
+/** A press on one of the open box's corner handles. Reflect, Delete and Lock act on a tap (a press
+ * that moves off does nothing); Scale is dragged. Each change is one Undo step. */
+function boxHandleGesture(controller: AppController, box: CopyBox, handle: CopyBox['handles'][number], down: Vec2): Gesture {
+  const copy = box.copy;
+  if (handle.id === 'scale' && handle.enabled) {
+    const start = copyScale(controller.doc, copy.key);
+    const from = dist(down, box.centre);
+    let moving = false;
+    return {
+      onMove(sp) {
+        if (!moving && dist(sp, down) <= DRAG_SLOP_PX) return;
+        moving = true;
+        controller.intersectionDrag = { key: copy.key, x: copy.pose.translate.x, y: copy.pose.translate.y, rotation: copy.pose.rotation, mode: 'scale', scale: draggedScale(start, from, dist(sp, box.centre)) };
+        controller.notifyView();
+      },
+      onUp() {
+        // Keep exactly the scale shown at release.
+        const drag = controller.intersectionDrag;
+        controller.intersectionDrag = null;
+        const scale = drag?.mode === 'scale' ? drag.scale ?? 1 : start;
+        if (moving && scale !== start) {
+          const next = withCopyScale(controller.doc, copy.key, scale);
+          if (next) {
+            controller.commit((d) => {
+              d.intersection = next;
+            });
+          }
+        } else {
+          if (!moving) showToast(`Drag to scale ${copy.label} · now ${scaleLabel(start)}`);
+          controller.notify();
+        }
+      },
+      onCancel() {
+        controller.intersectionDrag = null;
+        controller.notify();
+      },
+    };
+  }
+  return {
+    onMove() {},
+    onUp(sp) {
+      if (dist(sp, down) > DRAG_SLOP_PX) return;
+      if (!handle.enabled) {
+        showToast(handleRefusal(copy, handle.id), 2200, 'warning');
+        return;
+      }
+      const doc = controller.doc;
+      if (handle.id === 'reflect') {
+        const next = withReflection(doc, copy.key, 'h');
+        if (next) controller.commit((d) => {
+          d.intersection = next;
+        });
+      } else if (handle.id === 'lock') {
+        const next = withLock(doc, copy.key, !copy.locked);
+        controller.commit((d) => {
+          d.intersection = next;
+        });
+        showToast(copy.locked ? `${copy.label} unlocked` : `${copy.label} locked · it stays where it is, and can still be snapped to`);
+      } else if (handle.id === 'delete') {
+        const wasCurrent = referenceCurrent(layoutOf(doc));
+        const next = withoutCopy(doc, copy.key);
+        if (!next) return;
+        controller.intersectionBox = null;
+        controller.intersectionSelected = null;
+        controller.intersectionPicks = [];
+        controller.commit((d) => {
+          d.intersection = next;
+        });
+        showToast(wasCurrent && !referenceCurrent(layoutOf(controller.doc)) ? `${copy.label} deleted · Undo brings it back · set a new Reference to use Spread` : `${copy.label} deleted · Undo brings it back`);
+      }
+      controller.notify();
+    },
+    onCancel() {},
+  };
+}
+
 export const intersectionTool: ToolModule = {
   id: 'select', // never looked up by id — main.ts routes to this tool directly for Intersection
   hint() {
@@ -191,7 +341,10 @@ export const intersectionTool: ToolModule = {
   },
   beginGesture(controller, view, sp): Gesture | null {
     const copies = shownCopies(controller.doc);
-    // The selected construction's rotation handle first (it is drawn over everything): Rotate only.
+    // The open bounding box's corner handles first of all (drawn over everything).
+    const onBox = boxHandleAt(controller, view, sp);
+    if (onBox) return boxHandleGesture(controller, onBox.box, onBox.handle, sp);
+    // The selected construction's rotation handle next: Rotate only.
     const selected = copies.find((c) => c.key === controller.intersectionSelected);
     if (selected && !selected.locked && dist(sp, rotationHandle(controller.doc, view, selected)) <= HANDLE_TOUCH_PX) {
       return turnGesture(controller, view, selected, sp);
@@ -202,7 +355,8 @@ export const intersectionTool: ToolModule = {
       const cands = instancesAt(controller, view, sp);
       const key = cands.some((c) => c.key === controller.intersectionSelected) ? controller.intersectionSelected : cands[0]?.key;
       const body = copies.find((c) => c.key === key);
-      if (body) return moveGesture(controller, view, body, sp, () => selectAt(controller, view, sp));
+      // Held still: the bounding box (holdForBox); else a move, or a tap that selects.
+      if (body) return holdForBox(controller, view, sp, moveGesture(controller, view, body, sp, () => selectAt(controller, view, sp)));
       return {
         onMove() {},
         onUp(_sp, wasDrag) {

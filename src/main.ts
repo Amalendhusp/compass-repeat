@@ -10,7 +10,8 @@ import { divideTool } from './interaction/tools/divide.ts';
 import { fairTool } from './interaction/tools/fair.ts';
 import { fillTool } from './interaction/tools/fill.ts';
 import { repeatTool } from './interaction/tools/repeatTool.ts';
-import { intersectionTool } from './interaction/tools/intersectionTool.ts';
+import { intersectionTool, openBoxAt } from './interaction/tools/intersectionTool.ts';
+import { boxHandleAt } from './render/copyBox.ts';
 import { intersectFairTool } from './interaction/tools/intersectFair.ts';
 import { drawInteraction, render } from './render/renderer.ts';
 import { renderRepeat } from './render/repeatRenderer.ts';
@@ -269,6 +270,7 @@ function boot(doc: Doc, opts: { fitToScreen: boolean; history?: { undo: Doc[]; r
       if (controller.doc.view.workspace === ws) return;
       // A selection belongs to the geometry it was made in (Construct's, or Intersect's own layer).
       if (controller.selection.length) controller.selection = [];
+      controller.intersectionBox = null; // a copy's bounding box closes with the workspace
       // Phase 5 item 2: the frame only ever SUGGESTS a lattice, and only the very first time —
       // ensureRepeatDefaults() itself is idempotent (guarded by `family` already being set), so
       // check "was it already configured" first, purely to decide whether THIS entry deserves an
@@ -310,7 +312,10 @@ function boot(doc: Doc, opts: { fitToScreen: boolean; history?: { undo: Doc[]; r
 
   /** The current workspace's camera on this canvas — turned, when its camera is (see ViewTransform). */
   function getView(): ViewTransform {
-    return cameraView(viewState(), canvas.clientWidth, canvas.clientHeight);
+    const view = cameraView(viewState(), canvas.clientWidth, canvas.clientHeight);
+    // An open bounding box keeps its handles above the floating dock and its buttons.
+    if (controller.intersectionBox && controller.doc.view.workspace === 'intersection') view.usableBottom = chromeTop() - canvas.getBoundingClientRect().top;
+    return view;
   }
 
   /** Each workspace navigates its own camera. */
@@ -349,6 +354,8 @@ function boot(doc: Doc, opts: { fitToScreen: boolean; history?: { undo: Doc[]; r
     hint: (c) => intersectionTool.hint(c),
     beginGesture(c, view, sp) {
       const doc = c.doc;
+      // An open bounding box's handles come before everything (they are drawn over everything).
+      if (boxHandleAt(c, view, sp)) return intersectionTool.beginGesture(c, view, sp);
       if (c.intersectionPickKind === 'instance' && hasLayerGeometry(doc)) {
         const L = layerDoc(doc);
         const layerD = Math.min(pickPointTarget(L, view, sp, { explicitOnly: true })?.screenD ?? Infinity, curveCandidatesAt(L, view, sp, LAYER_REACH_PX)[0]?.d ?? Infinity);
@@ -416,6 +423,14 @@ function boot(doc: Doc, opts: { fitToScreen: boolean; history?: { undo: Doc[]; r
   // While the reference's Transform mode is on, a touch moves the reference, not a tool or the camera.
   pointer.getTakeover = () => referenceTakeover(controller, getView);
   pointer.onWheelTransform = (at, factor, turn) => referenceWheel(controller, getView, at, factor, turn);
+  // A right-click (or Control-click) in Intersect's Select opens a copy's bounding box, as a long-press
+  // does on touch; anywhere else it is an ordinary press.
+  pointer.onContextPress = (sp) => {
+    if (controller.doc.view.workspace !== 'intersection' || controller.tool !== 'select' || controller.intersectionPickKind !== 'instance') return false;
+    if (controller.referenceTransform) return false;
+    openBoxAt(controller, getToolView(), sp);
+    return true;
+  };
   const autosave = guideReturn
     ? inertAutosave
     : attachAutosave(controller, { dirty: () => tracker.dirty(controller.doc), baseHash: () => tracker.base(), prefsBase: () => tracker.prefsBase(), savedBase: () => (session?.controller === controller ? session.savedBase : savedBase) });
@@ -432,6 +447,18 @@ function boot(doc: Doc, opts: { fitToScreen: boolean; history?: { undo: Doc[]; r
       resolvePoint: (id: string) => resolvePoint(controller.doc, id),
       pointScreen: (id: string) => paperToScreen(getView(), worldToScreen(getView(), resolvePoint(controller.doc, id))),
     };
+  }
+
+  /** The highest point of what floats over the bottom of the canvas (the dock, and the Undo, view and
+   * Fit buttons above it) — page px. */
+  function chromeTop(): number {
+    let top = overlay.getBoundingClientRect().top;
+    for (const el of overlay.querySelectorAll<HTMLElement>('button, [role="group"]')) {
+      if (!el.offsetParent) continue;
+      const r = el.getBoundingClientRect();
+      if (r.height > 0 && r.top < top) top = r.top;
+    }
+    return top;
   }
 
   // Mobile performance: frames are drawn only when something changed — an idle drawing costs no

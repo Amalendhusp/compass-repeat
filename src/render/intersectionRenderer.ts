@@ -35,6 +35,7 @@ import { motifRadius, poseArcAngle, poseLength, poseScale, transformPoint, type 
 import { developedSegments, inComposition, intersectionBounds, shownCopies, type IntersectionCopy } from '../geometry/intersection.ts';
 import { pickedEdge, planMatchEdge, resolvePick, type IntersectionPick, type ResolvedPick, type ShownLine } from '../geometry/intersectionSnap.ts';
 import { color, stroke } from './tokens.ts';
+import { BOX_HANDLE_R, copyBox, openBox, ringRadius, scaleLabel, type BoxHandle, type CopyBox } from './copyBox.ts';
 
 type Piece = { entity: Entity; kind: 'construction' | 'extension' | 'fair'; from?: number; to?: number };
 
@@ -114,6 +115,10 @@ export function renderIntersection(ctx: CanvasRenderingContext2D, controller: Ap
   ctx.fillRect(0, 0, view.w, view.h);
   // On screen only: the reference just above the background (underlay.ts).
   layers?.underlay(ctx, view);
+  // An open bounding box: its quiet grey ground under the copies, so it never covers a line.
+  const boxed = openBox(controller);
+  const box = boxed ? copyBox(doc, view, boxed) : null;
+  if (box) drawBoxGround(ctx, box);
 
   const sc = scaffold(doc);
   const copies = shownCopies(doc, { drag: controller.intersectionDrag, spread: controller.intersectionSpreadDraft });
@@ -169,8 +174,120 @@ export function renderIntersection(ctx: CanvasRenderingContext2D, controller: Ap
   if (selected && !developing) drawRotationRing(ctx, doc, view, selected, controller.intersectionDrag?.key === selected.key && controller.intersectionDrag.mode === 'turn', !building && !selected.locked);
   // Locked constructions: a small padlock at the centre, in their own colour (screen only).
   for (const c of copies) if (c.locked) drawLockMark(ctx, doc, view, c);
+  // The open bounding box's outline and corner handles, over everything; the scale while it is dragged.
+  if (box) drawBoxHandles(ctx, view, box, controller.intersectionDrag?.mode === 'scale' && controller.intersectionDrag.key === box.copy.key ? controller.intersectionDrag.scale ?? 1 : null);
   ctx.restore();
   return copies.length;
+}
+
+/** The box's ground: a faint grey wash (drawn under the copies). */
+function drawBoxGround(ctx: CanvasRenderingContext2D, box: CopyBox): void {
+  ctx.save();
+  ctx.fillStyle = color.muted;
+  ctx.globalAlpha = 0.07;
+  ctx.beginPath();
+  ctx.roundRect(box.x0, box.y0, box.x1 - box.x0, box.y1 - box.y0, 10);
+  ctx.fill();
+  ctx.restore();
+}
+
+/** The box's outline and its four handles (and, while scaling, the scale readout). */
+function drawBoxHandles(ctx: CanvasRenderingContext2D, view: ViewTransform, box: CopyBox, scaling: number | null): void {
+  ctx.save();
+  ctx.strokeStyle = color.muted;
+  ctx.globalAlpha = 0.45;
+  ctx.lineWidth = 1;
+  ctx.setLineDash([4, 4]);
+  ctx.beginPath();
+  ctx.roundRect(box.x0, box.y0, box.x1 - box.x0, box.y1 - box.y0, 10);
+  ctx.stroke();
+  ctx.restore();
+  for (const h of box.handles) drawBoxHandle(ctx, h.at, h.id, h.enabled, box.copy, scaling !== null && h.id === 'scale');
+  if (scaling !== null) {
+    const at = box.handles.find((h) => h.id === 'scale')!.at;
+    const below = at.y + 46 < view.h;
+    drawLabelPill(ctx, { x: at.x - 30, y: below ? at.y + 34 : at.y - 34 }, [`Scale ${scaleLabel(scaling)}`, scaling === 1 ? 'As constructed' : 'Release to keep'], view);
+  }
+}
+
+/** One corner handle: a paper disc with its symbol, in ink (faded when it can't be used now). */
+function drawBoxHandle(ctx: CanvasRenderingContext2D, at: Vec2, id: BoxHandle, enabled: boolean, copy: IntersectionCopy, active: boolean): void {
+  ctx.save();
+  ctx.translate(at.x, at.y);
+  ctx.shadowColor = 'rgba(30,42,54,0.18)';
+  ctx.shadowBlur = 6;
+  ctx.beginPath();
+  ctx.arc(0, 0, BOX_HANDLE_R, 0, Math.PI * 2);
+  ctx.fillStyle = active ? color.ink : color.paper;
+  ctx.fill();
+  ctx.shadowColor = 'transparent';
+  ctx.lineWidth = 1.2;
+  ctx.strokeStyle = color.hairline;
+  ctx.stroke();
+  ctx.globalAlpha = enabled ? 1 : 0.32;
+  const ink = active ? color.paper : color.ink;
+  ctx.strokeStyle = ink;
+  ctx.fillStyle = ink;
+  ctx.lineWidth = 1.6;
+  ctx.lineCap = 'round';
+  ctx.lineJoin = 'round';
+  ctx.beginPath();
+  if (id === 'reflect') {
+    // ◁ ┆ ▷ — left and right swap across the vertical axis.
+    ctx.moveTo(-2, -6);
+    ctx.lineTo(-7, 0);
+    ctx.lineTo(-2, 6);
+    ctx.closePath();
+    ctx.moveTo(2, -6);
+    ctx.lineTo(7, 0);
+    ctx.lineTo(2, 6);
+    ctx.closePath();
+    ctx.stroke();
+    if (copy.pose.mirror) {
+      ctx.beginPath();
+      ctx.moveTo(2, -6);
+      ctx.lineTo(7, 0);
+      ctx.lineTo(2, 6);
+      ctx.closePath();
+      ctx.fill();
+    }
+  } else if (id === 'delete') {
+    // A bin.
+    ctx.moveTo(-6, -4.5);
+    ctx.lineTo(6, -4.5);
+    ctx.moveTo(-2, -4.5);
+    ctx.lineTo(-2, -6.5);
+    ctx.lineTo(2, -6.5);
+    ctx.lineTo(2, -4.5);
+    ctx.moveTo(-4.5, -4.5);
+    ctx.lineTo(-3.8, 6.5);
+    ctx.lineTo(3.8, 6.5);
+    ctx.lineTo(4.5, -4.5);
+    ctx.moveTo(-1.2, -1.5);
+    ctx.lineTo(-1, 4);
+    ctx.moveTo(1.2, -1.5);
+    ctx.lineTo(1, 4);
+    ctx.stroke();
+  } else if (id === 'lock') {
+    // A padlock: closed (filled) when locked, open when not.
+    if (copy.locked) ctx.arc(0, -2, 3.6, Math.PI, 0);
+    else ctx.arc(0, -2, 3.6, Math.PI, -0.35);
+    ctx.stroke();
+    if (copy.locked) ctx.fillRect(-5.5, -1.5, 11, 8);
+    else ctx.strokeRect(-5, -1, 10, 7);
+  } else {
+    // ↖↘ — scale out from the centre.
+    ctx.moveTo(-6, -6);
+    ctx.lineTo(6, 6);
+    ctx.moveTo(-6, -1);
+    ctx.lineTo(-6, -6);
+    ctx.lineTo(-1, -6);
+    ctx.moveTo(6, 1);
+    ctx.lineTo(6, 6);
+    ctx.lineTo(1, 6);
+    ctx.stroke();
+  }
+  ctx.restore();
 }
 
 /** A quiet padlock at a locked construction's centre. */
@@ -512,11 +629,7 @@ function drawPointMark(ctx: CanvasRenderingContext2D, view: ViewTransform, r: Ex
   ctx.restore();
 }
 
-/** The radius (screen px) of a construction's rotation ring — just outside its frame (at its scale),
- * as Repeat's. */
-export function ringRadius(doc: Doc, view: ViewTransform, copy?: IntersectionCopy): number {
-  return motifRadius(doc) * (copy ? poseScale(copy.pose) : 1) * view.zoom + 26;
-}
+export { ringRadius };
 
 /** Where a construction's rotation handle sits on its ring (screen) — "up" at zero rotation. */
 export function rotationHandle(doc: Doc, view: ViewTransform, copy: IntersectionCopy): Vec2 {
