@@ -9,7 +9,7 @@ import { arcTool } from './interaction/tools/arc.ts';
 import { divideTool } from './interaction/tools/divide.ts';
 import { fairTool } from './interaction/tools/fair.ts';
 import { fillTool } from './interaction/tools/fill.ts';
-import { repeatTool } from './interaction/tools/repeatTool.ts';
+import { openRepeatBoxAt, repeatTool } from './interaction/tools/repeatTool.ts';
 import { intersectionTool, openBoxAt } from './interaction/tools/intersectionTool.ts';
 import { boxHandleAt } from './render/copyBox.ts';
 import { intersectFairTool } from './interaction/tools/intersectFair.ts';
@@ -271,6 +271,7 @@ function boot(doc: Doc, opts: { fitToScreen: boolean; history?: { undo: Doc[]; r
       // A selection belongs to the geometry it was made in (Construct's, or Intersect's own layer).
       if (controller.selection.length) controller.selection = [];
       controller.intersectionBox = null; // a copy's bounding box closes with the workspace
+      controller.repeatBox = false; // …and so does Repeat's
       // Phase 5 item 2: the frame only ever SUGGESTS a lattice, and only the very first time —
       // ensureRepeatDefaults() itself is idempotent (guarded by `family` already being set), so
       // check "was it already configured" first, purely to decide whether THIS entry deserves an
@@ -314,7 +315,8 @@ function boot(doc: Doc, opts: { fitToScreen: boolean; history?: { undo: Doc[]; r
   function getView(): ViewTransform {
     const view = cameraView(viewState(), canvas.clientWidth, canvas.clientHeight);
     // An open bounding box keeps its handles above the floating dock and its buttons.
-    if (controller.intersectionBox && controller.doc.view.workspace === 'intersection') view.usableBottom = chromeTop() - canvas.getBoundingClientRect().top;
+    const ws = controller.doc.view.workspace;
+    if ((controller.intersectionBox && ws === 'intersection') || (controller.repeatBox && ws === 'repeat')) view.usableBottom = chromeTop() - canvas.getBoundingClientRect().top;
     return view;
   }
 
@@ -426,6 +428,8 @@ function boot(doc: Doc, opts: { fitToScreen: boolean; history?: { undo: Doc[]; r
   // A right-click (or Control-click) in Intersect's Select opens a copy's bounding box, as a long-press
   // does on touch; anywhere else it is an ordinary press.
   pointer.onContextPress = (sp) => {
+    // In Repeat, on the central motif: its bounding box (as a long-press does on touch).
+    if (controller.doc.view.workspace === 'repeat') return !controller.referenceTransform && openRepeatBoxAt(controller, getToolView(), sp);
     if (controller.doc.view.workspace !== 'intersection' || controller.tool !== 'select' || controller.intersectionPickKind !== 'instance') return false;
     if (controller.referenceTransform) return false;
     openBoxAt(controller, getToolView(), sp);

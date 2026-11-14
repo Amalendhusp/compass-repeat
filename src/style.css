@@ -2825,3 +2825,14 @@ canvas.stage {
 .copies-foot .popover-hint {
   padding-top: 0;
 }
+
+/* Repeat: an artwork's alternating rule, kept and named (Edit · Uniform). */
+.legacy-rule-row {
+  flex-wrap: wrap;
+  gap: 6px;
+}
+.legacy-rule-text {
+  flex: 1 1 auto;
+  min-width: 0;
+  white-space: normal;
+}

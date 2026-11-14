@@ -280,6 +280,7 @@ type GestureTransientKey =
   | 'fillDiagnostic'
   | 'repeatDrag'
   | 'repeatRotateDrag'
+  | 'repeatScaleDrag'
   | 'intersectionDrag'
   | 'incircle'
   | 'copyRadius';
@@ -418,6 +419,13 @@ export class AppController {
   /** Phase 5 item 7: non-null while the rotation ring is being dragged — same draft/commit split
    * as `repeatDrag`. */
   repeatRotateDrag: { rawRotation: number } | null = null;
+  /** Repeat: non-null while the box's Scale handle is being dragged — the scale shown (un-committed). */
+  repeatScaleDrag: { scale: number } | null = null;
+  /** Repeat: whether the bounding box on the central motif is open (long-press / right-click on it) —
+   * its corner handles Reset · Rotate · Reflect · Scale (render/repeatBox.ts). Session state. */
+  repeatBox = false;
+  /** Repeat: whether the legacy alternating-rule rows (Transformation · Apply to) are open. Session. */
+  repeatLegacyRules = false;
   /** Intersection: the construction being moved or turned, as shown (un-committed) — and the one
    * selected (its rotation ring is shown). Session state, never saved. */
   intersectionDrag: { key: string; x: number; y: number; rotation: number; mode: 'move' | 'turn' | 'scale'; scale?: number } | null = null;
@@ -564,6 +572,7 @@ export class AppController {
         fillDiagnostic: this.fillDiagnostic,
         repeatDrag: this.repeatDrag,
         repeatRotateDrag: this.repeatRotateDrag,
+        repeatScaleDrag: this.repeatScaleDrag,
         intersectionDrag: this.intersectionDrag,
         incircle: this.incircle,
         copyRadius: this.copyRadius,

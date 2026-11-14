@@ -1,13 +1,16 @@
 // Phase 5: Repeat's single always-on manipulation tool — no dock, no tool switching. A
-// single-finger touch either drags a lattice-arm handle (redefining that translation), drags the
-// rotation ring (redefining the motif's base rotation), or does nothing (Repeat has no
-// construction gestures — item 11: two-finger input is already claimed by pan/zoom upstream in
-// PointerManager, so everything reaching here is genuinely single-finger).
+// single-finger touch drags a lattice-arm handle (redefining that translation), uses the bounding
+// box (render/repeatBox.ts: a long-press or right-click on the central motif opens it; its corners
+// Reset · Rotate · Reflect · Scale edit the transformation every copy shares), or does nothing (Repeat
+// has no construction gestures — item 11: two-finger input is already claimed by pan/zoom upstream in
+// PointerManager, so everything reaching here is genuinely single-finger). The A / B handles come
+// first, then the box's corners, then the motif itself. (The rotation ring is gone: Rotate is the box's
+// top-right corner.)
 
 import type { Vec2 } from '../../model/types.ts';
 import type { AppController, ViewTransform } from '../../app/controller.ts';
 import { screenToWorld, worldToScreen } from '../../app/controller.ts';
-import { motifRadius, poseScale, snapRotation } from '../../geometry/lattice.ts';
+import { poseScale, snapRotation } from '../../geometry/lattice.ts';
 import { dist } from '../../geometry/vec.ts';
 import { computeSpaces } from '../../geometry/spaces.ts';
 import { fillOpeningsAt } from '../../geometry/repeatGaps.ts';
@@ -18,10 +21,14 @@ import { showToast } from '../../ui/toast.ts';
 import { gapsAtTap } from '../closeGapMode.ts';
 import { crossingNear, weaveNetwork } from '../../geometry/weave.ts';
 import { withFlip } from '../../geometry/repeatStroke.ts';
+import { insideRepeatBox, onCentralMotif, reflectedMotif, repeatBoxHandleAt, repeatBoxOpen, resetMotif, type RepeatBox } from '../../render/repeatBox.ts';
+import { draggedScale, scaleLabel } from '../../render/copyBox.ts';
+import { rotationFractionLabel } from '../../render/repeatRenderer.ts';
 import type { Gesture, ToolModule } from './types.ts';
 
 const HANDLE_HIT_RADIUS = 26; // px — generous, these are the only two draggable points
-const RING_HIT_BAND = 22; // px either side of the ring's own radius
+/** A press held this long without moving opens the box (as in Intersect). */
+export const REPEAT_BOX_HOLD_MS = 450;
 
 // vNext Phase 1: a press that stays within this of where it went down moves nothing — so a tap or
 // a resting finger never nudges the lattice — and beyond it, whatever is shown is what is kept.
@@ -73,27 +80,27 @@ function dragHandleGesture(controller: AppController, view: ViewTransform, dir: 
   };
 }
 
-function rotateRingGesture(controller: AppController, view: ViewTransform, downScreen: Vec2): Gesture {
-  const pivot = controller.doc.frame.origin;
+/** The box's top-right corner: the shared turn, by as much as the finger goes round the centre,
+ * snapping to the same fractions of a turn as before. Kept exactly as shown at release. */
+function rotateGesture(controller: AppController, box: RepeatBox, down: Vec2): Gesture {
   const startRotation = controller.doc.repeat.motif.rotation;
-  function angleAt(sp: Vec2): number {
-    const centre = worldToScreen(view, pivot);
-    return Math.atan2(sp.y - centre.y, sp.x - centre.x) + Math.PI / 2;
-  }
+  const angle = (sp: Vec2) => Math.atan2(sp.y - box.centre.y, sp.x - box.centre.x);
+  const from = angle(down);
   let moving = false;
   return {
     onMove(sp) {
-      if (!moving && dist(sp, downScreen) <= DRAG_SLOP_PX) return;
+      if (!moving && dist(sp, down) <= DRAG_SLOP_PX) return;
       moving = true;
-      controller.repeatRotateDrag = { rawRotation: snapRotation(angleAt(sp)) };
+      let delta = angle(sp) - from;
+      delta = Math.atan2(Math.sin(delta), Math.cos(delta));
+      controller.repeatRotateDrag = { rawRotation: snapRotation(startRotation + delta) };
       controller.notifyView();
     },
     onUp() {
-      // vNext Phase 1: as for the handles — keep the rotation shown at release (snapped or not),
-      // never one recomputed from the pointerup position.
       const rotation = controller.repeatRotateDrag?.rawRotation;
       controller.repeatRotateDrag = null;
       if (rotation === undefined || rotation === startRotation) {
+        if (!moving) showToast(`Drag round the centre to turn every copy · now ${rotationFractionLabel(startRotation) ?? `${Math.round((startRotation * 180) / Math.PI)}°`}`);
         controller.notify();
         return;
       }
@@ -106,6 +113,114 @@ function rotateRingGesture(controller: AppController, view: ViewTransform, downS
       controller.notify();
     },
   };
+}
+
+/** The box's bottom-right corner: the shared scale, proportional to the finger's distance from the
+ * centre (25–400 %, a light snap at 100 %). Line weight never changes. Kept exactly as shown. */
+function scaleGesture(controller: AppController, box: RepeatBox, down: Vec2): Gesture {
+  const start = poseScale(controller.doc.repeat.motif);
+  const from = dist(down, box.centre);
+  let moving = false;
+  return {
+    onMove(sp) {
+      if (!moving && dist(sp, down) <= DRAG_SLOP_PX) return;
+      moving = true;
+      controller.repeatScaleDrag = { scale: draggedScale(start, from, dist(sp, box.centre)) };
+      controller.notifyView();
+    },
+    onUp() {
+      const scale = controller.repeatScaleDrag?.scale;
+      controller.repeatScaleDrag = null;
+      if (scale === undefined || scale === start) {
+        if (!moving) showToast(`Drag to scale every copy · now ${scaleLabel(start)}`);
+        controller.notify();
+        return;
+      }
+      controller.commit((d) => {
+        d.repeat.motif = { ...d.repeat.motif, scale };
+      });
+    },
+    onCancel() {
+      controller.repeatScaleDrag = null;
+      controller.notify();
+    },
+  };
+}
+
+/** A press on one of the box's corners. Reset and Reflect act on a tap (a press that moves off does
+ * nothing); Rotate and Scale are dragged. Each change is one Undo step. */
+function boxHandleGesture(controller: AppController, box: RepeatBox, handle: RepeatBox['handles'][number], down: Vec2): Gesture {
+  if (handle.id === 'rotate') return rotateGesture(controller, box, down);
+  if (handle.id === 'scale') return scaleGesture(controller, box, down);
+  return {
+    onMove() {},
+    onUp(sp) {
+      if (dist(sp, down) > DRAG_SLOP_PX) return;
+      if (!handle.enabled) {
+        showToast('Already as drawn · no turn, 100 %, not reflected');
+        return;
+      }
+      if (handle.id === 'reflect') {
+        const was = !!controller.doc.repeat.motif.mirror;
+        controller.commit((d) => {
+          d.repeat.motif = reflectedMotif(d.repeat.motif);
+        });
+        showToast(was ? 'Reflection off' : 'Reflected · left and right swap in every copy');
+      } else {
+        controller.commit((d) => {
+          d.repeat.motif = resetMotif(d.repeat.motif);
+        });
+        showToast('As drawn · no turn, 100 %, not reflected · A and B kept');
+      }
+    },
+    onCancel() {},
+  };
+}
+
+/** A press on the central motif: held still, it opens the box; a tap outside an open box closes it.
+ * Otherwise nothing (Repeat has no other single-finger gesture there). */
+function motifPressGesture(controller: AppController, view: ViewTransform, down: Vec2, onMotif: boolean): Gesture {
+  let held = false;
+  let moved = false;
+  const timer = onMotif
+    ? setTimeout(() => {
+        if (moved) return;
+        held = true;
+        controller.repeatBox = true;
+        controller.notify();
+      }, REPEAT_BOX_HOLD_MS)
+    : null;
+  return {
+    onMove(sp) {
+      if (!moved && dist(sp, down) > DRAG_SLOP_PX) {
+        moved = true;
+        if (timer) clearTimeout(timer);
+      }
+    },
+    onUp(sp, wasDrag) {
+      if (timer) clearTimeout(timer);
+      if (held || moved || wasDrag) return;
+      // A tap outside the open box closes it.
+      if (controller.repeatBox && !insideRepeatBox(controller, view, sp)) {
+        controller.repeatBox = false;
+        controller.notify();
+      }
+    },
+    onCancel() {
+      if (timer) clearTimeout(timer);
+    },
+  };
+}
+
+/** A right-click (or Control-click) in Repeat: on the central motif it opens the box; anywhere else it
+ * closes it. True when it was taken. */
+export function openRepeatBoxAt(controller: AppController, view: ViewTransform, sp: Vec2): boolean {
+  if (controller.doc.view.workspace !== 'repeat' || !controller.doc.repeatDisplay.handles) return false;
+  if (controller.repeatColourMode || controller.spaceMode || controller.weaveEdit || controller.closeGap) return false;
+  const on = onCentralMotif(controller, view, sp) || insideRepeatBox(controller, view, sp);
+  controller.repeatBox = on;
+  controller.notify();
+  return true;
 }
 
 /** The colour Repeat Fill applies next, #rrggbb (null = unfilled). */
@@ -226,7 +341,7 @@ function closeGapTapGesture(controller: AppController, view: ViewTransform): Ges
 export const repeatTool: ToolModule = {
   id: 'select', // never looked up by id — main.ts routes to this tool directly for the Repeat workspace
   hint() {
-    return 'Drag a neighbour to set spacing, or the ring to rotate';
+    return 'Drag a neighbour to set spacing · hold the motif to turn, reflect or scale it';
   },
   beginGesture(controller, view, screenPos): Gesture | null {
     if (controller.closeGap) {
@@ -255,10 +370,11 @@ export const repeatTool: ToolModule = {
       if (dist(screenPos, anchorScreen) <= HANDLE_HIT_RADIUS) return dragHandleGesture(controller, view, dir, screenPos);
     }
 
-    const centreScreen = worldToScreen(view, pivot);
-    const ringRadius = motifRadius(doc) * poseScale(doc.repeat.motif) * view.zoom + 26;
-    if (Math.abs(dist(screenPos, centreScreen) - ringRadius) <= RING_HIT_BAND) return rotateRingGesture(controller, view, screenPos);
-
+    // Then the open box's corners (A and B stay draggable while it is open), then the motif itself.
+    const corner = repeatBoxHandleAt(controller, view, screenPos);
+    if (corner) return boxHandleGesture(controller, corner.box, corner.handle, screenPos);
+    const onMotif = onCentralMotif(controller, view, screenPos);
+    if (onMotif || repeatBoxOpen(controller)) return motifPressGesture(controller, view, screenPos, onMotif);
     return null;
   },
 };

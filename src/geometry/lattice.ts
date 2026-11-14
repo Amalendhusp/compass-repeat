@@ -157,6 +157,20 @@ function ruleAdjustment(rule: RepeatSystem['rule'], i: number, j: number): { rot
 
 export function instancePose(repeat: RepeatSystem, i: number, j: number): InstancePose {
   const adj = ruleAdjustment(repeat.rule, i, j);
+  if (repeat.motif.mirror === true) {
+    // The shared reflection (the motif's own vertical axis: a reflection across its horizontal axis
+    // and a half turn), then the turn; a legacy alternation is applied within it, as composePose
+    // would (a reflection reverses the inner turn).
+    const base = repeat.motif.rotation + Math.PI;
+    return {
+      i,
+      j,
+      translate: { x: repeat.a.x * i + repeat.b.x * j, y: repeat.a.y * i + repeat.b.y * j },
+      rotation: base - adj.rotation,
+      mirror: !adj.mirror,
+      ...scaleField(repeat.motif.scale),
+    };
+  }
   return {
     i,
     j,

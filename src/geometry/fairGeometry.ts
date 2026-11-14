@@ -374,9 +374,10 @@ export function rayCrossings(m: Vec2, dir: Vec2, features: Placed[]): number {
 }
 /** Inside the region a copy's Fair outline encloses (even–odd), judged along two rays that must
  * agree — so a point merely beside an open line is not taken as inside. */
-export function insideOutline(m: Vec2, along: Vec2, features: Placed[]): boolean {
-  // Slightly off the gap's own direction, so a ray never runs exactly through a vertex or an edge.
-  const t = Math.atan2(along.y, along.x) + Math.PI / 2 + 0.0137;
+export function insideOutline(m: Vec2, along: Vec2, features: Placed[], reflected = false): boolean {
+  // Slightly off the gap's own direction, so a ray never runs exactly through a vertex or an edge —
+  // the other way in a reflected repeat, so that reflecting the design never changes the answer.
+  const t = Math.atan2(along.y, along.x) + Math.PI / 2 + (reflected ? -0.0137 : 0.0137);
   const d1 = { x: Math.cos(t), y: Math.sin(t) };
   const d2 = { x: -d1.x, y: -d1.y };
   return rayCrossings(m, d1, features) % 2 === 1 && rayCrossings(m, d2, features) % 2 === 1;

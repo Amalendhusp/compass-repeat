@@ -46,6 +46,9 @@ import { color, stroke } from './tokens.ts';
 import { makePath } from './svgContext.ts';
 import type { ArtworkExport } from './renderer.ts';
 import type { GapMarks } from '../geometry/repeatGaps.ts';
+import { repeatBox, repeatBoxOpen, shownMotif, type RepeatBox } from './repeatBox.ts';
+import { BOX_HANDLE_R, scaleLabel } from './copyBox.ts';
+import { drawLabelPill } from './renderer.ts';
 import { overStrand, periodTranslations, strandPiece, weaveNetwork, type WeaveCrossing, type WeaveNetwork } from '../geometry/weave.ts';
 
 function appendTransformedLoop(path: Path2D, view: ViewTransform, pivot: Vec2, pose: InstancePose, worldPts: Vec2[]): void {
@@ -293,35 +296,120 @@ function drawLatticeHandles(ctx: CanvasRenderingContext2D, controller: AppContro
   }
 }
 
-/** Phase 5 item 7: a circular drag handle around the reference motif — the whole ring is the
- * rotate gesture's target; the marker shows the current angle (live rotation while dragging). */
-function drawRotationRing(ctx: CanvasRenderingContext2D, controller: AppController, view: ViewTransform): void {
-  const doc = controller.doc;
-  const pivot = doc.frame.origin;
-  const centre = worldToScreen(view, pivot);
-  const r = motifRadius(doc) * poseScale(doc.repeat.motif) * view.zoom + 26;
-  const rotation = controller.repeatRotateDrag?.rawRotation ?? doc.repeat.motif.rotation;
-
+/** The bounding box's quiet ground, under the field (render/repeatBox.ts). */
+function drawRepeatBoxGround(ctx: CanvasRenderingContext2D, box: RepeatBox): void {
   ctx.save();
-  ctx.strokeStyle = color.hairline;
-  ctx.lineWidth = 1.4;
-  ctx.setLineDash([2, 4]);
+  ctx.fillStyle = color.muted;
+  ctx.globalAlpha = 0.07;
   ctx.beginPath();
-  ctx.arc(centre.x, centre.y, r, 0, Math.PI * 2);
+  ctx.roundRect(box.x0, box.y0, box.x1 - box.x0, box.y1 - box.y0, 10);
+  ctx.fill();
+  ctx.restore();
+}
+
+/** The box's dashed outline and its four corners, over everything — and, while turning or scaling,
+ * what the shared transformation reads. */
+function drawRepeatBox(ctx: CanvasRenderingContext2D, controller: AppController, view: ViewTransform, box: RepeatBox): void {
+  ctx.save();
+  ctx.strokeStyle = color.muted;
+  ctx.globalAlpha = 0.45;
+  ctx.lineWidth = 1;
+  ctx.setLineDash([4, 4]);
+  ctx.beginPath();
+  ctx.roundRect(box.x0, box.y0, box.x1 - box.x0, box.y1 - box.y0, 10);
   ctx.stroke();
   ctx.restore();
+  const turning = controller.repeatRotateDrag;
+  const scaling = controller.repeatScaleDrag;
+  const mirrored = !!controller.doc.repeat.motif.mirror;
+  for (const h of box.handles) drawRepeatBoxHandle(ctx, h.at, h.id, h.enabled, mirrored, (h.id === 'rotate' && !!turning) || (h.id === 'scale' && !!scaling));
+  const pill = (id: RepeatBox['handles'][number]['id'], lines: string[]) => {
+    const at = box.handles.find((h) => h.id === id)!.at;
+    const below = at.y + 46 < view.h;
+    drawLabelPill(ctx, { x: at.x - 30, y: below ? at.y + 34 : at.y - 34 }, lines, view);
+  };
+  if (turning) {
+    const r = turning.rawRotation;
+    const deg = Math.round(((((r * 180) / Math.PI) % 360) + 360) % 360);
+    pill('rotate', [`Turn ${rotationFractionLabel(r) ?? `${deg}°`}`, 'Release to keep']);
+  }
+  if (scaling) pill('scale', [`Scale ${scaleLabel(scaling.scale)}`, scaling.scale === 1 ? 'As drawn' : 'Release to keep']);
+}
 
-  const handleAngle = -Math.PI / 2 + rotation; // marker starts "up" at zero rotation
-  const hx = centre.x + r * Math.cos(handleAngle);
-  const hy = centre.y + r * Math.sin(handleAngle);
-  const active = !!controller.repeatRotateDrag;
+/** One corner: a paper disc with its symbol, in ink (faded when it can't be used now). */
+function drawRepeatBoxHandle(ctx: CanvasRenderingContext2D, at: Vec2, id: RepeatBox['handles'][number]['id'], enabled: boolean, mirrored: boolean, active: boolean): void {
+  ctx.save();
+  ctx.translate(at.x, at.y);
+  ctx.shadowColor = 'rgba(30,42,54,0.18)';
+  ctx.shadowBlur = 6;
   ctx.beginPath();
-  ctx.arc(hx, hy, active ? 12 : 9, 0, Math.PI * 2);
-  ctx.fillStyle = active ? color.brass : color.paper;
+  ctx.arc(0, 0, BOX_HANDLE_R, 0, Math.PI * 2);
+  ctx.fillStyle = active ? color.ink : color.paper;
   ctx.fill();
-  ctx.lineWidth = active ? 3 : 2;
-  ctx.strokeStyle = color.brass;
+  ctx.shadowColor = 'transparent';
+  ctx.lineWidth = 1.2;
+  ctx.strokeStyle = color.hairline;
   ctx.stroke();
+  ctx.globalAlpha = enabled ? 1 : 0.32;
+  const ink = active ? color.paper : color.ink;
+  ctx.strokeStyle = ink;
+  ctx.fillStyle = ink;
+  ctx.lineWidth = 1.6;
+  ctx.lineCap = 'round';
+  ctx.lineJoin = 'round';
+  ctx.beginPath();
+  if (id === 'reset') {
+    // ↺ — back as drawn.
+    ctx.arc(0, 0.5, 5.5, -Math.PI * 0.85, Math.PI * 0.6);
+    ctx.stroke();
+    ctx.beginPath();
+    ctx.moveTo(-6.6, -5.6);
+    ctx.lineTo(-5.4, -1.6);
+    ctx.lineTo(-1.6, -3.2);
+    ctx.stroke();
+  } else if (id === 'rotate') {
+    // A turning arrow, round the centre.
+    ctx.arc(0, 0, 6, -Math.PI * 0.95, Math.PI * 0.35);
+    ctx.stroke();
+    const ex = 6 * Math.cos(Math.PI * 0.35);
+    const ey = 6 * Math.sin(Math.PI * 0.35);
+    ctx.beginPath();
+    ctx.moveTo(ex - 4, ey + 0.5);
+    ctx.lineTo(ex, ey);
+    ctx.lineTo(ex + 0.8, ey - 4);
+    ctx.stroke();
+  } else if (id === 'reflect') {
+    // ◁ ┆ ▷ — left and right swap across the vertical axis (the right one filled while reflected).
+    ctx.moveTo(-2, -6);
+    ctx.lineTo(-7, 0);
+    ctx.lineTo(-2, 6);
+    ctx.closePath();
+    ctx.moveTo(2, -6);
+    ctx.lineTo(7, 0);
+    ctx.lineTo(2, 6);
+    ctx.closePath();
+    ctx.stroke();
+    if (mirrored) {
+      ctx.beginPath();
+      ctx.moveTo(2, -6);
+      ctx.lineTo(7, 0);
+      ctx.lineTo(2, 6);
+      ctx.closePath();
+      ctx.fill();
+    }
+  } else {
+    // ↖↘ — scale out from the centre.
+    ctx.moveTo(-6, -6);
+    ctx.lineTo(6, 6);
+    ctx.moveTo(-6, -1);
+    ctx.lineTo(-6, -6);
+    ctx.lineTo(-1, -6);
+    ctx.moveTo(6, 1);
+    ctx.lineTo(6, 6);
+    ctx.lineTo(1, 6);
+    ctx.stroke();
+  }
+  ctx.restore();
 }
 
 /** Phase 5 item 7: "1/6 turn" rather than degrees — null when the current rotation isn't at (or
@@ -782,15 +870,18 @@ export function renderRepeat(ctx: CanvasRenderingContext2D, controller: AppContr
   // preview the shown (un-committed) value so the field — and the grid — follow the finger.
   const drag = exp ? null : controller.repeatDrag;
   const rotating = exp ? null : controller.repeatRotateDrag;
+  const scalingDraft = exp ? null : controller.repeatScaleDrag;
+  // The bounding box (screen only): its ground under the field, its corners over everything.
+  const box = !exp && repeatBoxOpen(controller) ? repeatBox(controller, view) : null;
   // Close Gap's preview (Stage C): the corrected arm, drawn but never stored.
   const gap = !exp && controller.closeGap?.phase === 'preview' ? controller.closeGap.local[controller.closeGap.index] ?? null : null;
   const repeat: RepeatSystem = {
     ...doc.repeat,
     ...(gap ? { [gap.cand.arm]: gap.repeat[gap.cand.arm] } : null),
     ...(drag ? { [drag.dir]: drag.translate } : null),
-    motif: rotating ? { ...doc.repeat.motif, rotation: rotating.rawRotation } : doc.repeat.motif,
+    motif: rotating || scalingDraft ? shownMotif(controller) : doc.repeat.motif,
   };
-  const draftDoc = drag || rotating || gap ? { ...doc, repeat } : doc;
+  const draftDoc = drag || rotating || scalingDraft || gap ? { ...doc, repeat } : doc;
 
   const pivot = doc.frame.origin;
   // What stands at each lattice position: the motif, or the Intersect arrangement as one unit.
@@ -824,11 +915,12 @@ export function renderRepeat(ctx: CanvasRenderingContext2D, controller: AppContr
     return motifSprite(doc, display, view.zoom, detail, controller.viewGesture, unit, group, pass, layered, poseScale(repeat.motif));
   };
 
+  if (box) drawRepeatBoxGround(ctx, box);
   drawArtworkLayer(ctx, layers, (ctx) => {
     // Spaces sit on the background, under every motif. While a handle or the ring is being dragged
     // the arrangement is still changing, so they wait for release rather than show a stale shape.
     // (Spaces are worked out for whatever repeats — the motif, or the Intersect unit: spaces.ts.)
-    if (showFills && !drag && !rotating) drawSpaces(ctx, doc, view);
+    if (showFills && !drag && !rotating && !scalingDraft) drawSpaces(ctx, doc, view);
 
     for (const pass of passes) for (const pose of instances) {
       const group = groupOf(pose);
@@ -851,7 +943,7 @@ export function renderRepeat(ctx: CanvasRenderingContext2D, controller: AppContr
     // Sprint S3: Interlaced — over the flat bands, each crossing's over band (never while the
     // arrangement is still being dragged: it waits for release, like the Spaces).
     const strokeStyle = exp ? doc.repeatSetup?.stroke : (controller.repeatStrokeDraft ?? doc.repeatSetup?.stroke);
-    if (showStrokes && weaves(strokeStyle) && !drag && !rotating && !gap) drawWeave(ctx, view, weaveNetwork(doc), style, new Set(strokeStyle!.weave!.flips), display.background);
+    if (showStrokes && weaves(strokeStyle) && !drag && !rotating && !scalingDraft && !gap) drawWeave(ctx, view, weaveNetwork(doc), style, new Set(strokeStyle!.weave!.flips), display.background);
   });
   // Bitmaps no longer drawn (another style, group or pass) are let go at once.
   if (!exp) for (const slot of [...sprites.keys()]) if (!used.has(slot)) sprites.delete(slot);
@@ -887,8 +979,8 @@ export function renderRepeat(ctx: CanvasRenderingContext2D, controller: AppContr
     }
   }
   if (!exp && display.handles && !controller.spaceMode && !controller.repeatColourMode) {
+    if (box) drawRepeatBox(ctx, controller, view, box);
     drawLatticeHandles(ctx, controller, repeat, view);
-    if (!controller.closeGap) drawRotationRing(ctx, controller, view);
   }
   if (gap) drawCloseGapInset(ctx, doc, view, gap);
   if (!exp && controller.weaveEdit && !drag && !rotating) drawWeaveMarks(ctx, doc, view, new Set(doc.repeatSetup?.stroke?.weave?.flips ?? []));

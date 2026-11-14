@@ -766,10 +766,45 @@ no Rows/Columns keyframes yet). Stage 2a adds scale underneath, with no interfac
   `intersect-clear`.
 - **Checks:** `intersect-extra.mjs` 26/26 phone and desktop; `copies-panel.mjs` and `box.mjs` updated for Duplicate.
 
+## Repeat redesign: Source → Fill and the motif's bounding box (November 2026)
+
+- **Panel:** Undo / Redo (as before, above) → Source (Construct | Intersect) → Fill. Uniform (`rule: same`, As drawn)
+  is the default for new work, as it already was in `doc.ts`. Transformation and Apply to are folded away.
+- **Legacy alternating rules** are never changed silently: an artwork whose rule alternates (`alternationOf`) keeps
+  it exactly and shows a row "Alternating rule · Rotate 180° · every other copy" with **Edit** (shows the old
+  Transformation · Apply to rows until Done) and **Uniform** (rule → same, one Undo step). Grid settings →
+  **Alternating rules…** opens the same rows on any artwork (`controller.repeatLegacyRules`, session only).
+- **Box** (`render/repeatBox.ts`, `controller.repeatBox`, session only): long-press (450 ms) on the central design
+  (within its reach of the frame centre) or right-click / Control-click (`openRepeatBoxAt`). Square about the pivot,
+  as large as the design reaches (`repeatUnit.extent` or `motifExtent`, × scale) — turning or reflecting never moves
+  its corners; frames the whole Intersect composition for that source; kept on screen and above the panel
+  (`usableBottom`). Closes on a tap outside, Fill, crossings, Close Gap, hidden handles or leaving Repeat.
+  Corners: top-left **Reset** (rotation 0, scale 1, no mirror; A / B kept; off when already so), top-right **Rotate**
+  (drag round the centre, by the angle swept, `snapRotation`; readout "Turn 1/6 turn"), bottom-left **Reflect**
+  (toggles `motif.mirror`), bottom-right **Scale** (`draggedScale`, 25–400 %, snap at 100 %; readout "Scale n %").
+  Each change is one Undo step. Touch order: A / B handles, then the box's corners, then the motif.
+- **The ring is gone** (`drawRotationRing`, `rotateRingGesture` removed). Guides panel: "Handles · A, B and the box".
+- **Reflection** (`motif.mirror?: true`, written only when on): the motif reflected across its own vertical axis,
+  then turned — pose rotation θ + π, mirror; a legacy alternation is applied within it as `composePose` would
+  (rotation θ + π − adj, mirror XOR). Absent = exactly the old pose. Space and weave cache keys gain `mirror` only
+  when on. Close Gap's inside test turns its tiny ray tilt the other way in a reflected repeat
+  (`insideOutline(…, reflected)`), so a reflected design gets exactly the mirror image of the unreflected one's gaps.
+- **Constant line weight:** the sprite carries the scale; stamping applies turn and mirror only (unchanged).
+- **Timelapse:** `repeat-rotation`, `repeat-reflect`, `repeat-scale`, `repeat-reset`.
+- **Checks:** `repeat-box.mjs` 52/52 phone and desktop; `repeat-mirror.mjs` (Plate 113: reflected field = the mirror
+  image of the unreflected field with the lattice reflected — Spaces, crossings, Close Gap candidates, Fill
+  openings, both sources, Uniform and Alternate; export draws); `ring-check.mjs` (scale1-compare with handles
+  hidden: 306/306 identical to the checkpoint — the only change to existing artworks is the ring no longer drawn);
+  `label.mjs`, `stage2-ui.mjs`, `stage4-ui.mjs`, `project.mjs` open the folded rules first (`openLegacyRules`).
+- **Test harness:** headless Chrome is now stopped every few minutes on this Mac (the updater wakes, then the
+  browser is terminated). `refine-tests/run.sh "suite mode" …` starts Chrome in its own session when needed and
+  retries a suite once if the browser is lost mid-run.
+
 ## Exact next step
 
-Release refinements R1–R5 done on `feature/release-candidate`; release candidate on the phone-preview server. Stop
-for the user's physical iPhone approval. Do not merge, push or deploy. No further features this cycle.
+Interface refinement on `feature/interface-refinement`: Intersect Duplicate / Reset Intersect and the Repeat redesign
+are committed locally; the phone preview (port 5189) serves them. Stop for the user's review. Do not merge, push or
+deploy.
 
 ## Commands
 

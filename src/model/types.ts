@@ -86,7 +86,10 @@ export interface RepeatSystem {
   a: { x: number; y: number };
   b: { x: number; y: number };
   rowOffset: number;
-  motif: { rotation: number; scale: number };
+  /** The transformation every copy shares, about the frame centre: a turn, a scale (1 = as drawn)
+   * and — written only when true — a reflection across the motif's own vertical axis (left and right
+   * swap, before the turn). An artwork made before reflection existed has none, and keeps its look. */
+  motif: { rotation: number; scale: number; mirror?: true };
   /** How copies differ. `same` (Uniform): none do. `alternate`: the changed copies are turned half a
    * turn. `mirror`: they are reflected across the motif's own horizontal axis — or, with `flip: 'h'`,
    * across its vertical axis. `by` says which copies change: absent = every other copy (i + j odd, as

@@ -94,6 +94,7 @@ function contentKey(doc: Doc, strokes: { id: string; pts: Vec2[] }[]): string {
   const parts: (string | number | undefined)[] = ['weave', rep.family, ruleKey(rep.rule), r(rep.a.x), r(rep.a.y), r(rep.b.x), r(rep.b.y), Math.round(rep.motif.rotation * 1e9), r(doc.frame.origin.x), r(doc.frame.origin.y), r(doc.frame.radius)];
   // The motif's scale, only when not 1 (every key made before scale existed is unchanged).
   if (poseScale(rep.motif) !== 1) parts.push(`scale:${poseScale(rep.motif)}`);
+  if (rep.motif.mirror === true) parts.push('mirror');
   for (const s of strokes) parts.push(s.id, ...s.pts.flatMap((p) => [r(p.x), r(p.y)]));
   return parts.join(',');
 }

@@ -34,7 +34,7 @@ import { describeGap } from '../interaction/closeGapMode.ts';
 import { isInConfirmLayer, openConfirmSheet } from './confirmsheet.ts';
 import { onTap } from './tap.ts';
 import { color, fairPalette, stroke } from '../render/tokens.ts';
-import { suggestedFamily, type LatticeFamily } from '../geometry/lattice.ts';
+import { alternationOf, suggestedFamily, type LatticeFamily } from '../geometry/lattice.ts';
 import { rotationFractionLabel } from '../render/repeatRenderer.ts';
 import { inComposition, withArrangement, asReference, intersectionCopies, layoutOf, MAX_CONSTRUCTIONS, placedAt, PRIMARY, referenceCurrent, sliderToSpread, SPREAD_SLIDER_MAX, spreadToSlider, withAddedCopy, withCopySetting, withLayout, withLock, withoutCopy, withSpreadAround, isLocked, withHidden, isAsConstructed, withCopyReset, copyScale, withDuplicate, withIntersectReset, intersectResettable } from '../geometry/intersection.ts';
 import { canMoveAgainst, convertPick, isPointPick, planMatchEdge, planSnap, resolvePick, type PickKind } from '../geometry/intersectionSnap.ts';
@@ -1595,7 +1595,7 @@ function showRepeatGuidesPanel(anchor: HTMLElement, controller: AppController, o
       void allOn;
       popoverSectionLabel(menu, 'Grid and guides');
       rows.push(popoverToggleRow(menu, 'Grid', () => display().grid, (on) => set(() => (display().grid = on))));
-      rows.push(popoverToggleRow(menu, 'Handles · rotation, A, B', () => display().handles, (on) => set(() => (display().handles = on))));
+      rows.push(popoverToggleRow(menu, 'Handles · A, B and the box', () => display().handles, (on) => set(() => (display().handles = on))));
       rows.push(popoverToggleRow(menu, 'Motif boundary', () => display().motifBoundary, (on) => set(() => (display().motifBoundary = on))));
       // Reset lattice: back to the lattice Repeat first suggests for this artwork and source — the
       // frame's natural shape (square; 60° for a triangle or hexagon frame) at its comfortable
@@ -1632,6 +1632,19 @@ function showRepeatGuidesPanel(anchor: HTMLElement, controller: AppController, o
         controller.notify();
       });
       menu.appendChild(closeGapRow);
+      // The alternating rules (Transformation · Apply to) are kept for artworks that use them; new work
+      // is Uniform, and its turn, reflection and scale are on the motif's box. Here they can still be
+      // reached for any artwork.
+      const legacy = document.createElement('button');
+      legacy.className = 'popover-row guides-reset';
+      legacy.textContent = 'Alternating rules…';
+      legacy.title = 'The older alternating rules: Rotate 180° or Reflect on every other copy, row or column';
+      onTap(legacy, () => {
+        closeAnyPopover();
+        controller.repeatLegacyRules = true;
+        controller.notify();
+      });
+      menu.appendChild(legacy);
     },
     { shieldCanvas: true, panel: true },
   );
@@ -2712,6 +2725,53 @@ export function buildShell(
   repeatPanel.appendChild(ruleLine);
   repeatPanel.appendChild(placeRow);
 
+  // The interface is Source → Fill; the motif's turn, reflection and scale are on its bounding box.
+  // An artwork that uses an alternating rule keeps it, exactly as it looks, and says so here — with the
+  // way to see or change it (Edit) and back to Uniform (one Undo step). Edit, or Grid settings →
+  // Alternating rules…, shows the older Transformation · Apply to rows until Done.
+  const legacyRow = document.createElement('div');
+  legacyRow.className = 'space-row legacy-rule-row';
+  const legacyText = document.createElement('span');
+  legacyText.className = 'close-gap-cue legacy-rule-text';
+  const legacyEdit = document.createElement('button');
+  legacyEdit.className = 'space-chip';
+  legacyEdit.textContent = 'Edit';
+  legacyEdit.setAttribute('aria-label', 'Edit the alternating rule');
+  onTap(legacyEdit, () => {
+    controller.repeatLegacyRules = !controller.repeatLegacyRules;
+    controller.notify();
+  });
+  const legacyUniform = document.createElement('button');
+  legacyUniform.className = 'space-chip';
+  legacyUniform.textContent = 'Uniform';
+  legacyUniform.setAttribute('aria-label', 'Use Uniform: every copy as drawn (Undo brings the rule back)');
+  onTap(legacyUniform, () => {
+    if (!alternationOf(controller.doc.repeat.rule)) return;
+    controller.commit((d) => {
+      d.repeat.rule = { kind: 'same' };
+    });
+    showToast('Uniform · every copy as drawn · Undo brings the alternating rule back');
+  });
+  legacyRow.append(legacyText, legacyEdit, legacyUniform);
+  repeatPanel.insertBefore(legacyRow, ruleLine);
+  const describeRule = (rule: RepeatSystem['rule']): string => {
+    const what = { none: 'As drawn', rotate: 'Rotate 180°', 'reflect-h': 'Reflect ↔', 'reflect-v': 'Reflect ↕' }[transformOf(rule)];
+    const where = { cells: 'every other copy', rows: 'every other row', columns: 'every other column' }[placementOf(rule)];
+    return `${what} · ${where}`;
+  };
+  function refreshLegacyRow(show: boolean): void {
+    const rule = controller.doc.repeat.rule;
+    const alternating = !!alternationOf(rule);
+    const open = controller.repeatLegacyRules;
+    legacyRow.style.display = show && (alternating || open) ? '' : 'none';
+    ruleLine.style.display = show && open ? '' : 'none';
+    legacyText.textContent = open ? 'Alternating rules' : `Alternating rule · ${describeRule(rule)}`;
+    legacyEdit.textContent = open ? 'Done' : 'Edit';
+    legacyEdit.setAttribute('aria-label', open ? 'Done with the alternating rules' : 'Edit the alternating rule');
+    legacyEdit.classList.toggle('active', open);
+    legacyUniform.style.display = alternating ? '' : 'none';
+  }
+
   // Final sprint, Stage 1: one Fill. While filling the row shows only Fill itself (on, with the colour
   // it applies) and a cue: tap any enclosed region — the app works out whether it is a region of the
   // design or a space between copies. Tap Fill again to finish. (Motif | Space | Done are gone; Pattern's
@@ -2948,7 +3008,7 @@ export function buildShell(
   // Stage 4: Repeat reads top to bottom — Source; what changes on every other copy (Transformation) and
   // which copies (Apply to); then Fill, an editing action of its own, on its own row. (Appearance is the
   // top-left button.)
-  repeatPanel.insertBefore(spaceRow, ruleLine);
+  repeatPanel.insertBefore(spaceRow, legacyRow);
   const fillRow = document.createElement('div');
   fillRow.className = 'space-row fill-entry-row';
   fillRow.appendChild(colouringBtn);
@@ -3906,7 +3966,8 @@ export function buildShell(
    * handles no longer snap, so there are no contacts to announce.) */
   function updateRepeatStatus(): void {
     const rotating = controller.repeatRotateDrag;
-    const text = rotating ? (rotationFractionLabel(rotating.rawRotation) ?? 'Rotating…') : null;
+    const scaling = controller.repeatScaleDrag;
+    const text = rotating ? (rotationFractionLabel(rotating.rawRotation) ?? 'Rotating…') : scaling ? `Scale ${Math.round(scaling.scale * 100)} %` : null;
     if (text) repeatStatus.textContent = text; // keep the last text while fading out
     repeatStatus.classList.toggle('show', !!text);
   }
@@ -3975,7 +4036,9 @@ export function buildShell(
     const weaving = inRepeat && controller.weaveEdit && !colouring && !closingGap;
     weaveRow.style.display = weaving ? '' : 'none';
     if (weaving) refreshWeaveRow();
-    ruleLine.style.display = inRepeat && !colouring && !closingGap && !weaving ? '' : 'none';
+    // Source → Fill; the alternating rules only for an artwork that uses one (or when asked for).
+    refreshLegacyRow(inRepeat && !colouring && !closingGap && !weaving);
+    if (!inRepeat) controller.repeatLegacyRules = false;
     spaceRow.style.display = inRepeat && !colouring && !closingGap && !weaving ? '' : 'none';
     fillRow.style.display = spaceRow.style.display;
     closeGapRow.style.display = closingGap ? '' : 'none';

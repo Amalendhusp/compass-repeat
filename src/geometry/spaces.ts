@@ -710,6 +710,7 @@ function contentKey(doc: Doc, repeat: RepeatSystem, strokes: Stroke[], intersect
   const parts: (string | number | undefined)[] = [intersect ? 'unit' : 'motif', GAP_FRACTION, repeat.family, ruleKey(repeat.rule), r(repeat.a.x), r(repeat.a.y), r(repeat.b.x), r(repeat.b.y), Math.round(repeat.motif.rotation * 1e9), r(doc.frame.origin.x), r(doc.frame.origin.y), r(doc.frame.radius)];
   // The motif's scale, only when not 1 (so every key made before scale existed is unchanged).
   if (poseScale(repeat.motif) !== 1) parts.push(`scale:${poseScale(repeat.motif)}`);
+  if (repeat.motif.mirror === true) parts.push('mirror');
   for (const s of strokes) parts.push(s.entityId, ...s.pts.flatMap((p) => [r(p.x), r(p.y)]));
   return parts.join(',');
 }

@@ -387,6 +387,9 @@ export function describeChange(a: ArtworkState, b: ArtworkState, source: Process
     if (ma?.rotation !== mb?.rotation) tags.push('repeat-rotation');
     if (scaleOf(ma) !== scaleOf(mb)) tags.push('repeat-scale');
     if (!same(ma?.mirror, mb?.mirror)) tags.push('repeat-reflect');
+    // Reset (the box's top-left corner): back to no turn, 100 % and no reflection.
+    const plain = (m: typeof ma) => !!m && m.rotation === 0 && scaleOf(m) === 1 && !m.mirror;
+    if (plain(mb) && !plain(ma) && tags.length > before) tags.push('repeat-reset');
     if (tags.length === before) tags.push('repeat-rotation');
   }
   if (!same(ra.rule, rb.rule)) tags.push('repeat-rule');
@@ -448,6 +451,6 @@ export function describeChange(a: ArtworkState, b: ArtworkState, source: Process
 
   const unique = [...new Set(tags)];
   if (source === 'undo' || source === 'redo' || source === 'baseline' || source === 'resync') return { kind: source, tags: unique };
-  const priority = ['arc', 'circle', 'line', 'divide', 'delete', 'trim', 'fair', 'unfair', 'stroke', 'fill', 'edit-point', 'edit', 'intersect-clear', 'intersect-duplicate', 'intersect-copies', 'intersect-arrange', 'intersect-reset', 'intersect-reflect', 'intersect-scale', 'intersect-move', 'intersect-rotate', 'intersect-spread', 'intersect-primary', 'intersect-style', 'intersect', 'repeat-setup', 'repeat-source', 'repeat-family', 'repeat-spacing', 'repeat-rotation', 'repeat-scale', 'repeat-reflect', 'repeat-rule', 'repeat-space', 'repeat-colour', 'repeat-stroke', 'appearance', 'segment'];
+  const priority = ['arc', 'circle', 'line', 'divide', 'delete', 'trim', 'fair', 'unfair', 'stroke', 'fill', 'edit-point', 'edit', 'intersect-clear', 'intersect-duplicate', 'intersect-copies', 'intersect-arrange', 'intersect-reset', 'intersect-reflect', 'intersect-scale', 'intersect-move', 'intersect-rotate', 'intersect-spread', 'intersect-primary', 'intersect-style', 'intersect', 'repeat-setup', 'repeat-source', 'repeat-family', 'repeat-spacing', 'repeat-reset', 'repeat-rotation', 'repeat-scale', 'repeat-reflect', 'repeat-rule', 'repeat-space', 'repeat-colour', 'repeat-stroke', 'appearance', 'segment'];
   return { kind: priority.find((t) => unique.includes(t)) ?? 'other', tags: unique };
 }

@@ -90,6 +90,8 @@ export function findGaps(doc: Doc, tol = tolerances(doc), lookFar = tol.maxGap *
   const features = compositionFeatures(doc, 'runs');
   const candidates: GapCandidate[] = [];
   const nearest: Record<'a' | 'b', number> = { a: Infinity, b: Infinity };
+  // A reflected repeat (the box's Reflect) is judged as the exact mirror image of the unreflected one.
+  const reflected = doc.repeat.motif.mirror === true;
   for (const arm of ['a', 'b'] as const) {
     for (const base of basesFor(doc, arm)) {
       const [i, j] = base;
@@ -104,7 +106,7 @@ export function findGaps(doc: Doc, tol = tolerances(doc), lookFar = tol.maxGap *
         // that would push them apart, which Close Gap never does.)
         const mid = { x: (r.p.x + r.q.x) / 2, y: (r.p.y + r.q.y) / 2 };
         const across = sub(r.p, r.q);
-        if (insideOutline(mid, across, X) || insideOutline(mid, across, Y)) continue;
+        if (insideOutline(mid, across, X, reflected) || insideOutline(mid, across, Y, reflected)) continue;
         nearest[arm] = Math.min(nearest[arm], r.d);
         if (r.d > tol.maxGap) continue;
         raw.push({ arm, base, delta: sub(r.p, r.q), distance: r.d, features: [[x.id, y.id]], p: r.p, q: r.q, sites: [{ base, p: r.p, q: r.q }] });
