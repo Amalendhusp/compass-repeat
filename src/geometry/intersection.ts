@@ -171,9 +171,7 @@ export function withAddedCopy(doc: Doc): NonNullable<Doc['intersection']> | null
     if (place) break;
   }
   place ??= { x: centres[centres.length - 1]!.x + spacing / 2, y: centres[centres.length - 1]!.y + spacing / 2 };
-  let n = 1;
-  while (layout.pieces.some((p) => p.key === `c${n}`)) n++;
-  const key = `c${n}`;
+  const key = freeKey(layout);
   const used = new Set(shown.map((c) => c.colour.toLowerCase()));
   const colour = PALETTE.find((c) => !used.has(c.toLowerCase())) ?? PALETTE[1]!;
   return {
@@ -181,6 +179,71 @@ export function withAddedCopy(doc: Doc): NonNullable<Doc['intersection']> | null
     copies: { ...(doc.intersection?.copies ?? {}), [key]: { colour } },
     layout: { ...layout, pieces: [...layout.pieces, { key, x: place.x, y: place.y, rotation: 0 }] },
   };
+}
+
+/** The next free copy key (c1, c2, …). */
+function freeKey(layout: IntersectionLayout): string {
+  let n = 1;
+  while (layout.pieces.some((p) => p.key === `c${n}`)) n++;
+  return `c${n}`;
+}
+
+/**
+ * The artwork's Intersection with copy `key` duplicated (if there's room): a new copy with the same
+ * turn, reflection, scale, colour and Extensions setting, a little below and to the right of it (a
+ * quarter of its frame radius each way, at its scale) so both can be seen. The duplicate is unlocked,
+ * shown and not in the design (its whole motif is out of Repeat until it is put in). Duplicating the
+ * Original gives an ordinary copy. Everything else stays put. Null when there is no room.
+ */
+export function withDuplicate(doc: Doc, key: string): NonNullable<Doc['intersection']> | null {
+  const layout = baked(layoutOf(doc));
+  if (layout.pieces.length >= MAX_CONSTRUCTIONS) return null;
+  const source = layout.pieces.find((p) => p.key === key);
+  if (!source) return null;
+  const off = motifRadius(doc) * poseScale(source) * 0.25;
+  const nkey = freeKey(layout);
+  const own = doc.intersection?.copies?.[key] ?? {};
+  const colour = own.colour ?? intersectionCopies(doc).find((c) => c.key === key)?.colour;
+  const settings: NonNullable<Doc['intersection']>['copies'][string] = {};
+  if (colour) settings.colour = colour;
+  if (own.extensions !== undefined) settings.extensions = own.extensions;
+  // The Original is never reflected; a copy keeps its reflection and scale exactly (absent stays absent).
+  const { key: _k, x, y, ...pose } = source;
+  return {
+    ...baseOf(doc),
+    copies: { ...(doc.intersection?.copies ?? {}), [nkey]: settings },
+    layout: { ...layout, pieces: [...layout.pieces, { key: nkey, x: x + off, y: y + off, ...pose }] },
+  };
+}
+
+/**
+ * Reset Intersect: every copy removed, and Intersect's own construction and developed Fair with them —
+ * back to the Original alone, at its centre, unturned, at 100 % (its colour and Extensions setting
+ * kept). Construct — the Original's geometry — is never touched; nor are bookmarks (saved
+ * arrangements), which stay to be restored. The result is a Form Development arrangement whose design
+ * is the Original's whole motif (as for a new artwork). One Undo step brings everything back.
+ */
+export function withIntersectReset(doc: Doc): NonNullable<Doc['intersection']> {
+  const own = doc.intersection?.copies?.[PRIMARY] ?? {};
+  const kept: NonNullable<Doc['intersection']>['copies'][string] = {};
+  if (own.colour) kept.colour = own.colour;
+  if (own.extensions !== undefined) kept.extensions = own.extensions;
+  const pieces = [{ key: PRIMARY, x: 0, y: 0, rotation: 0 }];
+  return {
+    copies: Object.keys(kept).length ? { [PRIMARY]: kept } : {},
+    layout: { pieces, centre: { x: 0, y: 0 }, spread: 1, referenceKeys: [PRIMARY] },
+    form: { developed: [] },
+  };
+}
+
+/** Whether Intersect holds anything Reset Intersect would remove or put back. */
+export function intersectResettable(doc: Doc): boolean {
+  const ix = doc.intersection;
+  if (!ix) return formMode(doc) === 'legacy' || layoutOf(doc).pieces.length > 1;
+  const layout = layoutOf(doc);
+  const o = layout.pieces[0];
+  const originalMoved = !o || o.x !== 0 || o.y !== 0 || o.rotation !== 0 || poseScale(o) !== 1 || !!ix.copies?.[PRIMARY]?.locked || !!ix.copies?.[PRIMARY]?.hidden || ix.copies?.[PRIMARY]?.primaryCopy === false;
+  return layout.pieces.length > 1 || originalMoved || (ix.form?.developed.length ?? 0) > 0 || (ix.construction?.entities.length ?? 0) > 0 || (ix.construction?.points.length ?? 0) > 0 || !ix.form;
 }
 
 /** The artwork's Intersection without one copy (never the Primary); everything else stays put. */

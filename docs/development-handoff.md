@@ -753,6 +753,19 @@ no Rows/Columns keyframes yet). Stage 2a adds scale underneath, with no interfac
   `stage2-ui.mjs`, `stage3-ui.mjs` updated (Reflect through the box handle; Delete; Reset). `setup.mjs`
   `motifRetry` reloads when headless touch emulation drops a touch during setup.
 
+## Intersect: Duplicate and Reset Intersect (November 2026)
+
+- **Duplicate** (Copies panel, the selected copy: Colour · Shown · Reset · Duplicate · Delete — `withDuplicate`): a new
+  copy with the same turn, reflection, scale, colour and Extensions setting, offset right and down by a quarter of
+  its frame radius (at its scale). Unlocked, shown, its whole motif not in the design. The Original duplicates as an
+  ordinary copy. Off at six constructions. Selected afterwards; one Undo step. Timelapse kind `intersect-duplicate`.
+- **Reset Intersect…** (Copies panel footer, confirmed — `withIntersectReset`): back to the Original alone at its
+  centre, unturned, 100 % (its colour and Extensions kept); every copy, Intersect's own construction and developed
+  Fair removed; a Form Development arrangement whose design is the Original's whole motif. Construct and bookmarks
+  are never touched. One Undo step. Off when there is nothing to reset (`intersectResettable`). Timelapse kind
+  `intersect-clear`.
+- **Checks:** `intersect-extra.mjs` 26/26 phone and desktop; `copies-panel.mjs` and `box.mjs` updated for Duplicate.
+
 ## Exact next step
 
 Release refinements R1–R5 done on `feature/release-candidate`; release candidate on the phone-preview server. Stop

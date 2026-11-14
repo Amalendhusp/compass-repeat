@@ -36,7 +36,7 @@ import { onTap } from './tap.ts';
 import { color, fairPalette, stroke } from '../render/tokens.ts';
 import { suggestedFamily, type LatticeFamily } from '../geometry/lattice.ts';
 import { rotationFractionLabel } from '../render/repeatRenderer.ts';
-import { inComposition, withArrangement, asReference, intersectionCopies, layoutOf, MAX_CONSTRUCTIONS, placedAt, PRIMARY, referenceCurrent, sliderToSpread, SPREAD_SLIDER_MAX, spreadToSlider, withAddedCopy, withCopySetting, withLayout, withLock, withoutCopy, withSpreadAround, isLocked, withHidden, isAsConstructed, withCopyReset, copyScale } from '../geometry/intersection.ts';
+import { inComposition, withArrangement, asReference, intersectionCopies, layoutOf, MAX_CONSTRUCTIONS, placedAt, PRIMARY, referenceCurrent, sliderToSpread, SPREAD_SLIDER_MAX, spreadToSlider, withAddedCopy, withCopySetting, withLayout, withLock, withoutCopy, withSpreadAround, isLocked, withHidden, isAsConstructed, withCopyReset, copyScale, withDuplicate, withIntersectReset, intersectResettable } from '../geometry/intersection.ts';
 import { canMoveAgainst, convertPick, isPointPick, planMatchEdge, planSnap, resolvePick, type PickKind } from '../geometry/intersectionSnap.ts';
 import { PICK_REACH_PX } from '../interaction/tools/intersectionTool.ts';
 import { repeatSource, type RepeatSource } from '../geometry/repeatUnit.ts';
@@ -999,6 +999,7 @@ function showIntersectionSnapshotsPanel(anchor: HTMLElement, controller: AppCont
  */
 const EYE_ICON = '<svg viewBox="0 0 16 16" width="14" height="14" fill="none" stroke="currentColor" stroke-width="1.5"><path d="M1.5 8s2.4-4.5 6.5-4.5S14.5 8 14.5 8 12.1 12.5 8 12.5 1.5 8 1.5 8z"/><circle cx="8" cy="8" r="2"/></svg>';
 const EYE_OFF_ICON = '<svg viewBox="0 0 16 16" width="14" height="14" fill="none" stroke="currentColor" stroke-width="1.5"><path d="M1.5 8s2.4-4.5 6.5-4.5S14.5 8 14.5 8 12.1 12.5 8 12.5 1.5 8 1.5 8z"/><path d="M2.5 13.5l11-11"/></svg>';
+const DUPLICATE_ICON = '<svg viewBox="0 0 16 16" width="14" height="14" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linejoin="round"><rect x="5.5" y="5.5" width="8" height="8" rx="1.5"/><path d="M10.5 3V2.5h-8v8H3"/></svg>';
 const BIN_ICON = '<svg viewBox="0 0 16 16" width="14" height="14" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"><path d="M2.5 4h11M6 4V2.5h4V4M4 4l.7 9.5h6.6L12 4M6.8 6.5v5M9.2 6.5v5"/></svg>';
 
 function showIntersectionCopiesPanel(anchor: HTMLElement, controller: AppController, arrangement: { spreadRow: HTMLElement; spreadHint: HTMLElement; refresh: () => void }): void {
@@ -1093,7 +1094,7 @@ function showIntersectionCopiesPanel(anchor: HTMLElement, controller: AppControl
 
         // ---- the selected copy: Colour · Shown / Hidden · Reset · Delete ----
         if (!selected) {
-          panelHint(menu, 'Choose a copy for its colour, visibility, Reset and Delete. Move and turn it on the canvas; hold it (or right-click) to reflect, lock or scale it.');
+          panelHint(menu, 'Choose a copy for its colour, visibility, Reset, Duplicate and Delete. Move and turn it on the canvas; hold it (or right-click) to reflect, lock or scale it.');
         } else {
           const original = selected.key === PRIMARY;
           const head = document.createElement('div');
@@ -1141,6 +1142,26 @@ function showIntersectionCopiesPanel(anchor: HTMLElement, controller: AppControl
           });
           if (selected.locked) reset.title = 'Locked — unlock it to reset it';
           else if (asConstructed) reset.title = 'Already as constructed';
+          // Duplicate: a new copy with this one's turn, reflection, scale and colour, a little offset.
+          const full = all.length >= MAX_CONSTRUCTIONS;
+          const dup = action('Duplicate', full ? `Duplicate ${selected.label} · ${MAX_CONSTRUCTIONS} constructions is the most for now` : `Duplicate ${selected.label} (same turn, reflection, scale and colour, a little offset)`, () => {
+            const wasCurrent = referenceCurrent(layoutOf(controller.doc));
+            const next = withDuplicate(controller.doc, selected.key);
+            if (!next) return;
+            controller.commit((d) => {
+              d.intersection = next;
+            });
+            const added = layoutOf(controller.doc).pieces.at(-1)?.key ?? null;
+            expanded = added;
+            controller.intersectionSelected = added;
+            controller.intersectionBox = null;
+            controller.notify();
+            const label = intersectionCopies(controller.doc).find((c) => c.key === added)?.label ?? 'A copy';
+            const stale = wasCurrent && !referenceCurrent(layoutOf(controller.doc));
+            showToast(`${label} added · a duplicate of ${selected.label}${stale ? ' · set a new Reference to use Spread' : ''}`);
+            build();
+          }, { icon: DUPLICATE_ICON, disabled: full });
+          if (full) dup.title = `${MAX_CONSTRUCTIONS} constructions — the most for now`;
           if (!original) {
             // Any copy can be deleted (one Undo step); the Original stays.
             action('Delete', `Delete ${selected.label}`, () => {
@@ -1191,6 +1212,34 @@ function showIntersectionCopiesPanel(anchor: HTMLElement, controller: AppControl
           });
           build();
         }, 'Show or hide every copy’s extended lines (dashed)');
+        // Reset Intersect: back to the Original alone (confirmed; one Undo step brings it all back).
+        const resetIx = document.createElement('button');
+        resetIx.className = 'copies-reset-ix';
+        resetIx.textContent = 'Reset Intersect…';
+        resetIx.setAttribute('aria-label', 'Reset Intersect (remove every copy and Intersect’s own geometry; the Original is kept)');
+        resetIx.disabled = !intersectResettable(doc);
+        resetIx.addEventListener('click', (e) => {
+          e.stopPropagation();
+          openConfirmSheet({
+            title: 'Reset Intersect?',
+            body: 'Removes every copy, Intersect’s own construction and its developed Fair, and puts the Original back at its centre. Construct and saved arrangements are kept. Undo brings it all back.',
+            confirmLabel: 'Reset',
+            onConfirm: () => {
+              const next = withIntersectReset(controller.doc);
+              controller.intersectionSelected = null;
+              controller.intersectionBox = null;
+              controller.intersectionPicks = [];
+              controller.selection = [];
+              expanded = null;
+              controller.commit((d) => {
+                d.intersection = next;
+              });
+              showToast('Intersect reset · Undo brings it back');
+              build();
+            },
+          });
+        });
+        foot.appendChild(resetIx);
         menu.appendChild(foot);
       };
       build();

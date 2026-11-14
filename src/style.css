@@ -2758,12 +2758,13 @@ canvas.stage {
   color: var(--ink);
 }
 .copy-actions {
-  display: flex;
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(84px, 1fr));
   gap: 6px;
   padding: 0 8px 4px;
 }
 .copy-action {
-  flex: 1;
+  min-width: 0;
   display: flex;
   align-items: center;
   justify-content: center;
@@ -2802,6 +2803,24 @@ canvas.stage {
   margin-top: 6px;
   padding-top: 4px;
   border-top: 1px solid var(--hairline);
+}
+.copies-reset-ix {
+  display: block;
+  margin: 4px 8px 2px auto;
+  min-height: 36px;
+  padding: 0 10px;
+  border: none;
+  border-radius: 10px;
+  background: none;
+  color: #a3392b;
+  font: inherit;
+  font-size: 13px;
+  font-weight: 500;
+  cursor: pointer;
+}
+.copies-reset-ix:disabled {
+  opacity: 0.4;
+  cursor: default;
 }
 .copies-foot .popover-hint {
   padding-top: 0;

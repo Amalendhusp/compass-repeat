@@ -415,6 +415,15 @@ export function describeChange(a: ArtworkState, b: ArtworkState, source: Process
     if (!la && lb) tags.push('intersect-arrange');
     else {
       if (la && lb && (pa.size !== pb.size || [...pb.keys()].some((k) => !pa.has(k)))) tags.push('intersect-copies');
+      // Duplicate: one copy more, turned, reflected and scaled exactly as one already there, and offset
+      // from it equally right and down (geometry/intersection.ts withDuplicate).
+      const added = [...pb.values()].filter((q) => !pa.has(q.key));
+      if (la && lb && added.length === 1 && pb.size === pa.size + 1 && [...pa.values()].some((p) => p.rotation === added[0]!.rotation && !!p.mirror === !!added[0]!.mirror && p.scale === added[0]!.scale && added[0]!.x - p.x > 0 && added[0]!.x - p.x === added[0]!.y - p.y)) tags.push('intersect-duplicate');
+      // Reset Intersect: back to the Original alone, with nothing developed and no construction of its own.
+      const ia = a.intersect as { form?: { developed?: unknown[] }; construction?: unknown } | undefined;
+      const ib = b.intersect as { form?: { developed?: unknown[] }; construction?: unknown } | undefined;
+      const hadOwn = pa.size > 1 || (ia?.form?.developed?.length ?? 0) > 0 || !!ia?.construction;
+      if (la && lb && pb.size === 1 && hadOwn && ib?.form?.developed?.length === 0 && !ib.construction) tags.push('intersect-clear');
       for (const [k, q] of pb) {
         const p = pa.get(k);
         if (!p) continue;
@@ -439,6 +448,6 @@ export function describeChange(a: ArtworkState, b: ArtworkState, source: Process
 
   const unique = [...new Set(tags)];
   if (source === 'undo' || source === 'redo' || source === 'baseline' || source === 'resync') return { kind: source, tags: unique };
-  const priority = ['arc', 'circle', 'line', 'divide', 'delete', 'trim', 'fair', 'unfair', 'stroke', 'fill', 'edit-point', 'edit', 'intersect-copies', 'intersect-arrange', 'intersect-reset', 'intersect-reflect', 'intersect-scale', 'intersect-move', 'intersect-rotate', 'intersect-spread', 'intersect-primary', 'intersect-style', 'intersect', 'repeat-setup', 'repeat-source', 'repeat-family', 'repeat-spacing', 'repeat-rotation', 'repeat-scale', 'repeat-reflect', 'repeat-rule', 'repeat-space', 'repeat-colour', 'repeat-stroke', 'appearance', 'segment'];
+  const priority = ['arc', 'circle', 'line', 'divide', 'delete', 'trim', 'fair', 'unfair', 'stroke', 'fill', 'edit-point', 'edit', 'intersect-clear', 'intersect-duplicate', 'intersect-copies', 'intersect-arrange', 'intersect-reset', 'intersect-reflect', 'intersect-scale', 'intersect-move', 'intersect-rotate', 'intersect-spread', 'intersect-primary', 'intersect-style', 'intersect', 'repeat-setup', 'repeat-source', 'repeat-family', 'repeat-spacing', 'repeat-rotation', 'repeat-scale', 'repeat-reflect', 'repeat-rule', 'repeat-space', 'repeat-colour', 'repeat-stroke', 'appearance', 'segment'];
   return { kind: priority.find((t) => unique.includes(t)) ?? 'other', tags: unique };
 }
