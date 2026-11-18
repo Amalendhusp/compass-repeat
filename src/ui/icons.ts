@@ -43,6 +43,10 @@ const paths: Record<string, string> = {
   handles: '<path d="M6 18L15.5 8.5" opacity=".6"/><circle cx="6" cy="18" r="2" fill="currentColor"/><circle cx="17" cy="7" r="3.2"/>',
   // UI-4: Repeat's detailed grid settings (each guide, Reset lattice, Close gap).
   tune: '<path d="M4 8h9M17 8h3M4 16h3M11 16h9"/><circle cx="15" cy="8" r="2"/><circle cx="9" cy="16" r="2"/>',
+  // Intersect's Spread: the copies' centres pushed out from the group's centre.
+  spread: '<circle cx="12" cy="12" r="1.6" fill="currentColor"/><path d="M9.5 9.5L5 5M5 9V5h4M14.5 9.5L19 5M15 5h4v4M9.5 14.5L5 19M5 15v4h4M14.5 14.5L19 19M19 15v4h-4"/>',
+  // Reset Intersect: back to the start.
+  resetIx: '<path d="M5 12a7 7 0 1 0 2.1-5"/><path d="M5 4v4.5h4.5"/>',
 };
 
 export type IconName = keyof typeof paths;

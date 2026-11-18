@@ -422,11 +422,19 @@ export function describeChange(a: ArtworkState, b: ArtworkState, source: Process
       // from it equally right and down (geometry/intersection.ts withDuplicate).
       const added = [...pb.values()].filter((q) => !pa.has(q.key));
       if (la && lb && added.length === 1 && pb.size === pa.size + 1 && [...pa.values()].some((p) => p.rotation === added[0]!.rotation && !!p.mirror === !!added[0]!.mirror && p.scale === added[0]!.scale && added[0]!.x - p.x > 0 && added[0]!.x - p.x === added[0]!.y - p.y)) tags.push('intersect-duplicate');
-      // Reset Intersect: back to the Original alone, with nothing developed and no construction of its own.
+      // Reset Intersect: back to the starting arrangement (the Original and the two first copies, plain,
+      // the Original at its centre — or, as recorded before November 2026, the Original alone), with
+      // nothing developed and no construction of its own.
       const ia = a.intersect as { form?: { developed?: unknown[] }; construction?: unknown } | undefined;
       const ib = b.intersect as { form?: { developed?: unknown[] }; construction?: unknown } | undefined;
-      const hadOwn = pa.size > 1 || (ia?.form?.developed?.length ?? 0) > 0 || !!ia?.construction;
-      if (la && lb && pb.size === 1 && hadOwn && ib?.form?.developed?.length === 0 && !ib.construction) tags.push('intersect-clear');
+      const plainPiece = (x: Piece) => x.rotation === 0 && !x.mirror && x.scale === undefined;
+      const o = pb.get('0,0');
+      const startShape =
+        !!o && o.x === 0 && o.y === 0 && [...pb.values()].every(plainPiece) && (pb.size === 1 || (pb.size === 3 && pb.has('1,0') && pb.has('0,1') && lb?.spread === 1));
+      const hadOwn = pa.size !== pb.size || [...pa.values()].some((p) => !plainPiece(p) || pb.get(p.key)?.x !== p.x || pb.get(p.key)?.y !== p.y) || (ia?.form?.developed?.length ?? 0) > 0 || !!ia?.construction;
+      // (Deleting the one extra copy of an otherwise untouched start is a deletion, not a reset.)
+      const onlyDeleted = pa.size === pb.size + 1 && [...pb.keys()].every((k) => pa.has(k)) && same(ia?.form, ib?.form) && same(ia?.construction, ib?.construction);
+      if (la && lb && startShape && hadOwn && !onlyDeleted && ib?.form?.developed?.length === 0 && !ib.construction) tags.push('intersect-clear');
       for (const [k, q] of pb) {
         const p = pa.get(k);
         if (!p) continue;

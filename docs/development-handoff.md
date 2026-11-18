@@ -800,11 +800,47 @@ no Rows/Columns keyframes yet). Stage 2a adds scale underneath, with no interfac
   browser is terminated). `refine-tests/run.sh "suite mode" …` starts Chrome in its own session when needed and
   retries a suite once if the browser is lost mid-run.
 
+## Intersect refinement, Stage A: interface simplification (November 2026)
+
+Brief: Select and arrange copies → observe intersections → develop a new motif → repeat it. Stages A–D,
+stopping for review after each; Stage A is the interface only (Develop's behaviour is Stage B).
+
+- **Dock in Intersect:** Select · Develop · Spread · Reset (`shell.ts`: Circle, Line, Arc, Divide, Fill and the
+  divider hidden there; the Fair button is labelled Develop in Intersect only — Construct's dock is unchanged).
+  The construction tools stay in Construct. Intersect's own construction layer from older artworks is still
+  drawn, selectable and deletable with Select, and offered to Develop; nothing new can be drawn there.
+- **Select:** unchanged — tap selects (rotation handle at once), drag moves, the handle turns, snapping and the
+  alignments (Parallel · Join, Point Snap, Match Edge, Lock) as before. Long-press / right-click: the Stage 2b box
+  (Reflect ↔, Delete, Lock, Scale). The Original has no Delete and, as decided in Stage 2b, no Reflect.
+- **Copies panel** (`showIntersectionCopiesPanel`): a coloured circle per construction (tap = select, on the
+  canvas too; hidden copies stay selectable), a small eye under each (Show/Hide, one Undo step, never a change of
+  selection; a hidden copy's circle at 20 % opacity), and Add. Removed from the panel: Duplicate, Colour,
+  Shown/Hidden button, Reset copy, Delete (it is on the canvas box), Spread, the Extensions switch and Reset
+  Intersect. `withDuplicate` / `withCopyReset` stay in `intersection.ts` (Timelapse kinds kept for recorded
+  histories); nothing calls them from the interface now.
+- **Spread** (dock): a compact column on the canvas's left edge (`.ix-spread-panel`), open while the dock's
+  Spread is lit: the percentage, a vertical track (same log mapping, 25–500 %, `withSpreadAround` unchanged; a
+  light hold at 100 %), a brass reference line at 100 % with **Ref** beside it (a tap goes back to 100 %), and
+  **Set ref.** (`asReference`, as before). A changed set of copies: "Copies changed", the track rests until Set
+  ref. Every press on the track may drag (a touch near Ref is often given to it); a still press on Ref = 100 %.
+  Closes with Develop, an alignment, or leaving Intersect; opening it from Develop returns to Select.
+- **Reset** (dock, confirmed — `confirmIntersectReset`, `withIntersectReset`): the Original and two copies in
+  `defaultLayout` (as a new artwork starts), Spread 100 % with that group as reference; other copies, every copy
+  setting (lock, hidden, colour, whole motif), Intersect's construction and the developed design removed; the
+  Original keeps its colour and Extensions setting. Construct and its Fair, and bookmarks, untouched. One Undo
+  step. Off when Intersect is already as it starts (`intersectResettable` now compares with the start). Timelapse
+  `intersect-clear` recognises both the new start and the older "Original alone" reset; deleting the one extra
+  copy of an untouched start stays a deletion.
+- **Wording:** owner tag "Develop · Intersect’s own design (Construct is never changed)"; Develop's hint; the
+  empty-composition card points to Develop.
+- **Checks:** `stage-a.mjs` 59/59 phone (touch) and desktop (mouse, right-click). `run.sh` now calls
+  `/usr/bin/python3` (the Homebrew python3 first on bash's PATH is an x86 build that no longer runs).
+
 ## Exact next step
 
-Interface refinement on `feature/interface-refinement`: Intersect Duplicate / Reset Intersect and the Repeat redesign
-are committed locally; the phone preview (port 5189) serves them. Stop for the user's review. Do not merge, push or
-deploy.
+Intersect refinement Stage A is committed locally; stop for the user's review before Stage B (Develop:
+Whole / Construction / Extension together, reversible inclusion with exclusions, 4 pt editing highlight). Do not
+merge, push or deploy.
 
 ## Commands
 

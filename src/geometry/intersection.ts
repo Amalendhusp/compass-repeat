@@ -217,33 +217,47 @@ export function withDuplicate(doc: Doc, key: string): NonNullable<Doc['intersect
 }
 
 /**
- * Reset Intersect: every copy removed, and Intersect's own construction and developed Fair with them —
- * back to the Original alone, at its centre, unturned, at 100 % (its colour and Extensions setting
- * kept). Construct — the Original's geometry — is never touched; nor are bookmarks (saved
- * arrangements), which stay to be restored. The result is a Form Development arrangement whose design
- * is the Original's whole motif (as for a new artwork). One Undo step brings everything back.
+ * Reset Intersect: back to the starting arrangement — the Original and two copies in the default
+ * three-cell group (`defaultLayout`), unturned, unreflected, at 100 %, Spread 100 % with that group
+ * as its reference. Every other copy, every copy setting (lock, hidden, colour, whole motif), Intersect's
+ * own construction and the developed design are removed; the Original keeps its colour and Extensions
+ * setting. Construct — the Original's geometry and its Fair — is never touched; nor are bookmarks
+ * (saved arrangements), which stay to be restored. The result is a Form Development arrangement whose
+ * design is the Original's whole motif (as for a new artwork). One Undo step brings everything back.
  */
 export function withIntersectReset(doc: Doc): NonNullable<Doc['intersection']> {
   const own = doc.intersection?.copies?.[PRIMARY] ?? {};
   const kept: NonNullable<Doc['intersection']>['copies'][string] = {};
   if (own.colour) kept.colour = own.colour;
   if (own.extensions !== undefined) kept.extensions = own.extensions;
-  const pieces = [{ key: PRIMARY, x: 0, y: 0, rotation: 0 }];
   return {
     copies: Object.keys(kept).length ? { [PRIMARY]: kept } : {},
-    layout: { pieces, centre: { x: 0, y: 0 }, spread: 1, referenceKeys: [PRIMARY] },
+    layout: defaultLayout(doc),
     form: { developed: [] },
   };
 }
 
-/** Whether Intersect holds anything Reset Intersect would remove or put back. */
+/** Whether Intersect differs in any way from what Reset Intersect would give. */
 export function intersectResettable(doc: Doc): boolean {
   const ix = doc.intersection;
-  if (!ix) return formMode(doc) === 'legacy' || layoutOf(doc).pieces.length > 1;
-  const layout = layoutOf(doc);
-  const o = layout.pieces[0];
-  const originalMoved = !o || o.x !== 0 || o.y !== 0 || o.rotation !== 0 || poseScale(o) !== 1 || !!ix.copies?.[PRIMARY]?.locked || !!ix.copies?.[PRIMARY]?.hidden || ix.copies?.[PRIMARY]?.primaryCopy === false;
-  return layout.pieces.length > 1 || originalMoved || (ix.form?.developed.length ?? 0) > 0 || (ix.construction?.entities.length ?? 0) > 0 || (ix.construction?.points.length ?? 0) > 0 || !ix.form;
+  if (!ix) return formMode(doc) === 'legacy';
+  if (!ix.form || ix.form.developed.length > 0) return true;
+  if ((ix.construction?.entities.length ?? 0) > 0 || (ix.construction?.points.length ?? 0) > 0) return true;
+  // Only the Original's colour and Extensions setting survive a reset.
+  for (const [key, c] of Object.entries(ix.copies ?? {})) {
+    const { colour, extensions, ...rest } = c;
+    if (key !== PRIMARY && (colour !== undefined || extensions !== undefined)) return true;
+    if (Object.values(rest).some((v) => v !== undefined)) return true;
+  }
+  const now = layoutOf(doc);
+  const start = defaultLayout(doc);
+  if (now.spread !== 1 || now.pieces.length !== start.pieces.length) return true;
+  if (now.centre.x !== start.centre.x || now.centre.y !== start.centre.y) return true;
+  if (JSON.stringify(now.referenceKeys ?? null) !== JSON.stringify(start.referenceKeys)) return true;
+  return now.pieces.some((p, n) => {
+    const s = start.pieces[n]!;
+    return p.key !== s.key || p.x !== s.x || p.y !== s.y || p.rotation !== s.rotation || !!p.mirror || poseScale(p) !== 1;
+  });
 }
 
 /** The artwork's Intersection without one copy (never the Primary); everything else stays put. */

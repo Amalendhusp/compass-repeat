@@ -2719,9 +2719,34 @@ canvas.stage {
 .copy-chip.selected .copy-chip-dot {
   box-shadow: 0 0 0 2px var(--paper), 0 0 0 4px var(--ink);
 }
+/* A hidden copy: its circle faint (about 20 %), still selectable. */
 .copy-chip.hidden-copy .copy-chip-dot {
-  border-style: dashed;
+  opacity: 0.2;
+}
+.copy-cell {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+}
+.copy-eye {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 36px;
+  height: 26px;
+  margin-top: -2px;
+  border: none;
+  border-radius: 8px;
+  background: transparent;
   color: var(--muted);
+  cursor: pointer;
+}
+.copy-eye.off {
+  color: var(--muted);
+  opacity: 0.7;
+}
+.copy-eye:not(.off) {
+  color: var(--ink);
 }
 .copy-chip-diamond {
   position: absolute;
@@ -2835,4 +2860,135 @@ canvas.stage {
   flex: 1 1 auto;
   min-width: 0;
   white-space: normal;
+}
+
+/* Intersect's dock: Select · Develop · Spread · Reset, evenly spaced. */
+.dock.ix-dock {
+  justify-content: space-around;
+}
+
+/* Intersect's Spread: a compact column on the canvas's left edge, with the reference (100 %) marked. */
+.ix-spread-panel {
+  position: absolute;
+  top: 12px;
+  left: 6px;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 5px;
+  width: 54px;
+  padding: 7px 3px;
+  border-radius: 18px;
+  background: color-mix(in srgb, var(--paper) 88%, transparent);
+  border: 1px solid var(--hairline);
+  box-shadow: 0 4px 12px rgba(30, 42, 54, 0.08);
+  z-index: 2;
+  color: var(--ink);
+}
+.ix-spread-title {
+  font: 600 11px/1 var(--font-ui);
+  color: var(--muted);
+  letter-spacing: 0.02em;
+}
+.ix-spread-value {
+  font: 600 13px/1 var(--font-ui);
+  font-variant-numeric: tabular-nums;
+}
+.ix-spread-track {
+  position: relative;
+  width: 36px;
+  height: 140px;
+  touch-action: none;
+  cursor: ns-resize;
+  outline: none;
+}
+.ix-spread-track::before {
+  content: '';
+  position: absolute;
+  left: 50%;
+  top: 9px;
+  bottom: 9px;
+  width: 4px;
+  margin-left: -2px;
+  border-radius: 2px;
+  background: var(--well);
+}
+.ix-spread-fill {
+  position: absolute;
+  left: 50%;
+  bottom: 0;
+  clip-path: inset(0 0 9px 0);
+  width: 4px;
+  margin-left: -2px;
+  border-radius: 2px;
+  background: var(--ink);
+  opacity: 0.55;
+}
+.ix-spread-thumb {
+  position: absolute;
+  left: 50%;
+  width: 18px;
+  height: 18px;
+  margin-left: -9px;
+  border-radius: 50%;
+  background: var(--paper);
+  border: 1.5px solid var(--ink);
+  box-shadow: 0 1px 3px rgba(30, 42, 54, 0.2);
+  pointer-events: none;
+}
+.ix-spread-track:focus-visible .ix-spread-thumb {
+  box-shadow: 0 0 0 3px var(--well);
+}
+/* The reference mark: a brass line across the track at 100 % (a mark only), and Ref beside it — a tap
+ * there goes back to the reference. */
+.ix-spread-ref-line {
+  position: absolute;
+  left: 50%;
+  width: 26px;
+  height: 2px;
+  margin-left: -13px;
+  border-radius: 1px;
+  background: var(--brass);
+  pointer-events: none;
+}
+.ix-spread-ref {
+  position: absolute;
+  right: -10px;
+  width: 22px;
+  height: 22px;
+  padding: 0;
+  border: none;
+  border-radius: 6px;
+  background: transparent;
+  color: var(--brass);
+  font: 700 9px/22px var(--font-ui);
+  text-align: right;
+  cursor: pointer;
+}
+.ix-spread-set {
+  min-height: 30px;
+  width: 46px;
+  padding: 0 4px;
+  border: none;
+  border-radius: 10px;
+  background: var(--well);
+  color: var(--ink);
+  font: 500 11px/1.1 var(--font-ui);
+  cursor: pointer;
+}
+.ix-spread-set.active {
+  background: var(--brass);
+  color: var(--paper);
+}
+.ix-spread-note:empty {
+  display: none;
+}
+.ix-spread-note {
+  font: 400 10px/1.2 var(--font-ui);
+  color: var(--muted);
+  text-align: center;
+}
+.ix-spread-panel.stale .ix-spread-track {
+  opacity: 0.4;
+  cursor: default;
 }

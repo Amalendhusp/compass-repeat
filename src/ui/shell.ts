@@ -36,7 +36,7 @@ import { onTap } from './tap.ts';
 import { color, fairPalette, stroke } from '../render/tokens.ts';
 import { alternationOf, suggestedFamily, type LatticeFamily } from '../geometry/lattice.ts';
 import { rotationFractionLabel } from '../render/repeatRenderer.ts';
-import { inComposition, withArrangement, asReference, intersectionCopies, layoutOf, MAX_CONSTRUCTIONS, placedAt, PRIMARY, referenceCurrent, sliderToSpread, SPREAD_SLIDER_MAX, spreadToSlider, withAddedCopy, withCopySetting, withLayout, withLock, withoutCopy, withSpreadAround, isLocked, withHidden, isAsConstructed, withCopyReset, copyScale, withDuplicate, withIntersectReset, intersectResettable } from '../geometry/intersection.ts';
+import { inComposition, withArrangement, asReference, intersectionCopies, layoutOf, MAX_CONSTRUCTIONS, placedAt, PRIMARY, referenceCurrent, sliderToSpread, SPREAD_MAX, SPREAD_MIN, SPREAD_SLIDER_MAX, spreadToSlider, withAddedCopy, withLayout, withLock, withSpreadAround, isLocked, withHidden, copyScale, withIntersectReset, intersectResettable } from '../geometry/intersection.ts';
 import { canMoveAgainst, convertPick, isPointPick, planMatchEdge, planSnap, resolvePick, type PickKind } from '../geometry/intersectionSnap.ts';
 import { PICK_REACH_PX } from '../interaction/tools/intersectionTool.ts';
 import { repeatSource, type RepeatSource } from '../geometry/repeatUnit.ts';
@@ -999,50 +999,44 @@ function showIntersectionSnapshotsPanel(anchor: HTMLElement, controller: AppCont
  */
 const EYE_ICON = '<svg viewBox="0 0 16 16" width="14" height="14" fill="none" stroke="currentColor" stroke-width="1.5"><path d="M1.5 8s2.4-4.5 6.5-4.5S14.5 8 14.5 8 12.1 12.5 8 12.5 1.5 8 1.5 8z"/><circle cx="8" cy="8" r="2"/></svg>';
 const EYE_OFF_ICON = '<svg viewBox="0 0 16 16" width="14" height="14" fill="none" stroke="currentColor" stroke-width="1.5"><path d="M1.5 8s2.4-4.5 6.5-4.5S14.5 8 14.5 8 12.1 12.5 8 12.5 1.5 8 1.5 8z"/><path d="M2.5 13.5l11-11"/></svg>';
-const DUPLICATE_ICON = '<svg viewBox="0 0 16 16" width="14" height="14" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linejoin="round"><rect x="5.5" y="5.5" width="8" height="8" rx="1.5"/><path d="M10.5 3V2.5h-8v8H3"/></svg>';
-const BIN_ICON = '<svg viewBox="0 0 16 16" width="14" height="14" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"><path d="M2.5 4h11M6 4V2.5h4V4M4 4l.7 9.5h6.6L12 4M6.8 6.5v5M9.2 6.5v5"/></svg>';
 
-function showIntersectionCopiesPanel(anchor: HTMLElement, controller: AppController, arrangement: { spreadRow: HTMLElement; spreadHint: HTMLElement; refresh: () => void }): void {
+/**
+ * Intersect's Copies panel: one coloured circle per construction (the Original first) and Add. A tap on
+ * a circle selects that copy (on the canvas too — its rotation handle shows); the small eye under it
+ * shows or hides it, independently of selection (a hidden copy's circle is faint, and stays
+ * selectable here). Everything else about a copy is on the canvas: drag to move, the handle to turn,
+ * and a long-press (or right-click) for Reflect, Scale, Lock and Delete. Spread and Reset Intersect are
+ * in the dock. Each change is one Undo step.
+ */
+function showIntersectionCopiesPanel(anchor: HTMLElement, controller: AppController): void {
   mountPopover(
     anchor,
     (menu) => {
       menu.classList.add('copies-panel');
-      // The copy whose settings are open — the one selected on the canvas, when the panel opens.
-      let expanded: string | null = controller.intersectionSelected;
-      const commitIx = (next: NonNullable<Doc['intersection']> | null) => {
-        if (!next) return;
-        controller.commit((d) => {
-          d.intersection = next;
-        });
-        build();
-      };
-      const copiesChanged = (wasCurrent: boolean) => {
-        if (wasCurrent && !referenceCurrent(layoutOf(controller.doc))) showToast('Copies changed — set a new Reference to use Spread');
-      };
-      let coloursOpen = false;
       const build = () => {
         menu.replaceChildren();
         const doc = controller.doc;
         const all = intersectionCopies(doc);
-        const selected = all.find((c) => c.key === expanded) ?? null;
-
-        // ---- one row of copies: colour, ⇋ reflected, dashed = hidden, ◆ = whole motif in the design ----
+        const selectedKey = controller.intersectionSelected;
         const chips = document.createElement('div');
         chips.className = 'copy-chips';
         chips.setAttribute('role', 'group');
         chips.setAttribute('aria-label', 'Copies');
         for (const copy of all) {
+          const selected = copy.key === selectedKey;
           const inDesign = inComposition(doc, copy.key);
           const status = [copy.hidden ? 'hidden' : 'shown', inDesign ? 'whole motif in the design' : '', copy.pose.mirror ? 'reflected' : '', copy.locked ? 'locked' : ''].filter(Boolean);
+          const cell = document.createElement('div');
+          cell.className = 'copy-cell' + (selected ? ' selected' : '') + (copy.hidden ? ' hidden-copy' : '');
+          cell.dataset.copy = copy.key;
           const chipBtn = document.createElement('button');
-          chipBtn.className = 'copy-chip' + (copy.key === expanded ? ' selected' : '') + (copy.hidden ? ' hidden-copy' : '');
+          chipBtn.className = 'copy-chip' + (selected ? ' selected' : '') + (copy.hidden ? ' hidden-copy' : '');
           chipBtn.dataset.copy = copy.key;
-          chipBtn.setAttribute('aria-pressed', String(copy.key === expanded));
-          chipBtn.setAttribute('aria-label', `${copy.label} · ${status.join(' · ')}`);
+          chipBtn.setAttribute('aria-pressed', String(selected));
+          chipBtn.setAttribute('aria-label', `Select ${copy.label} · ${status.join(' · ')}`);
           const dot = document.createElement('span');
           dot.className = 'copy-chip-dot';
-          if (!copy.hidden) dot.style.background = copy.colour;
-          else dot.style.borderColor = copy.colour;
+          dot.style.background = copy.colour;
           if (copy.pose.mirror) dot.textContent = '⇋';
           if (inDesign) {
             const diamond = document.createElement('span');
@@ -1057,16 +1051,36 @@ function showIntersectionCopiesPanel(anchor: HTMLElement, controller: AppControl
           chipBtn.append(dot, name);
           chipBtn.addEventListener('click', (e) => {
             e.stopPropagation();
-            // Choosing a copy here selects it on the canvas too; choosing it again closes it.
-            expanded = expanded === copy.key ? null : copy.key;
-            coloursOpen = false;
-            controller.intersectionSelected = expanded;
-            controller.notify();
+            // Selecting here selects on the canvas too (a hidden copy is selected, though not drawn).
+            if (controller.intersectionSelected !== copy.key) {
+              controller.intersectionSelected = copy.key;
+              controller.intersectionBox = null;
+              controller.notify();
+            }
             build();
           });
-          chips.appendChild(chipBtn);
+          // Show / Hide: its own small control — never a change of selection.
+          const eye = document.createElement('button');
+          eye.className = 'copy-eye' + (copy.hidden ? ' off' : '');
+          eye.dataset.copy = copy.key;
+          eye.innerHTML = copy.hidden ? EYE_OFF_ICON : EYE_ICON;
+          eye.setAttribute('aria-pressed', String(!copy.hidden));
+          eye.setAttribute('aria-label', copy.hidden ? `Show ${copy.label}` : `Hide ${copy.label}`);
+          eye.title = copy.hidden ? 'Hidden — tap to show' : 'Shown — tap to hide';
+          eye.addEventListener('click', (e) => {
+            e.stopPropagation();
+            if (!copy.hidden && controller.intersectionBox === copy.key) controller.intersectionBox = null;
+            controller.commit((d) => {
+              d.intersection = withHidden(d, copy.key, !copy.hidden);
+            });
+            build();
+          });
+          cell.append(chipBtn, eye);
+          chips.appendChild(cell);
         }
         // + Add copy: one more construction, in a free spot with a colour of its own (up to six in all).
+        const addCell = document.createElement('div');
+        addCell.className = 'copy-cell';
         const add = document.createElement('button');
         add.className = 'copy-chip copy-add-chip';
         const full = all.length >= MAX_CONSTRUCTIONS;
@@ -1081,166 +1095,27 @@ function showIntersectionCopiesPanel(anchor: HTMLElement, controller: AppControl
           controller.commit((d) => {
             d.intersection = next;
           });
-          // The new copy is selected, its few settings open.
+          // The new copy is selected.
           const added = layoutOf(controller.doc).pieces.at(-1)?.key ?? null;
-          expanded = added;
           controller.intersectionSelected = added;
+          controller.intersectionBox = null;
           controller.notify();
-          copiesChanged(wasCurrent);
+          if (wasCurrent && !referenceCurrent(layoutOf(controller.doc))) showToast('Copy added · set a new reference to use Spread');
           build();
         });
-        chips.appendChild(add);
+        addCell.appendChild(add);
+        chips.appendChild(addCell);
         menu.appendChild(chips);
 
-        // ---- the selected copy: Colour · Shown / Hidden · Reset · Delete ----
-        if (!selected) {
-          panelHint(menu, 'Choose a copy for its colour, visibility, Reset, Duplicate and Delete. Move and turn it on the canvas; hold it (or right-click) to reflect, lock or scale it.');
-        } else {
-          const original = selected.key === PRIMARY;
+        const sel = all.find((c) => c.key === selectedKey);
+        const more = window.matchMedia?.('(pointer: coarse)').matches ? 'hold it on the canvas' : 'right-click it on the canvas';
+        if (sel) {
           const head = document.createElement('div');
           head.className = 'copy-head';
-          head.textContent = `${selected.label}${selected.locked ? ' · locked' : ''}${inComposition(doc, selected.key) ? ' · ◆ whole motif in the design' : ''}`;
+          head.textContent = `${sel.label} selected${sel.hidden ? ' · hidden' : ''}${sel.locked ? ' · locked' : ''}${inComposition(doc, sel.key) ? ' · ◆ whole motif in the design' : ''}`;
           menu.appendChild(head);
-          const actions = document.createElement('div');
-          actions.className = 'copy-actions';
-          const action = (label: string, aria: string, run: () => void, opts2: { pressed?: boolean; disabled?: boolean; dot?: string; icon?: string } = {}) => {
-            const b = document.createElement('button');
-            b.className = 'copy-action' + (opts2.pressed ? ' on' : '');
-            if (opts2.dot) {
-              const d = document.createElement('span');
-              d.className = 'copy-action-dot';
-              d.style.background = opts2.dot;
-              b.appendChild(d);
-            }
-            if (opts2.icon) {
-              const i = document.createElement('span');
-              i.className = 'copy-action-icon';
-              i.setAttribute('aria-hidden', 'true');
-              i.innerHTML = opts2.icon;
-              b.appendChild(i);
-            }
-            b.appendChild(document.createTextNode(label));
-            b.setAttribute('aria-label', aria);
-            if (opts2.pressed !== undefined) b.setAttribute('aria-pressed', String(opts2.pressed));
-            b.disabled = !!opts2.disabled;
-            b.addEventListener('click', (e) => {
-              e.stopPropagation();
-              run();
-            });
-            actions.appendChild(b);
-            return b;
-          };
-          action('Colour', `${selected.label} colour`, () => {
-            coloursOpen = !coloursOpen;
-            build();
-          }, { dot: selected.colour, pressed: coloursOpen });
-          action(selected.hidden ? 'Hidden' : 'Shown', `${selected.label} ${selected.hidden ? 'hidden' : 'shown'}`, () => commitIx(withHidden(controller.doc, selected.key, !selected.hidden)), { pressed: !selected.hidden, icon: selected.hidden ? EYE_OFF_ICON : EYE_ICON });
-          // Reset: 100 %, no turn, no reflection — where it is (colour, visibility and the design kept).
-          const asConstructed = isAsConstructed(doc, selected.key);
-          const reset = action('Reset', `Reset ${selected.label} (100 %, no turn, no reflection; it stays where it is)`, () => commitIx(withCopyReset(controller.doc, selected.key)), {
-            disabled: selected.locked || asConstructed,
-          });
-          if (selected.locked) reset.title = 'Locked — unlock it to reset it';
-          else if (asConstructed) reset.title = 'Already as constructed';
-          // Duplicate: a new copy with this one's turn, reflection, scale and colour, a little offset.
-          const full = all.length >= MAX_CONSTRUCTIONS;
-          const dup = action('Duplicate', full ? `Duplicate ${selected.label} · ${MAX_CONSTRUCTIONS} constructions is the most for now` : `Duplicate ${selected.label} (same turn, reflection, scale and colour, a little offset)`, () => {
-            const wasCurrent = referenceCurrent(layoutOf(controller.doc));
-            const next = withDuplicate(controller.doc, selected.key);
-            if (!next) return;
-            controller.commit((d) => {
-              d.intersection = next;
-            });
-            const added = layoutOf(controller.doc).pieces.at(-1)?.key ?? null;
-            expanded = added;
-            controller.intersectionSelected = added;
-            controller.intersectionBox = null;
-            controller.notify();
-            const label = intersectionCopies(controller.doc).find((c) => c.key === added)?.label ?? 'A copy';
-            const stale = wasCurrent && !referenceCurrent(layoutOf(controller.doc));
-            showToast(`${label} added · a duplicate of ${selected.label}${stale ? ' · set a new Reference to use Spread' : ''}`);
-            build();
-          }, { icon: DUPLICATE_ICON, disabled: full });
-          if (full) dup.title = `${MAX_CONSTRUCTIONS} constructions — the most for now`;
-          if (!original) {
-            // Any copy can be deleted (one Undo step); the Original stays.
-            action('Delete', `Delete ${selected.label}`, () => {
-              const wasCurrent = referenceCurrent(layoutOf(controller.doc));
-              const next = withoutCopy(controller.doc, selected.key);
-              if (!next) return;
-              if (controller.intersectionSelected === selected.key) controller.intersectionSelected = null;
-              expanded = null;
-              commitIx(next);
-              showToast(`${selected.label} deleted · Undo brings it back`);
-              copiesChanged(wasCurrent);
-            }, { icon: BIN_ICON });
-          }
-          menu.appendChild(actions);
-          if (coloursOpen) {
-            const host = document.createElement('div');
-            colourSwatchRow(host, selected.colour, (c) => {
-              if (c) commitIx(withCopySetting(controller.doc, selected.key, { colour: c }));
-            });
-            const swatches = host.firstElementChild as HTMLElement;
-            swatches.classList.add('panel-swatches');
-            swatches.setAttribute('aria-label', `${selected.label} colours`);
-            menu.appendChild(swatches);
-          }
-          if (selected.hidden) panelHint(menu, 'Hidden: not drawn, picked or developed from, and out of Repeat while hidden. Everything about it is kept.');
-        }
-
-        // ---- slim footer: Spread (moves every copy) with its Reference, and one Extensions switch ----
-        const foot = document.createElement('div');
-        foot.className = 'copies-foot';
-        arrangement.refresh();
-        arrangement.spreadRow.style.display = '';
-        foot.appendChild(arrangement.spreadRow);
-        arrangement.spreadHint.style.display = '';
-        foot.appendChild(arrangement.spreadHint);
-        // Extensions for every copy at once (an older artwork's per-copy settings are kept until this is
-        // used; a mix shows as off, with a word).
-        const extOn = all.every((c) => c.extensions);
-        const mixed = !extOn && all.some((c) => c.extensions);
-        popoverToggleRow(foot, mixed ? 'Extensions · some copies' : 'Extensions', () => extOn, (on) => {
-          controller.commit((d) => {
-            let ix = d.intersection ?? null;
-            for (const c of intersectionCopies(d)) {
-              const tmp = { ...d, intersection: ix ?? d.intersection };
-              ix = withCopySetting(tmp, c.key, { extensions: on });
-            }
-            if (ix) d.intersection = ix;
-          });
-          build();
-        }, 'Show or hide every copy’s extended lines (dashed)');
-        // Reset Intersect: back to the Original alone (confirmed; one Undo step brings it all back).
-        const resetIx = document.createElement('button');
-        resetIx.className = 'copies-reset-ix';
-        resetIx.textContent = 'Reset Intersect…';
-        resetIx.setAttribute('aria-label', 'Reset Intersect (remove every copy and Intersect’s own geometry; the Original is kept)');
-        resetIx.disabled = !intersectResettable(doc);
-        resetIx.addEventListener('click', (e) => {
-          e.stopPropagation();
-          openConfirmSheet({
-            title: 'Reset Intersect?',
-            body: 'Removes every copy, Intersect’s own construction and its developed Fair, and puts the Original back at its centre. Construct and saved arrangements are kept. Undo brings it all back.',
-            confirmLabel: 'Reset',
-            onConfirm: () => {
-              const next = withIntersectReset(controller.doc);
-              controller.intersectionSelected = null;
-              controller.intersectionBox = null;
-              controller.intersectionPicks = [];
-              controller.selection = [];
-              expanded = null;
-              controller.commit((d) => {
-                d.intersection = next;
-              });
-              showToast('Intersect reset · Undo brings it back');
-              build();
-            },
-          });
-        });
-        foot.appendChild(resetIx);
-        menu.appendChild(foot);
+          panelHint(menu, sel.hidden ? 'Hidden: not drawn, picked or developed from, and out of Repeat while hidden. Everything about it is kept — the eye shows it again.' : `Drag to move, the handle to turn; ${more} to reflect, scale, lock${sel.key === PRIMARY ? '' : ' or delete'} it.`);
+        } else panelHint(menu, `Tap a circle to select a copy; the eye shows or hides it. On the canvas, drag to move, the handle to turn, and ${more} for Reflect, Scale, Lock and Delete.`);
       };
       build();
     },
@@ -2252,7 +2127,7 @@ export function buildShell(
   const ixCopiesBtn = document.createElement('button');
   ixCopiesBtn.className = 'icon-btn';
   ixCopiesBtn.setAttribute('aria-label', 'Copies');
-  onTap(ixCopiesBtn, () => togglePanel(ixCopiesBtn, () => showIntersectionCopiesPanel(ixCopiesBtn, controller, { spreadRow: ixSpreadRow, spreadHint: ixSpreadHint, refresh: () => refreshIntersectionRows() })));
+  onTap(ixCopiesBtn, () => togglePanel(ixCopiesBtn, () => showIntersectionCopiesPanel(ixCopiesBtn, controller)));
   leftSide.appendChild(ixCopiesBtn);
   function refreshIxCopiesBtn(): void {
     const copies = intersectionCopies(controller.doc).slice(0, 4);
@@ -2585,11 +2460,13 @@ export function buildShell(
   const dock = document.createElement('div');
   dock.className = 'dock';
   const dockButtonEls = new Map<ToolId, HTMLButtonElement>();
+  const dockDividers: HTMLElement[] = [];
   for (const spec of DOCK_BUTTONS) {
     if (spec.divider) {
       const d = document.createElement('div');
       d.className = 'divider';
       dock.appendChild(d);
+      dockDividers.push(d);
     }
     const btn = document.createElement('button');
     btn.setAttribute('aria-label', spec.label);
@@ -2601,10 +2478,67 @@ export function buildShell(
         setDivideTarget(controller, null);
         return;
       }
+      // Develop (Intersect's Fair) is a geometry mode: Spread, an arrangement control, steps aside.
+      if (spec.id === 'fair' && controller.doc.view.workspace === 'intersection') setSpreadOpen(false);
       controller.setTool(spec.id);
     });
     dockButtonEls.set(spec.id, btn);
     dock.appendChild(btn);
+  }
+  // Intersect's own dock: Select · Develop · Spread · Reset. Circle, Line, Arc and Divide stay in
+  // Construct; Fair is called Develop here (it develops Intersect's own design, never Construct's Fair).
+  const dockLabel = (btn: HTMLButtonElement, label: string) => {
+    btn.setAttribute('aria-label', label);
+    const l = btn.querySelector('.label');
+    if (l) l.textContent = label;
+  };
+  const ixDockBtn = (label: string, icon: IconName, aria: string) => {
+    const btn = document.createElement('button');
+    btn.className = 'ix-dock-btn';
+    btn.setAttribute('aria-label', aria);
+    btn.innerHTML = `${iconSvg(icon)}<span class="label">${label}</span>`;
+    dock.appendChild(btn);
+    return btn;
+  };
+  const ixSpreadDockBtn = ixDockBtn('Spread', 'spread', 'Spread');
+  ixSpreadDockBtn.setAttribute('aria-pressed', 'false');
+  ixSpreadDockBtn.addEventListener('click', () => {
+    const open = !spreadOpen;
+    // Spread arranges the copies: Select is the tool it belongs to.
+    if (open && controller.tool !== 'select') controller.setTool('select');
+    setSpreadOpen(open);
+  });
+  const ixResetDockBtn = ixDockBtn('Reset', 'resetIx', 'Reset Intersect');
+  ixResetDockBtn.addEventListener('click', () => confirmIntersectReset());
+
+  /** Reset Intersect, after asking (never on a single tap): back to the Original and two copies in the
+   * starting arrangement; Construct is kept. One Undo step. */
+  function confirmIntersectReset(): void {
+    if (!intersectResettable(controller.doc)) {
+      showToast('Intersect is already as it starts');
+      return;
+    }
+    openConfirmSheet({
+      title: 'Reset Intersect?',
+      body: 'Puts back the Original and two copies in their starting arrangement, and removes the other copies, their settings and the developed design. Construct and its Fair are kept, and so are saved arrangements. Undo brings it all back.',
+      confirmLabel: 'Reset',
+      onConfirm: () => {
+        const next = withIntersectReset(controller.doc);
+        controller.intersectionSelected = null;
+        controller.intersectionBox = null;
+        controller.intersectionPicks = [];
+        controller.intersectionPickKind = 'instance';
+        controller.intersectionSpreadDraft = null;
+        controller.selection = [];
+        controller.formPress = null;
+        controller.lineChoice = null;
+        closeAnyPopover();
+        controller.commit((d) => {
+          d.intersection = next;
+        });
+        showToast('Intersect reset · Undo brings it back');
+      },
+    });
   }
 
   // ---- Phase 5: Repeat's own compact control panel — family, orientation rule, Guide toggle,
@@ -3014,35 +2948,87 @@ export function buildShell(
   fillRow.appendChild(colouringBtn);
   repeatPanel.insertBefore(fillRow, colourKindRow);
 
-  // Spread: centres in or out about the reference group's centre (100% = the reference); Reference
-  // makes what is shown now the reference. Sizes and rotations never change. Logarithmic, 25–500%,
-  // so 100% sits mid-way with fine control either side. Once a copy is added or removed, the old
-  // reference is out of date: Spread rests (and says so) until Reference is set again.
-  const ixSpreadRow = document.createElement('div');
-  ixSpreadRow.className = 'space-row spread-row';
-  // What Spread's 100 % means now — kept with the row, so it follows a new Reference at once.
-  const ixSpreadHint = document.createElement('div');
-  ixSpreadHint.className = 'panel-note spread-hint';
-  const spreadLabel = document.createElement('span');
-  spreadLabel.className = 'space-label';
-  spreadLabel.textContent = 'Spread';
-  const spreadSlider = document.createElement('input');
-  spreadSlider.type = 'range';
-  spreadSlider.className = 'width-slider spread-slider';
-  spreadSlider.min = '0';
-  spreadSlider.max = String(SPREAD_SLIDER_MAX);
-  spreadSlider.step = '1';
-  spreadSlider.setAttribute('aria-label', 'Spread');
+  // Spread (Intersect's dock): centres in or out about the reference group's centre (100 % = the
+  // reference); Set as reference makes what is shown now the reference. Sizes and rotations never
+  // change. Logarithmic, 25–500 %, so 100 % sits mid-way with fine control either side. Once a copy is
+  // added or removed, the old reference is out of date: Spread rests (and says so) until the reference
+  // is set again — 100 % is never silently redefined. A compact column on the canvas's left edge, open
+  // while Spread is lit; the canvas stays live beside it (copies can still be moved and turned).
+  const spreadPanel = document.createElement('div');
+  spreadPanel.className = 'ix-spread-panel';
+  spreadPanel.style.display = 'none';
+  const spreadTitle = document.createElement('span');
+  spreadTitle.className = 'ix-spread-title';
+  spreadTitle.textContent = 'Spread';
   const spreadValue = document.createElement('span');
-  spreadValue.className = 'space-label spread-value';
-  spreadSlider.addEventListener('input', () => {
-    const spread = sliderToSpread(Number(spreadSlider.value));
-    controller.intersectionSpreadDraft = spread;
-    spreadValue.textContent = `${Math.round(spread * 100)}%`;
-    controller.notifyView();
-  });
-  spreadSlider.addEventListener('change', () => {
-    const spread = sliderToSpread(Number(spreadSlider.value));
+  spreadValue.className = 'ix-spread-value';
+  const spreadTrack = document.createElement('div');
+  spreadTrack.className = 'ix-spread-track';
+  spreadTrack.tabIndex = 0;
+  spreadTrack.setAttribute('role', 'slider');
+  spreadTrack.setAttribute('aria-label', 'Spread');
+  spreadTrack.setAttribute('aria-orientation', 'vertical');
+  spreadTrack.setAttribute('aria-valuemin', String(Math.round(SPREAD_MIN * 100)));
+  spreadTrack.setAttribute('aria-valuemax', String(Math.round(SPREAD_MAX * 100)));
+  const spreadFill = document.createElement('div');
+  spreadFill.className = 'ix-spread-fill';
+  const spreadThumb = document.createElement('div');
+  spreadThumb.className = 'ix-spread-thumb';
+  // The reference (100 %): a line across the track (only a mark — the thumb is dragged over it) and,
+  // beside it, Ref: a tap there goes back to the reference arrangement.
+  const spreadRefLine = document.createElement('div');
+  spreadRefLine.className = 'ix-spread-ref-line';
+  spreadRefLine.setAttribute('aria-hidden', 'true');
+  const spreadRefMark = document.createElement('button');
+  spreadRefMark.className = 'ix-spread-ref';
+  spreadRefMark.textContent = 'Ref';
+  spreadRefMark.setAttribute('aria-label', 'Back to the reference arrangement (Spread 100 %)');
+  spreadRefMark.title = 'The reference arrangement — Spread 100 %';
+  spreadTrack.append(spreadFill, spreadRefLine, spreadThumb, spreadRefMark);
+  const referenceBtn = document.createElement('button');
+  referenceBtn.className = 'ix-spread-set';
+  referenceBtn.textContent = 'Set ref.';
+  referenceBtn.title = 'Make this arrangement the Spread reference (100 %)';
+  referenceBtn.setAttribute('aria-label', 'Set this arrangement as the Spread reference (100 %)');
+  const spreadNote = document.createElement('span');
+  spreadNote.className = 'ix-spread-note';
+  spreadPanel.append(spreadTitle, spreadValue, spreadTrack, referenceBtn, spreadNote);
+  canvasWrap.appendChild(spreadPanel);
+  let spreadOpen = false;
+  function setSpreadOpen(on: boolean): void {
+    if (spreadOpen === on) return;
+    spreadOpen = on;
+    if (!on && controller.intersectionSpreadDraft !== null) {
+      controller.intersectionSpreadDraft = null;
+      controller.notifyView();
+    }
+    if (on) controller.intersectionBox = null; // arranging every copy, not one
+    spreadPanel.style.display = on ? '' : 'none';
+    ixSpreadDockBtn.classList.toggle('active', on);
+    ixSpreadDockBtn.setAttribute('aria-pressed', String(on));
+    if (on) refreshIntersectionRows();
+    controller.notify();
+  }
+  /** Track position (0 at the bottom … 1 at the top) of a Spread value. */
+  const spreadPos = (spread: number) => spreadToSlider(spread) / SPREAD_SLIDER_MAX;
+  const showSpread = (spread: number, current: boolean) => {
+    const v = spreadPos(spread);
+    spreadFill.style.height = `calc(9px + ${v} * (100% - 18px))`;
+    spreadThumb.style.bottom = `calc(${v} * (100% - 18px))`;
+    spreadValue.textContent = current ? `${Math.round(spread * 100)} %` : '—';
+    spreadTrack.setAttribute('aria-valuenow', String(Math.round(spread * 100)));
+    spreadTrack.setAttribute('aria-valuetext', current ? `${Math.round(spread * 100)} %` : 'Reference out of date');
+  };
+  spreadRefLine.style.bottom = `calc(${spreadPos(1)} * (100% - 18px) + 8px)`;
+  spreadRefMark.style.bottom = `calc(${spreadPos(1)} * (100% - 18px) - 2px)`;
+  /** The Spread under a finger at `clientY` — a light hold at 100 % so the reference is easy to find. */
+  const spreadAt = (clientY: number) => {
+    const r = spreadTrack.getBoundingClientRect();
+    const v = Math.min(1, Math.max(0, (r.bottom - 9 - clientY) / (r.height - 18)));
+    const spread = sliderToSpread(v * SPREAD_SLIDER_MAX);
+    return Math.abs(Math.log(spread)) < 0.02 ? 1 : spread;
+  };
+  const commitSpread = (spread: number) => {
     controller.intersectionSpreadDraft = null;
     if (Math.abs(spread - layoutOf(controller.doc).spread) < 1e-9) {
       controller.notify();
@@ -3052,22 +3038,75 @@ export function buildShell(
       // Locked constructions stay where they are; the others spread about the centre.
       d.intersection = withLayout(d, withSpreadAround(d, spread));
     });
+  };
+  // Every press on the track — Ref included (a touch near it is often given to it) — may drag; a press
+  // on Ref that never moves goes back to the reference (100 %).
+  let spreadDrag: { id: number; y: number; onRef: boolean; moved: boolean } | null = null;
+  const stale = () => {
+    if (referenceCurrent(layoutOf(controller.doc))) return false;
+    showToast('Copies changed — set a new reference to use Spread', 2400, 'warning');
+    return true;
+  };
+  spreadTrack.addEventListener('pointerdown', (e) => {
+    e.preventDefault();
+    e.stopPropagation();
+    if (stale()) return;
+    const onRef = !!(e.target as HTMLElement).closest('.ix-spread-ref');
+    spreadDrag = { id: e.pointerId, y: e.clientY, onRef, moved: !onRef };
+    try {
+      spreadTrack.setPointerCapture(e.pointerId);
+    } catch {
+      /* a synthetic pointer has nothing to capture */
+    }
+    if (onRef) return;
+    const spread = spreadAt(e.clientY);
+    controller.intersectionSpreadDraft = spread;
+    showSpread(spread, true);
+    controller.notifyView();
   });
-  const referenceBtn = document.createElement('button');
-  referenceBtn.className = 'space-chip';
-  referenceBtn.textContent = 'Reference';
-  referenceBtn.title = 'Make this arrangement the Spread reference (100%)';
-  referenceBtn.setAttribute('aria-label', 'Set this arrangement as the Spread reference');
+  spreadTrack.addEventListener('pointermove', (e) => {
+    if (spreadDrag?.id !== e.pointerId) return;
+    if (!spreadDrag.moved && Math.abs(e.clientY - spreadDrag.y) < 4) return;
+    spreadDrag.moved = true;
+    const spread = spreadAt(e.clientY);
+    controller.intersectionSpreadDraft = spread;
+    showSpread(spread, true);
+    controller.notifyView();
+  });
+  const endSpreadDrag = (e: PointerEvent, keep: boolean) => {
+    if (spreadDrag?.id !== e.pointerId) return;
+    const { onRef, moved } = spreadDrag;
+    spreadDrag = null;
+    const draft = controller.intersectionSpreadDraft;
+    if (keep && onRef && !moved) commitSpread(1);
+    else if (keep && draft !== null) commitSpread(draft);
+    else {
+      controller.intersectionSpreadDraft = null;
+      controller.notify();
+    }
+  };
+  spreadTrack.addEventListener('pointerup', (e) => endSpreadDrag(e, true));
+  spreadTrack.addEventListener('pointercancel', (e) => endSpreadDrag(e, false));
+  spreadTrack.addEventListener('keydown', (e) => {
+    if (!referenceCurrent(layoutOf(controller.doc))) return;
+    const step = { ArrowUp: 10, ArrowRight: 10, ArrowDown: -10, ArrowLeft: -10, PageUp: 50, PageDown: -50 }[e.key];
+    const now = spreadToSlider(layoutOf(controller.doc).spread);
+    const pos = step !== undefined ? now + step : e.key === 'Home' ? 0 : e.key === 'End' ? SPREAD_SLIDER_MAX : null;
+    if (pos === null) return;
+    e.preventDefault();
+    commitSpread(sliderToSpread(Math.min(SPREAD_SLIDER_MAX, Math.max(0, pos))));
+  });
+  // Ref by keyboard: Enter / Space on it goes back to 100 %.
+  spreadRefMark.addEventListener('click', (e) => {
+    if (e.detail !== 0) return; // a pointer press is handled by the track
+    if (!stale()) commitSpread(1);
+  });
   onTap(referenceBtn, () => {
     controller.commit((d) => {
       d.intersection = withLayout(d, asReference(layoutOf(d)));
     });
-    showToast('Spread reference set');
+    showToast('Spread reference set · this arrangement is 100 %');
   });
-  ixSpreadRow.appendChild(spreadLabel);
-  ixSpreadRow.appendChild(spreadSlider);
-  ixSpreadRow.appendChild(spreadValue);
-  ixSpreadRow.appendChild(referenceBtn);
 
   // Snap: only once something is picked (a tap on a line or point — see intersectionTool). Two
   // lines offer Parallel (turn only) and Join (slide only, once parallel); two points offer Snap
@@ -3347,18 +3386,13 @@ export function buildShell(
   function refreshIntersectionRows(): void {
     const layout = layoutOf(controller.doc);
     const current = referenceCurrent(layout);
-    ixSpreadHint.textContent = current ? 'Reference makes this layout Spread 100 %.' : 'Copies changed — tap Reference to use Spread again.';
-    spreadSlider.disabled = !current;
-    ixSpreadRow.classList.toggle('stale', !current);
+    spreadPanel.classList.toggle('stale', !current);
+    spreadTrack.setAttribute('aria-disabled', String(!current));
     referenceBtn.classList.toggle('active', !current);
-    referenceBtn.title = current ? 'Make this arrangement the Spread reference (100%)' : 'Copies have changed — set a new reference to use Spread';
-    if (!current) {
-      spreadSlider.value = String(spreadToSlider(1));
-      spreadValue.textContent = 'Set ref.';
-    } else if (controller.intersectionSpreadDraft === null) {
-      spreadSlider.value = String(spreadToSlider(layout.spread));
-      spreadValue.textContent = `${Math.round(layout.spread * 100)}%`;
-    }
+    referenceBtn.title = current ? 'Make this arrangement the Spread reference (100 %)' : 'Copies have changed — set a new reference to use Spread';
+    spreadNote.textContent = current ? '' : 'Copies changed';
+    if (!current) showSpread(1, false);
+    else if (controller.intersectionSpreadDraft === null) showSpread(layout.spread, true);
   }
 
   function refreshSpaceRow(): void {
@@ -3421,7 +3455,7 @@ export function buildShell(
   emptyTitle.className = 'empty-composition-title';
   emptyTitle.textContent = 'Nothing to repeat yet';
   const emptyText = document.createElement('p');
-  emptyText.textContent = 'From Intersect, Repeat repeats the Developed Primary and any construction set In Repeat — and there is neither. Develop the Primary with Fair in Intersect, or repeat the Construct motif.';
+  emptyText.textContent = 'From Intersect, Repeat repeats the Developed Primary and any construction set In Repeat — and there is neither. Develop a design in Intersect (Develop), or repeat the Construct motif.';
   const emptyActions = document.createElement('div');
   emptyActions.className = 'empty-composition-actions';
   const backBtn = document.createElement('button');
@@ -3443,7 +3477,7 @@ export function buildShell(
     if (!building) return;
     const primary = controller.tool === 'fair';
     ownerTag.dataset.owner = primary ? 'primary' : 'construct';
-    ownerText.textContent = primary ? 'Developed Primary · Intersect’s own geometry' : 'Construct source · every copy follows';
+    ownerText.textContent = primary ? 'Develop · Intersect’s own design (Construct is never changed)' : 'Intersect’s own construction';
   }
 
   // While two fingers turn the view: a quiet readout of the camera's angle, gone after the gesture.
@@ -4022,7 +4056,18 @@ export function buildShell(
     if (inRepeat) refreshGuidesBtn();
 
     dock.style.display = inRepeat ? 'none' : 'flex';
-    dockButtonEls.get('fill')!.style.display = inIntersection ? 'none' : '';
+    // Intersect's dock: Select · Develop · Spread · Reset (the construction tools and Fill stay in
+    // Construct). Develop is Intersect's name for its Fair; Construct's Fair keeps its own.
+    dock.classList.toggle('ix-dock', inIntersection);
+    for (const id of ['circle', 'line', 'arc', 'divide', 'fill'] as ToolId[]) dockButtonEls.get(id)!.style.display = inIntersection ? 'none' : '';
+    for (const d of dockDividers) d.style.display = inIntersection ? 'none' : '';
+    dockLabel(dockButtonEls.get('fair')!, inIntersection ? 'Develop' : 'Fair');
+    ixSpreadDockBtn.style.display = inIntersection ? '' : 'none';
+    ixResetDockBtn.style.display = inIntersection ? '' : 'none';
+    ixResetDockBtn.disabled = inIntersection && !intersectResettable(controller.doc);
+    // Spread belongs to arranging with Select — never with Develop, an alignment being picked, or
+    // outside Intersect.
+    if (spreadOpen && (!inIntersection || controller.tool !== 'select' || controller.intersectionPickKind !== 'instance')) setSpreadOpen(false);
     contextSlot.style.display = inRepeat || (inIntersection && !building && controller.selection.length === 0) ? 'none' : 'flex';
     lineStrip.style.display = !inRepeat && controller.tool === 'line' ? '' : 'none';
     for (const [id, b] of lineGuideBtns) b.classList.toggle('active', controller.lineGuide === id);
@@ -4054,7 +4099,6 @@ export function buildShell(
     // Spread arranges the instances: it belongs to Select's instance arranging — never under a
     // construction tool's ribbon, nor while an alignment (Parallel · Join, Point Snap, Match Edge)
     // is being picked.
-    if (ixSpreadRow.isConnected && !inIntersection) closeAnyPopover();
     if (!inIntersection) ixSnapRow.style.display = 'none';
     ixCopiesBtn.style.display = inIntersection ? '' : 'none';
     ixSnapshotsBtn.style.display = inIntersection ? '' : 'none';

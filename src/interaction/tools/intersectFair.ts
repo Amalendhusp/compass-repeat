@@ -102,7 +102,7 @@ function beginWholeGesture(controller: AppController, view: ViewTransform, sp: V
 
 export const intersectFairTool: ToolModule = {
   id: 'fair',
-  hint: (c) => (c.formWhole ? 'Tap a copy to include or exclude its whole Fair motif' : 'Tap a Fair segment to add it to the Primary — tap again to remove it'),
+  hint: (c) => (c.formWhole ? 'Tap a copy to include or exclude its whole Fair motif' : 'Develop · tap a segment to add it to the design — tap it again to remove it'),
   beginGesture(controller, view, sp) {
     if (controller.formWhole) return beginWholeGesture(controller, view, sp);
     const doc = controller.doc;
