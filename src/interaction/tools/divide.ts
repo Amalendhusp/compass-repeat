@@ -11,35 +11,14 @@
 import type { Doc, Entity, Vec2 } from '../../model/types.ts';
 import type { AppController, DivideTarget, ViewTransform } from '../../app/controller.ts';
 import { screenToWorld, worldToScreen } from '../../app/controller.ts';
-import { deriveSegments, deriveSelectableGroups, groupContainingParam, paramInRange } from '../../geometry/segments.ts';
-import { circleDivisionPositions, segmentDivisionPositions, snapDivisionAngle, wholeAngle } from '../../geometry/divide.ts';
+import { deriveSelectableGroups, groupContainingParam, paramInRange } from '../../geometry/segments.ts';
+import { snapDivisionAngle, wholeAngle } from '../../geometry/divide.ts';
 import { epsilon, resolveEntityGeom, resolvePoint, type CircleGeom } from '../../geometry/kernel.ts';
 import { POINT_HIT_RADIUS, pickCurveHit } from '../hittest.ts';
 import type { Gesture, ToolModule } from './types.ts';
+import { dividePreviewPoints, parentTarget } from '../divideTarget.ts';
 
-/** The live (untrimmed) span of a circle when it is an Arc — one contiguous run of segments. */
-function arcSpan(doc: Doc, entity: Entity): { from: string; to: string; fromParam: number; toParam: number } | null {
-  const segs = deriveSegments(doc, entity);
-  const live = segs.map((s) => (doc.segmentStates.get(s.key)?.state ?? 'construction') !== 'trimmed');
-  if (live.every(Boolean) || !live.some(Boolean)) return null;
-  const n = segs.length;
-  const startIdx = live.findIndex((l, i) => l && !live[(i - 1 + n) % n]);
-  let endIdx = startIdx;
-  while (live[(endIdx + 1) % n] && (endIdx + 1) % n !== startIdx) endIdx = (endIdx + 1) % n;
-  const first = segs[startIdx]!;
-  const last = segs[endIdx]!;
-  return { from: first.from, to: last.to, fromParam: first.fromParam, toParam: last.toParam };
-}
-
-function parentTarget(doc: Doc, entity: Entity): DivideTarget | null {
-  if (entity.kind === 'line') {
-    return { label: 'Line', scope: 'parent', entityId: entity.id, kind: 'segment', from: entity.a, to: entity.b, fromParam: 0, toParam: 1 };
-  }
-  const span = arcSpan(doc, entity);
-  if (span) return { label: 'Arc', scope: 'parent', entityId: entity.id, kind: 'segment', ...span };
-  const hasTrim = deriveSegments(doc, entity).some((s) => doc.segmentStates.get(s.key)?.state === 'trimmed');
-  return hasTrim ? null : { label: 'Circle', scope: 'parent', entityId: entity.id, kind: 'circle-whole' };
-}
+export { dividePreviewPoints };
 
 function sameSpan(a: DivideTarget, b: DivideTarget): boolean {
   if (a.kind !== b.kind || a.entityId !== b.entityId) return false;
@@ -66,13 +45,6 @@ function resolveTap(doc: Doc, current: DivideTarget | null, entity: Entity, para
   return segment ?? parent;
 }
 
-/** Where Apply would put points: `angle` is where a whole circle's first one goes (ignored for a span). */
-export function dividePreviewPoints(doc: Doc, target: DivideTarget, n: number, angle: number): Vec2[] {
-  const entity = doc.entities.find((e) => e.id === target.entityId);
-  if (!entity) return [];
-  if (target.kind === 'circle-whole') return circleDivisionPositions(doc, entity, n, angle);
-  return segmentDivisionPositions(doc, entity, target, n);
-}
 
 export function setDivideTarget(controller: AppController, target: DivideTarget | null): void {
   controller.divideTurn = null;

@@ -1880,6 +1880,14 @@ function drawInteractionLayers(ctx: CanvasRenderingContext2D, controller: AppCon
  * background and no geometry: for Intersect, where the instances are already drawn and the tools
  * work on the active one through its own view (geometry/intersectionLink.ts — instanceCamera).
  */
+/** A construction's lines, circles and arcs alone (no background, fills, points or feedback) — for
+ * Intersect's own construction layer, drawn over the copies (render/intersectionRenderer.ts). */
+export function drawConstructionOnly(ctx: CanvasRenderingContext2D, controller: AppController, view: ViewTransform): void {
+  ctx.save();
+  drawEntities(ctx, controller, view, undefined);
+  ctx.restore();
+}
+
 export function drawInteraction(ctx: CanvasRenderingContext2D, controller: AppController, view: ViewTransform): void {
   ctx.save();
   drawFairRunHalo(ctx, controller, view);

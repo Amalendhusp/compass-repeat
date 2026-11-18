@@ -14,7 +14,8 @@
 // when a developed segment lies exactly along it.
 
 import type { DevelopedSegment, Doc, Vec2 } from '../model/types.ts';
-import { intersectionCopies } from './intersection.ts';
+import { shownCopies } from './intersection.ts';
+import { hasLayerGeometry, LAYER_ORIGIN, layerDoc } from './intersectLayer.ts';
 import { arcPoint, boxOf, closestOn, dot, endsOf, hits, len, motifPieces, motifRuns, motifScale, norm, placePrim, sub, TAU, type Placed, type Prim } from './fairGeometry.ts';
 
 export interface FormOrigin {
@@ -31,22 +32,33 @@ export interface FormSegment extends Placed {
 
 /** Release R2 — what Intersect Fair offers: Fair only (default), or also Construction, or also Extensions. */
 export type FormLayer = 'fair' | 'construction' | 'extension';
+/** Develop (Stage B): Fair is always offered; Construction and Extension each on their own. A FormLayer
+ * reads as before ('construction' = Construction; 'extension' = Construction and Extension). */
+export interface FormOffer {
+  /** Fair segments (absent = offered, as always). */
+  fair?: boolean;
+  construction: boolean;
+  extension: boolean;
+}
+const offerOf = (o: FormLayer | FormOffer): FormOffer => (typeof o === 'string' ? { construction: o !== 'fair', extension: o === 'extension' } : o);
 
 /** How close (artwork units) two things must be to count as the same place: rounding, not drawing. */
 export function formEps(doc: Doc): number {
   return Math.max(motifScale(doc), 1) * 1e-6;
 }
 
-const cache = new WeakMap<Doc, Map<FormLayer, FormSegment[]>>();
+const cache = new WeakMap<Doc, Map<string, FormSegment[]>>();
 
-/** Every selectable segment of the arrangement as committed (one list per artwork state and layer). */
-export function formSegments(doc: Doc, layer: FormLayer = 'fair'): FormSegment[] {
+/** Every selectable segment of the arrangement as committed (one list per artwork state and offer). */
+export function formSegments(doc: Doc, layer: FormLayer | FormOffer = 'fair'): FormSegment[] {
+  const offer = offerOf(layer);
+  const key = `${offer.fair === false ? 'nf' : ''}${offer.construction ? 'c' : ''}${offer.extension ? 'e' : ''}`;
   let byLayer = cache.get(doc);
   if (!byLayer) cache.set(doc, (byLayer = new Map()));
-  let segs = byLayer.get(layer);
+  let segs = byLayer.get(key);
   if (!segs) {
-    segs = buildSegments(doc, layer);
-    byLayer.set(layer, segs);
+    segs = buildSegments(doc, offer);
+    byLayer.set(key, segs);
   }
   return segs;
 }
@@ -57,10 +69,10 @@ interface Run {
   box: Placed['box'];
 }
 
-function buildSegments(doc: Doc, layer: FormLayer): FormSegment[] {
+function buildSegments(doc: Doc, offer: FormOffer): FormSegment[] {
   const eps = formEps(doc);
   const pivot = doc.frame.origin;
-  const copies = intersectionCopies(doc);
+  const copies = shownCopies(doc);
   const place = (own: { prim: Prim; entity: string }[], kind?: 'construction' | 'extension'): Run[] =>
     copies.flatMap((copy) =>
       own.map((r) => {
@@ -73,7 +85,16 @@ function buildSegments(doc: Doc, layer: FormLayer): FormSegment[] {
   // circle, between the points on it), offered beside the Fair runs. Fair is split exactly as before
   // (only where Fair meets Fair), so Fair only is unchanged; the added pieces are split wherever they
   // meet anything offered.
-  const extra = layer === 'fair' ? [] : [...place(motifPieces(doc, 'construction'), 'construction'), ...(layer === 'extension' ? place(motifPieces(doc, 'extension'), 'extension') : [])];
+  const extra = [...(offer.construction ? place(motifPieces(doc, 'construction'), 'construction') : []), ...(offer.extension ? place(motifPieces(doc, 'extension'), 'extension') : [])];
+  // Intersect's own construction (geometry/intersectLayer.ts) — drawn for developing Fair, so always
+  // offered, where it lies (its extensions with the Extensions setting, as the copies' are). Split like
+  // the other added pieces: wherever it meets anything offered.
+  if (hasLayerGeometry(doc)) {
+    const L = layerDoc(doc);
+    const own = (pieces: { prim: Prim; entity: string }[], kind: 'construction' | 'extension'): Run[] =>
+      pieces.map((r) => ({ prim: r.prim, origin: { copy: LAYER_ORIGIN, entity: r.entity, kind }, box: boxOf(r.prim) }));
+    extra.push(...(offer.construction ? own(motifPieces(L, 'construction'), 'construction') : []), ...(offer.extension ? own(motifPieces(L, 'extension'), 'extension') : []));
+  }
   const all = [...runs, ...extra];
   const pieces: { prim: Prim; origin: FormOrigin }[] = [];
   const cut = (f: Run, against: Run[]) => {
@@ -87,7 +108,9 @@ function buildSegments(doc: Doc, layer: FormLayer): FormSegment[] {
     }
     for (const prim of splitAt(f.prim, cuts, eps)) pieces.push({ prim, origin: f.origin });
   };
-  for (const f of runs) cut(f, runs);
+  // Fair off (Develop): the other pieces are still split where Fair meets them (so a piece is the same
+  // piece either way) — only the Fair pieces themselves are not offered.
+  if (offer.fair !== false) for (const f of runs) cut(f, runs);
   for (const f of extra) cut(f, all);
   return merged(pieces, eps);
 }

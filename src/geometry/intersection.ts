@@ -14,10 +14,12 @@
 // and the group centre stays put — so nothing ever drifts. Setting the reference makes what is
 // shown now the 100% arrangement (nothing moves), with its own mean as the new centre — for exactly
 // the copies present then. Adding or removing a copy never silently redefines it: the arrangement
-// is kept exactly as shown, and Spread waits for a new Reference (referenceCurrent()).
+// is kept exactly as shown and — since November 2026 (Stage B review) — becomes the new 100 % reference at
+// once, for exactly the copies now present (nothing moves). An arrangement stored earlier with an out-of-date
+// reference is made current the first time Spread is used (shell.ts). Set ref. still sets it explicitly.
 
 import type { Doc, IntersectionLayout, Vec2 } from '../model/types.ts';
-import { defaultLatticeVectors, motifRadius, type InstancePose } from './lattice.ts';
+import { defaultLatticeVectors, motifRadius, poseScale, scaleField, type InstancePose } from './lattice.ts';
 
 /** The Primary's key; every copy has its own key too (colour and Extensions are kept by key). */
 export const PRIMARY = '0,0';
@@ -68,16 +70,20 @@ export interface IntersectionCopy {
   /** Whether this copy's extension geometry (its dashed extended lines) is drawn. Its bounded
    * construction always is. */
   extensions: boolean;
-  /** Where it is shown: its frame centre moved by `translate`, turned by `rotation` about it. */
+  /** Where it is shown: its frame centre moved by `translate`, turned by `rotation` about it — after
+   * being reflected across its own horizontal axis when `pose.mirror` (never the Original). */
   pose: InstancePose;
   /** Locked: it stays exactly where it is — never dragged, turned, aligned onto another or spread —
    * while it stays selectable and a reference others can be aligned to. */
   locked: boolean;
+  /** Hidden (Show/Hide): not drawn in Intersect, never picked, snapped to or offered to Fair, and its
+   * whole motif is out of Repeat while hidden. Its pose, colour and inclusion are all kept. */
+  hidden: boolean;
 }
 
 /** Every construction as shown — including a live move/turn (`controller.intersectionDrag`) and a
  * Spread being dragged (`spreadDraft`), neither yet committed. */
-export function intersectionCopies(doc: Doc, live?: { drag?: { key: string; x: number; y: number; rotation: number } | null; spread?: number | null }): IntersectionCopy[] {
+export function intersectionCopies(doc: Doc, live?: { drag?: { key: string; x: number; y: number; rotation: number; scale?: number } | null; spread?: number | null }): IntersectionCopy[] {
   const layout = layoutOf(doc);
   const saved = doc.intersection?.copies ?? {};
   const spread = live?.spread ?? layout.spread;
@@ -93,10 +99,33 @@ export function intersectionCopies(doc: Doc, live?: { drag?: { key: string; x: n
       label: n === 0 ? 'Original' : `Copy ${n}`,
       colour: saved[piece.key]?.colour ?? LEGACY_COLOURS[piece.key] ?? PALETTE[n % PALETTE.length]!,
       extensions: saved[piece.key]?.extensions ?? true,
-      pose: { i, j, translate: at, rotation: drag ? drag.rotation : piece.rotation, mirror: false },
+      pose: { i, j, translate: at, rotation: drag ? drag.rotation : piece.rotation, mirror: piece.mirror === true, ...scaleField(drag?.scale ?? piece.scale) },
       locked,
+      hidden: saved[piece.key]?.hidden === true,
     };
   });
+}
+
+/** The copies Intersect shows (Show/Hide) — what is drawn, picked, snapped to and developed from. */
+export function shownCopies(doc: Doc, live?: Parameters<typeof intersectionCopies>[1]): IntersectionCopy[] {
+  return intersectionCopies(doc, live).filter((c) => !c.hidden);
+}
+
+/** Whether copy `key` is hidden (Show/Hide). */
+export function isHidden(doc: Doc, key: string): boolean {
+  return doc.intersection?.copies?.[key]?.hidden === true;
+}
+
+/** The artwork's Intersection with copy `key` hidden or shown again. Only the flag changes: its place,
+ * turn, reflection, colour, lock and whether its whole motif is in the design are all kept (absent when
+ * shown, so an artwork that never hid anything keeps exactly its stored shape). */
+export function withHidden(doc: Doc, key: string, hidden: boolean): NonNullable<Doc['intersection']> {
+  const ix = { ...baseOf(doc), copies: structuredClone(doc.intersection?.copies ?? {}) } as NonNullable<Doc['intersection']>;
+  const own = { ...ix.copies[key] };
+  if (hidden) own.hidden = true;
+  else delete own.hidden;
+  ix.copies[key] = own;
+  return ix;
 }
 
 /** The arrangement with one construction placed (as shown) and turned — its reference updated so it
@@ -106,7 +135,7 @@ export function placedAt(layout: IntersectionLayout, key: string, shown: Vec2, r
   return {
     ...layout,
     pieces: layout.pieces.map((p) =>
-      p.key === key ? { key, x: layout.centre.x + (shown.x - layout.centre.x) / s, y: layout.centre.y + (shown.y - layout.centre.y) / s, rotation } : { ...p },
+      p.key === key ? { ...p, x: layout.centre.x + (shown.x - layout.centre.x) / s, y: layout.centre.y + (shown.y - layout.centre.y) / s, rotation } : { ...p },
     ),
   };
 }
@@ -114,7 +143,8 @@ export function placedAt(layout: IntersectionLayout, key: string, shown: Vec2, r
 /** The arrangement as shown now, made the reference: nothing moves; Spread reads 100% again, about
  * the mean of the centres, for exactly the copies present. */
 export function asReference(layout: IntersectionLayout): IntersectionLayout {
-  const pieces = layout.pieces.map((p) => ({ ...p, ...shownAt(layout, p, layout.spread) }));
+  // At 100 % the pieces already stand where they are shown: kept exactly (no rounding drift).
+  const pieces = layout.spread === 1 ? layout.pieces.map((p) => ({ ...p })) : layout.pieces.map((p) => ({ ...p, ...shownAt(layout, p, layout.spread) }));
   return { ...layout, pieces, centre: mean(pieces), spread: 1, referenceKeys: pieces.map((p) => p.key) };
 }
 
@@ -144,16 +174,81 @@ export function withAddedCopy(doc: Doc): NonNullable<Doc['intersection']> | null
     if (place) break;
   }
   place ??= { x: centres[centres.length - 1]!.x + spacing / 2, y: centres[centres.length - 1]!.y + spacing / 2 };
-  let n = 1;
-  while (layout.pieces.some((p) => p.key === `c${n}`)) n++;
-  const key = `c${n}`;
+  const key = freeKey(layout);
   const used = new Set(shown.map((c) => c.colour.toLowerCase()));
   const colour = PALETTE.find((c) => !used.has(c.toLowerCase())) ?? PALETTE[1]!;
   return {
     ...baseOf(doc),
     copies: { ...(doc.intersection?.copies ?? {}), [key]: { colour } },
-    layout: { ...layout, pieces: [...layout.pieces, { key, x: place.x, y: place.y, rotation: 0 }] },
+    layout: asReference({ ...layout, pieces: [...layout.pieces, { key, x: place.x, y: place.y, rotation: 0 }] }),
   };
+}
+
+/** The next free copy key (c1, c2, …). */
+function freeKey(layout: IntersectionLayout): string {
+  let n = 1;
+  while (layout.pieces.some((p) => p.key === `c${n}`)) n++;
+  return `c${n}`;
+}
+
+/**
+ * The artwork's Intersection with copy `key` duplicated (if there's room): a new copy with the same
+ * turn, reflection, scale, colour and Extensions setting, a little below and to the right of it (a
+ * quarter of its frame radius each way, at its scale) so both can be seen. The duplicate is unlocked,
+ * shown and not in the design (its whole motif is out of Repeat until it is put in). Duplicating the
+ * Original gives an ordinary copy. Everything else stays put. Null when there is no room.
+ */
+export function withDuplicate(doc: Doc, key: string): NonNullable<Doc['intersection']> | null {
+  const layout = baked(layoutOf(doc));
+  if (layout.pieces.length >= MAX_CONSTRUCTIONS) return null;
+  const source = layout.pieces.find((p) => p.key === key);
+  if (!source) return null;
+  const off = motifRadius(doc) * poseScale(source) * 0.25;
+  const nkey = freeKey(layout);
+  const own = doc.intersection?.copies?.[key] ?? {};
+  const colour = own.colour ?? intersectionCopies(doc).find((c) => c.key === key)?.colour;
+  const settings: NonNullable<Doc['intersection']>['copies'][string] = {};
+  if (colour) settings.colour = colour;
+  if (own.extensions !== undefined) settings.extensions = own.extensions;
+  // The Original is never reflected; a copy keeps its reflection and scale exactly (absent stays absent).
+  const { key: _k, x, y, ...pose } = source;
+  return {
+    ...baseOf(doc),
+    copies: { ...(doc.intersection?.copies ?? {}), [nkey]: settings },
+    layout: asReference({ ...layout, pieces: [...layout.pieces, { key: nkey, x: x + off, y: y + off, ...pose }] }),
+  };
+}
+
+/**
+ * Reset Intersect: back to the starting arrangement — the Original and two copies in the default
+ * three-cell group (`defaultLayout`), unturned, unreflected, at 100 %, Spread 100 % with that group as its
+ * reference, every copy (the Original included) with its default colour and Extensions setting. Every other
+ * copy, every copy setting (lock, hidden, colour, whole motif, Develop's exclusions), Intersect's own
+ * construction and the developed design are removed. Construct — the Original's geometry and its Fair —
+ * is never touched; nor are bookmarks (saved arrangements), which stay to be restored. The result is a
+ * Form Development arrangement whose design is the Original's whole motif (as for a new artwork). One Undo
+ * step brings everything back.
+ */
+export function withIntersectReset(doc: Doc): NonNullable<Doc['intersection']> {
+  return { copies: {}, layout: defaultLayout(doc), form: { developed: [] } };
+}
+
+/** Whether Intersect differs in any way from what Reset Intersect would give. */
+export function intersectResettable(doc: Doc): boolean {
+  const ix = doc.intersection;
+  if (!ix) return formMode(doc) === 'legacy';
+  if (!ix.form || ix.form.developed.length > 0) return true;
+  if ((ix.construction?.entities.length ?? 0) > 0 || (ix.construction?.points.length ?? 0) > 0) return true;
+  if (Object.values(ix.copies ?? {}).some((c) => Object.values(c ?? {}).some((v) => v !== undefined))) return true;
+  const now = layoutOf(doc);
+  const start = defaultLayout(doc);
+  if (now.spread !== 1 || now.pieces.length !== start.pieces.length) return true;
+  if (now.centre.x !== start.centre.x || now.centre.y !== start.centre.y) return true;
+  if (JSON.stringify(now.referenceKeys ?? null) !== JSON.stringify(start.referenceKeys)) return true;
+  return now.pieces.some((p, n) => {
+    const s = start.pieces[n]!;
+    return p.key !== s.key || p.x !== s.x || p.y !== s.y || p.rotation !== s.rotation || !!p.mirror || poseScale(p) !== 1;
+  });
 }
 
 /** The artwork's Intersection without one copy (never the Primary); everything else stays put. */
@@ -162,7 +257,7 @@ export function withoutCopy(doc: Doc, key: string): NonNullable<Doc['intersectio
   const layout = baked(layoutOf(doc));
   if (!layout.pieces.some((p) => p.key === key)) return null;
   const { [key]: _gone, ...copies } = doc.intersection?.copies ?? {};
-  return { ...baseOf(doc), copies, layout: { ...layout, pieces: layout.pieces.filter((p) => p.key !== key) } };
+  return { ...baseOf(doc), copies, layout: asReference({ ...layout, pieces: layout.pieces.filter((p) => p.key !== key) }) };
 }
 
 export const SPREAD_MIN = 0.25;
@@ -202,6 +297,74 @@ export function withSpreadAround(doc: Doc, spread: number): IntersectionLayout {
   };
 }
 
+const wrapAngle = (a: number) => Math.atan2(Math.sin(a), Math.cos(a));
+
+/** Whether a copy is reflected. */
+export function isReflected(doc: Doc, key: string): boolean {
+  return layoutOf(doc).pieces.some((p) => p.key === key && p.mirror === true);
+}
+
+/** A copy's scale (1 when it has none). */
+export function copyScale(doc: Doc, key: string): number {
+  return poseScale(layoutOf(doc).pieces.find((p) => p.key === key) ?? {});
+}
+
+/** The artwork's Intersection with one copy scaled about its own centre (25–400 %; 1 stores nothing,
+ * so a copy scaled back to 100 % is stored exactly as before). Its place, turn and reflection are kept.
+ * Never a locked copy (null). */
+export function withCopyScale(doc: Doc, key: string, scale: number): NonNullable<Doc['intersection']> | null {
+  if (isLocked(doc, key)) return null;
+  const layout = layoutOf(doc);
+  if (!layout.pieces.some((p) => p.key === key)) return null;
+  const pieces = layout.pieces.map((p) => {
+    if (p.key !== key) return { ...p };
+    const { scale: _old, ...rest } = p;
+    return { ...rest, ...scaleField(scale) };
+  });
+  return withLayout(doc, { ...layout, pieces });
+}
+
+/** Whether a copy is as constructed: 100 %, no turn, not reflected. */
+export function isAsConstructed(doc: Doc, key: string): boolean {
+  const p = layoutOf(doc).pieces.find((x) => x.key === key);
+  return !!p && p.rotation === 0 && !p.mirror && poseScale(p) === 1;
+}
+
+/** Reset: the copy back to 100 %, no turn and no reflection — where it is (its place, colour,
+ * visibility and whether its whole motif is in the design are all kept). Never a locked copy (null). */
+export function withCopyReset(doc: Doc, key: string): NonNullable<Doc['intersection']> | null {
+  if (isLocked(doc, key)) return null;
+  const layout = layoutOf(doc);
+  if (!layout.pieces.some((p) => p.key === key)) return null;
+  const pieces = layout.pieces.map((p) => {
+    if (p.key !== key) return { ...p };
+    const { mirror: _m, scale: _s, ...rest } = p;
+    return { ...rest, rotation: 0 };
+  });
+  return withLayout(doc, { ...layout, pieces });
+}
+
+/**
+ * The arrangement with one copy reflected about its own centre, across the artwork's vertical axis
+ * ('h': left and right swap) or its horizontal axis ('v': top and bottom swap). A copy is one stored
+ * reflection plus its turn: reflecting across the horizontal axis keeps or drops the reflection and
+ * negates the turn; across the vertical axis, the same and a half turn — so reflecting twice the same
+ * way gives back exactly where it was, and both ways together are a half turn. Its centre never moves.
+ * Never the Original, never a locked copy (null).
+ */
+export function withReflection(doc: Doc, key: string, axis: 'h' | 'v'): NonNullable<Doc['intersection']> | null {
+  if (key === PRIMARY || isLocked(doc, key)) return null;
+  const layout = layoutOf(doc);
+  if (!layout.pieces.some((p) => p.key === key)) return null;
+  const pieces = layout.pieces.map((p) => {
+    if (p.key !== key) return { ...p };
+    const { mirror, ...rest } = p;
+    const rotation = wrapAngle(axis === 'h' ? Math.PI - p.rotation : -p.rotation);
+    return mirror ? { ...rest, rotation } : { ...rest, rotation, mirror: true as const };
+  });
+  return withLayout(doc, { ...layout, pieces });
+}
+
 /** Whether a construction is locked in place. */
 export function isLocked(doc: Doc, key: string): boolean {
   return !!doc.intersection?.copies?.[key]?.locked;
@@ -225,13 +388,14 @@ export function intersectionBounds(doc: Doc): { minX: number; minY: number; maxX
   let minY = Infinity;
   let maxX = -Infinity;
   let maxY = -Infinity;
-  for (const { pose } of intersectionCopies(doc)) {
+  for (const { pose } of shownCopies(doc)) {
     const cx = pivot.x + pose.translate.x;
     const cy = pivot.y + pose.translate.y;
-    minX = Math.min(minX, cx - r);
-    maxX = Math.max(maxX, cx + r);
-    minY = Math.min(minY, cy - r);
-    maxY = Math.max(maxY, cy + r);
+    const rs = r * poseScale(pose);
+    minX = Math.min(minX, cx - rs);
+    maxX = Math.max(maxX, cx + rs);
+    minY = Math.min(minY, cy - rs);
+    maxY = Math.max(maxY, cy + rs);
   }
   return { minX, minY, maxX, maxY };
 }
@@ -278,9 +442,25 @@ function baseOf(doc: Doc): Partial<NonNullable<Doc['intersection']>> {
   return kept;
 }
 
+/** The artwork's Intersection with its own construction replaced (everything else kept — and a 'new'
+ * artwork's first stored Intersection records an empty Form, exactly as an arrangement change does). */
+export function withConstruction(doc: Doc, construction: import('../model/types.ts').IntersectConstruction): NonNullable<Doc['intersection']> {
+  return { copies: {}, ...baseOf(doc), construction } as NonNullable<Doc['intersection']>;
+}
+
 /** The artwork's Intersection with a restored arrangement (a bookmark): positions, turns and copy
  * settings replaced; the Developed Primary — and everything else — kept. */
-export function withArrangement(doc: Doc, copies: NonNullable<Doc['intersection']>['copies'], layout: IntersectionLayout): NonNullable<Doc['intersection']> {
+export function withArrangement(doc: Doc, copies: NonNullable<Doc['intersection']>['copies'], layout: IntersectionLayout, recordsVisibility = false): NonNullable<Doc['intersection']> {
+  // A bookmark made before Show/Hide existed says nothing about visibility: the copies keep theirs.
+  if (!recordsVisibility) {
+    const now = doc.intersection?.copies ?? {};
+    copies = Object.fromEntries(
+      [...new Set([...Object.keys(copies), ...Object.keys(now)])].filter((k) => copies[k] || now[k]?.hidden).map((k) => {
+        const { hidden: _h, ...rest } = copies[k] ?? {};
+        return [k, now[k]?.hidden ? { ...rest, hidden: true as const } : rest];
+      }),
+    );
+  }
   // A bookmark saved before Primary-copies existed records none: the current ones are kept for the
   // copies it restores (it never quietly takes a copy out of, or into, Repeat).
   if (formMode(doc) === 'form' && !Object.values(copies).some((c) => c.primaryCopy !== undefined)) {
@@ -289,6 +469,16 @@ export function withArrangement(doc: Doc, copies: NonNullable<Doc['intersection'
       [...new Set([...Object.keys(copies), ...layout.pieces.map((p) => p.key)])].map((k) => [k, now[k]?.primaryCopy === undefined ? { ...copies[k] } : { ...copies[k], primaryCopy: now[k]!.primaryCopy }]),
     );
   }
+  // Develop's exclusions belong to the design, not the arrangement: a restore keeps them as they are now.
+  const nowCopies = doc.intersection?.copies ?? {};
+  copies = Object.fromEntries(
+    [...new Set([...Object.keys(copies), ...Object.keys(nowCopies)])]
+      .filter((k) => copies[k] || (nowCopies[k]?.excluded && layout.pieces.some((p) => p.key === k)))
+      .map((k) => {
+        const { excluded: _x, ...rest } = copies[k] ?? {};
+        return [k, nowCopies[k]?.excluded && layout.pieces.some((p) => p.key === k) ? { ...rest, excluded: nowCopies[k]!.excluded } : rest];
+      }),
+  );
   return { ...baseOf(doc), copies, layout };
 }
 

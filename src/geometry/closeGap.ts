@@ -17,7 +17,7 @@
 //   marks the correction invalid (it is never silently replaced by another).
 
 import type { Doc, Vec2 } from '../model/types.ts';
-import { instancePose } from './lattice.ts';
+import { alternationOf, instancePose, isAlternateCopy, poseScale } from './lattice.ts';
 import { add, boxOf, crossingsOf, cross, insideOutline, len, motifScale, nearPairs, placeAll, relate, sub, type Feature, type Placed } from './fairGeometry.ts';
 import { compositionFeatures } from './repeatComposition.ts';
 
@@ -37,11 +37,15 @@ export function copyFeatures(doc: Doc, i: number, j: number, repeat = doc.repeat
   return copyAt(doc, features, i, j, repeat);
 }
 
-/** Copies differing only in parity are drawn differently under Alternate / Mirror: one base copy of
- * each parity class (the reference, and its neighbour along the arm). */
+/** Copies the rule changes are drawn differently: one base copy of each kind — the reference, and one
+ * changed copy: its neighbour along the arm for every other copy (as always), the next row for every
+ * other row, the next column for every other column. */
 function basesFor(doc: Doc, arm: 'a' | 'b'): [number, number][] {
-  const uniform = doc.repeat.rule.kind === 'same' || doc.repeat.rule.kind === 'around';
-  return uniform ? [[0, 0]] : arm === 'a' ? [[0, 0], [1, 0]] : [[0, 0], [0, 1]];
+  const alt = alternationOf(doc.repeat.rule);
+  if (!alt) return [[0, 0]];
+  if (alt === 'rows') return [[0, 0], [0, 1]];
+  if (alt === 'columns') return [[0, 0], [1, 0]];
+  return arm === 'a' ? [[0, 0], [1, 0]] : [[0, 0], [0, 1]];
 }
 
 // ---- candidates ----------------------------------------------------------------------------
@@ -69,7 +73,8 @@ export interface Tolerances {
   maxGap: number;
 }
 export function tolerances(doc: Doc, maxGapFraction = 0.04): Tolerances {
-  const R = motifScale(doc);
+  // Repeat draws the motif at its own scale, so a gap is judged against the motif as drawn.
+  const R = motifScale(doc) * poseScale(doc.repeat.motif);
   return { eps: R * 1e-7, maxGap: R * maxGapFraction };
 }
 
@@ -85,6 +90,8 @@ export function findGaps(doc: Doc, tol = tolerances(doc), lookFar = tol.maxGap *
   const features = compositionFeatures(doc, 'runs');
   const candidates: GapCandidate[] = [];
   const nearest: Record<'a' | 'b', number> = { a: Infinity, b: Infinity };
+  // A reflected repeat (the box's Reflect) is judged as the exact mirror image of the unreflected one.
+  const reflected = doc.repeat.motif.mirror === true;
   for (const arm of ['a', 'b'] as const) {
     for (const base of basesFor(doc, arm)) {
       const [i, j] = base;
@@ -99,7 +106,7 @@ export function findGaps(doc: Doc, tol = tolerances(doc), lookFar = tol.maxGap *
         // that would push them apart, which Close Gap never does.)
         const mid = { x: (r.p.x + r.q.x) / 2, y: (r.p.y + r.q.y) / 2 };
         const across = sub(r.p, r.q);
-        if (insideOutline(mid, across, X) || insideOutline(mid, across, Y)) continue;
+        if (insideOutline(mid, across, X, reflected) || insideOutline(mid, across, Y, reflected)) continue;
         nearest[arm] = Math.min(nearest[arm], r.d);
         if (r.d > tol.maxGap) continue;
         raw.push({ arm, base, delta: sub(r.p, r.q), distance: r.d, features: [[x.id, y.id]], p: r.p, q: r.q, sites: [{ base, p: r.p, q: r.q }] });
@@ -288,7 +295,7 @@ export function validate(doc: Doc, cand: GapCandidate, tol = tolerances(doc)): V
 export function gapsNear(doc: Doc, candidates: GapCandidate[], at: Vec2, radius: number, limit = 3) {
   const { a, b } = doc.repeat;
   const det = cross(a, b);
-  const uniform = doc.repeat.rule.kind === 'same' || doc.repeat.rule.kind === 'around';
+  const alt = alternationOf(doc.repeat.rule);
   // `copy`: the copy the gap's base side belongs to there (its lattice indices) — its neighbour is one
   // step along the candidate's arm.
   const out: { cand: GapCandidate; at: Vec2; distance: number; p: Vec2; q: Vec2; copy: [number, number] }[] = [];
@@ -302,7 +309,7 @@ export function gapsNear(doc: Doc, candidates: GapCandidate[], at: Vec2, radius:
       const v = Math.abs(det) > 1e-12 ? cross(a, d) / det : 0;
       for (let i = Math.floor(u) - 1; i <= Math.ceil(u) + 1; i++)
         for (let j = Math.floor(v) - 1; j <= Math.ceil(v) + 1; j++) {
-          if (!uniform && (((i + j) % 2) + 2) % 2 !== 0) continue; // same parity as the site's own pair
+          if (alt && isAlternateCopy(alt, i, j)) continue; // a shift that keeps each copy's kind, as the site's own pair
           const t = { x: a.x * i + b.x * j, y: a.y * i + b.y * j };
           const here = add(m, t);
           const dist = len(sub(at, here));

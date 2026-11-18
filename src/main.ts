@@ -1,6 +1,6 @@
 import './style.css';
 import { cloneDoc, createDoc, defaultRepeatDisplay, placeFrame } from './model/doc.ts';
-import { AppController, cameraView, paperToScreen, screenToPaper, screenToWorld, type ToolId, type ViewTransform } from './app/controller.ts';
+import { AppController, cameraView, paperToScreen, screenToWorld, type ToolId, type ViewTransform } from './app/controller.ts';
 import { PointerManager } from './interaction/pointer.ts';
 import { selectTool } from './interaction/tools/select.ts';
 import { circleTool } from './interaction/tools/circle.ts';
@@ -9,16 +9,18 @@ import { arcTool } from './interaction/tools/arc.ts';
 import { divideTool } from './interaction/tools/divide.ts';
 import { fairTool } from './interaction/tools/fair.ts';
 import { fillTool } from './interaction/tools/fill.ts';
-import { repeatTool } from './interaction/tools/repeatTool.ts';
-import { intersectionTool } from './interaction/tools/intersectionTool.ts';
+import { openRepeatBoxAt, repeatTool } from './interaction/tools/repeatTool.ts';
+import { intersectionTool, openBoxAt } from './interaction/tools/intersectionTool.ts';
+import { boxHandleAt } from './render/copyBox.ts';
 import { intersectFairTool } from './interaction/tools/intersectFair.ts';
 import { drawInteraction, render } from './render/renderer.ts';
 import { renderRepeat } from './render/repeatRenderer.ts';
 import { renderIntersection } from './render/intersectionRenderer.ts';
-import { intersectionCopies, layoutOf, type IntersectionCopy } from './geometry/intersection.ts';
-import { contextLinesNear, contextPointNear, instanceCamera, instanceUnder } from './geometry/intersectionLink.ts';
-import { setContextProvider } from './interaction/context.ts';
+import { layoutOf, shownCopies } from './geometry/intersection.ts';
+import { instanceDistances, layerContextLinesNear, layerContextPointNear, layerCopiesNear } from './geometry/intersectionLink.ts';
 import { curveCandidatesAt, pickPointTarget } from './interaction/hittest.ts';
+import { hasLayerGeometry, layerController, layerDoc } from './geometry/intersectLayer.ts';
+import { setContextProvider } from './interaction/context.ts';
 import type { ToolModule } from './interaction/tools/types.ts';
 import { drawUnderlayOutline, onUnderlayImage, screenLayers, settleUnderlay, underlayIn } from './render/underlay.ts';
 import { referenceTakeover, referenceWheel } from './interaction/referenceTransform.ts';
@@ -31,7 +33,7 @@ import { openStartScreen, type CardActions } from './ui/startscreen.ts';
 import { buildDrawFrameHud } from './ui/drawframehud.ts';
 import { attachDrawFrame } from './interaction/drawframe.ts';
 import { initToast } from './ui/toast.ts';
-import type { Camera, Doc, FrameKind, Vec2 } from './model/types.ts';
+import type { Camera, Doc, FrameKind } from './model/types.ts';
 import { resolvePoint } from './geometry/kernel.ts';
 import { worldToScreen } from './app/controller.ts';
 import { attachAutosave, type AutosaveHandle } from './persist/autosave.ts';
@@ -49,11 +51,13 @@ import { genId } from './model/id.ts';
 import { setupCanvasDPR } from './render/canvasSetup.ts';
 import { attachDiagnostics } from './ui/diagnostics.ts';
 import { computeVisibleBounds, discBounds, turned } from './geometry/bounds.ts';
-import { composePose, ensureRepeatDefaults, firstEntryBounds, fitInstances, motifRadius } from './geometry/lattice.ts';
+import { composePose, ensureRepeatDefaults, firstEntryBounds, fitInstances, motifRadius, poseScale } from './geometry/lattice.ts';
 import { refreshSuggestedSpacing } from './geometry/repeatSetup.ts';
 import { repeatUnit } from './geometry/repeatUnit.ts';
 import { preventSafariPageZoom } from './interaction/preventPageZoom.ts';
 import { migrateLegacyFillKeys } from './geometry/regions.ts';
+import { buildProjectFile, PROJECT_EXTENSION, ProjectFileError, readProjectFile, sizeLabel, writeImportedArtwork, type ProjectToImport } from './persist/projectFile.ts';
+import { canShareFile, deliverFile, saveFile, shareFilename } from './render/export.ts';
 
 const root = document.getElementById('app');
 if (!root) throw new Error('missing #app root');
@@ -169,13 +173,13 @@ function fitRepeatView(controller: AppController, canvas: HTMLCanvasElement, ove
   const discs = fitInstances(doc).flatMap((lattice) => [
     ...members.map((member) => {
       const pose = member ? composePose(lattice, member) : lattice;
-      return { x: pivot.x + pose.translate.x, y: pivot.y + pose.translate.y, r };
+      return { x: pivot.x + pose.translate.x, y: pivot.y + pose.translate.y, r: r * poseScale(pose) };
     }),
     // Stage D: the Developed Primary stands about the lattice position, as far as it reaches.
-    ...(unit?.developed.length ? [{ x: pivot.x + lattice.translate.x, y: pivot.y + lattice.translate.y, r: unit.extent }] : []),
+    ...(unit?.developed.length ? [{ x: pivot.x + lattice.translate.x, y: pivot.y + lattice.translate.y, r: unit.extent * poseScale(lattice) }] : []),
   ]);
   // An empty Intersect composition draws nothing: fit the lattice positions themselves.
-  if (discs.length === 0) for (const lattice of fitInstances(doc)) discs.push({ x: pivot.x + lattice.translate.x, y: pivot.y + lattice.translate.y, r });
+  if (discs.length === 0) for (const lattice of fitInstances(doc)) discs.push({ x: pivot.x + lattice.translate.x, y: pivot.y + lattice.translate.y, r: r * poseScale(lattice) });
   fitViewState(doc.repeatView, (turn) => discBounds(discs, turn), doc.frame.radius, doc.frame.origin, canvas, overlay);
   controller.notifyView();
 }
@@ -198,8 +202,16 @@ function fitIntersectionView(controller: AppController, canvas: HTMLCanvasElemen
   doc.intersectionView ??= { zoom: 1, pan: { x: 0, y: 0 } };
   const pivot = doc.frame.origin;
   const r = motifRadius(doc);
-  const discs = intersectionCopies(doc).map((c) => ({ x: pivot.x + c.pose.translate.x, y: pivot.y + c.pose.translate.y, r }));
-  fitViewState(doc.intersectionView, (turn) => discBounds(discs, turn), doc.frame.radius, doc.frame.origin, canvas, overlay);
+  const discs = shownCopies(doc).map((c) => ({ x: pivot.x + c.pose.translate.x, y: pivot.y + c.pose.translate.y, r: r * poseScale(c.pose) }));
+  // Intersect's own construction is part of what is shown, so part of what is fitted.
+  const layer = hasLayerGeometry(doc) ? layerDoc(doc) : null;
+  const both = (turn: number) => {
+    const a = discBounds(discs, turn);
+    const b = layer ? computeVisibleBounds(layer, turn) : null;
+    if (!a || !b) return a ?? b;
+    return { minX: Math.min(a.minX, b.minX), minY: Math.min(a.minY, b.minY), maxX: Math.max(a.maxX, b.maxX), maxY: Math.max(a.maxY, b.maxY) };
+  };
+  fitViewState(doc.intersectionView, both, doc.frame.radius, doc.frame.origin, canvas, overlay);
   controller.notifyView();
 }
 
@@ -239,6 +251,8 @@ function boot(doc: Doc, opts: { fitToScreen: boolean; history?: { undo: Doc[]; r
     onOpen: () => showStart('artworks'),
     onSave: () => saveArtwork(),
     onSaveAs: () => saveAsNewArtwork(),
+    onSaveProject: () => saveOpenAsProjectFile(),
+    onOpenProject: () => chooseProjectFile(),
     unsaved: () => isDirty(),
     onPrefs: () => persistPrefs(),
     getView: () => getView(),
@@ -254,6 +268,10 @@ function boot(doc: Doc, opts: { fitToScreen: boolean; history?: { undo: Doc[]; r
         },
     onSwitchWorkspace: (ws) => {
       if (controller.doc.view.workspace === ws) return;
+      // A selection belongs to the geometry it was made in (Construct's, or Intersect's own layer).
+      if (controller.selection.length) controller.selection = [];
+      controller.intersectionBox = null; // a copy's bounding box closes with the workspace
+      controller.repeatBox = false; // …and so does Repeat's
       // Phase 5 item 2: the frame only ever SUGGESTS a lattice, and only the very first time —
       // ensureRepeatDefaults() itself is idempotent (guarded by `family` already being set), so
       // check "was it already configured" first, purely to decide whether THIS entry deserves an
@@ -295,7 +313,11 @@ function boot(doc: Doc, opts: { fitToScreen: boolean; history?: { undo: Doc[]; r
 
   /** The current workspace's camera on this canvas — turned, when its camera is (see ViewTransform). */
   function getView(): ViewTransform {
-    return cameraView(viewState(), canvas.clientWidth, canvas.clientHeight);
+    const view = cameraView(viewState(), canvas.clientWidth, canvas.clientHeight);
+    // An open bounding box keeps its handles above the floating dock and its buttons.
+    const ws = controller.doc.view.workspace;
+    if ((controller.intersectionBox && ws === 'intersection') || (controller.repeatBox && ws === 'repeat')) view.usableBottom = chromeTop() - canvas.getBoundingClientRect().top;
+    return view;
   }
 
   /** Each workspace navigates its own camera. */
@@ -316,69 +338,69 @@ function boot(doc: Doc, opts: { fitToScreen: boolean; history?: { undo: Doc[]; r
     if (controller.doc.view.workspace !== 'intersection' || !LINKED_TOOLS.includes(controller.tool)) return null;
     return tools[controller.tool] ?? null;
   }
-  function activeCopy(): IntersectionCopy {
-    const copies = intersectionCopies(controller.doc);
-    return copies.find((c) => c.key === controller.intersectionSelected) ?? copies[0]!;
-  }
-  /** The view the single-finger tool works in: the camera's own — or, for a construction tool in
-   * Intersect, the active instance's (its placement, then the camera). */
+  /** The view the single-finger tool works in. In Intersect the construction tools draw on Intersect's
+   * own layer, in the workspace's coordinates — through the workspace camera itself. */
   function getToolView(): ViewTransform {
-    if (!linkedTool() || (controller.referenceTransform && controller.referenceAnchorMode)) return getView();
-    return cameraView(instanceCamera(viewState(), controller.doc.frame.origin, activeCopy().pose), canvas.clientWidth, canvas.clientHeight);
+    return getView();
   }
-  /** Whether a construction step is under way that belongs to the active instance as it is — or
-   * the tool is Line's Parallel / Perpendicular, where a tap on another instance's line means
-   * "this is the reference", never "work on that instance". */
-  const midStep = () =>
-    !!controller.pending || !!controller.incircle || !!controller.copyRadius || !!controller.divide || !!controller.precision || (controller.tool === 'line' && controller.lineGuide !== 'free');
   /**
-   * A construction tool in Intersect. Between steps, the touch belongs to whichever instance has
-   * drawn geometry nearest the finger: another instance's line or point clearly nearer than anything
-   * of the active one (by SWITCH_NEARER_PX) makes THAT instance the active one, and the tool works
-   * there — so what is touched is what is edited, wherever the active instance's own geometry lies.
-   * A near-tie stays with the active instance (the tool's own press feedback shows what it took).
-   * Mid-step the instance never changes; other instances are reached as contextual places.
+   * Select in Intersect. A press on Intersect's own construction (nearer it than any copy's drawn
+   * geometry, with a small margin in its favour) selects it with Construct's own Select — on the layer
+   * (delete, recolour); anywhere else arranges the copies, as before (and clears a construction
+   * selection). While an alignment is being picked, presses always go to the copies.
    */
-  const SWITCH_NEARER_PX = 4;
-  const REACH_PX = 16;
-  /** How far (screen px) the active instance's own nearest point or curve is from the finger. */
-  const ownDistance = (doc: Doc, view: ViewTransform, sp: Vec2): number =>
-    Math.min(pickPointTarget(doc, view, sp, { explicitOnly: true })?.screenD ?? Infinity, curveCandidatesAt(doc, view, sp, REACH_PX)[0]?.d ?? Infinity);
-  function onActiveInstance(tool: ToolModule): ToolModule {
+  const LAYER_REACH_PX = 16;
+  const LAYER_FAVOUR_PX = 4;
+  const intersectSelect: ToolModule = {
+    id: 'select',
+    hint: (c) => intersectionTool.hint(c),
+    beginGesture(c, view, sp) {
+      const doc = c.doc;
+      // An open bounding box's handles come before everything (they are drawn over everything).
+      if (boxHandleAt(c, view, sp)) return intersectionTool.beginGesture(c, view, sp);
+      if (c.intersectionPickKind === 'instance' && hasLayerGeometry(doc)) {
+        const L = layerDoc(doc);
+        const layerD = Math.min(pickPointTarget(L, view, sp, { explicitOnly: true })?.screenD ?? Infinity, curveCandidatesAt(L, view, sp, LAYER_REACH_PX)[0]?.d ?? Infinity);
+        if (layerD <= LAYER_REACH_PX) {
+          const near = instanceDistances(doc, shownCopies(doc), screenToWorld(view, sp), LAYER_REACH_PX / view.zoom);
+          const copyD = Math.min(Infinity, ...[...near.values()].map((d) => d * view.zoom));
+          if (layerD <= copyD + LAYER_FAVOUR_PX) {
+            if (c.intersectionSelected !== null) c.intersectionSelected = null;
+            return selectTool.beginGesture(layerController(c), view, sp);
+          }
+        }
+      }
+      if (c.selection.length) c.selection = [];
+      return intersectionTool.beginGesture(c, view, sp);
+    },
+  };
+  /** A construction tool in Intersect works on Intersect's own construction layer (never Construct):
+   * the same tool, handed the layer controller (geometry/intersectLayer.ts). */
+  function onLayer(tool: ToolModule): ToolModule {
     return {
       id: tool.id,
-      hint: (c) => tool.hint(c),
-      beginGesture(c, view, sp) {
-        const doc = c.doc;
-        const other = midStep() ? null : instanceUnder(doc, intersectionCopies(doc), activeCopy().key, screenToWorld(view, sp), REACH_PX / view.zoom);
-        if (other && other.d * view.zoom + SWITCH_NEARER_PX < ownDistance(doc, view, sp)) {
-          const onCanvas = paperToScreen(view, sp);
-          c.intersectionSelected = other.key;
-          const next = getToolView();
-          c.notify();
-          return tool.beginGesture(c, next, screenToPaper(next, onCanvas));
-        }
-        return tool.beginGesture(c, view, sp);
-      },
+      hint: (c) => tool.hint(layerController(c)),
+      beginGesture: (c, view, sp) => tool.beginGesture(layerController(c), view, sp),
     };
   }
   // Contextual places for the construction tools: only in Intersect, only around the finger.
+  // The copies' points and crossings, offered to the layer's tools as fixed places.
   setContextProvider({
     point(view, sp, radiusPx) {
       if (!linkedTool()) return null;
       const doc = controller.doc;
-      const hit = contextPointNear(doc, intersectionCopies(doc), activeCopy().key, screenToWorld(view, sp), radiusPx / view.zoom);
+      const hit = layerContextPointNear(doc, layerDoc(doc), shownCopies(doc), screenToWorld(view, sp), radiusPx / view.zoom);
       return hit && { at: hit.at, screenD: hit.d * view.zoom, label: hit.label };
     },
     lines(view, sp, radiusPx) {
       if (!linkedTool()) return [];
       const doc = controller.doc;
-      return contextLinesNear(doc, intersectionCopies(doc), activeCopy().key, screenToWorld(view, sp), radiusPx / view.zoom).map((l) => ({ a: l.a, b: l.b, screenD: l.d * view.zoom }));
+      return layerContextLinesNear(doc, shownCopies(doc), screenToWorld(view, sp), radiusPx / view.zoom).map((l) => ({ a: l.a, b: l.b, screenD: l.d * view.zoom }));
     },
     near(view, sp, radiusPx) {
       if (!linkedTool()) return false;
       const doc = controller.doc;
-      return instanceUnder(doc, intersectionCopies(doc), activeCopy().key, screenToWorld(view, sp), radiusPx / view.zoom) !== null;
+      return layerCopiesNear(doc, shownCopies(doc), screenToWorld(view, sp), radiusPx / view.zoom);
     },
   });
   const pointer = new PointerManager(
@@ -392,8 +414,8 @@ function boot(doc: Doc, opts: { fitToScreen: boolean; history?: { undo: Doc[]; r
       if (ws === 'repeat') return repeatTool;
       if (ws === 'intersection') {
         const linked = linkedTool();
-        if (linked) return onActiveInstance(linked);
-        return controller.tool === 'fair' ? intersectFairTool : intersectionTool;
+        if (linked) return onLayer(linked);
+        return controller.tool === 'fair' ? intersectFairTool : intersectSelect;
       }
       return tools[controller.tool] ?? null;
     },
@@ -403,6 +425,16 @@ function boot(doc: Doc, opts: { fitToScreen: boolean; history?: { undo: Doc[]; r
   // While the reference's Transform mode is on, a touch moves the reference, not a tool or the camera.
   pointer.getTakeover = () => referenceTakeover(controller, getView);
   pointer.onWheelTransform = (at, factor, turn) => referenceWheel(controller, getView, at, factor, turn);
+  // A right-click (or Control-click) in Intersect's Select opens a copy's bounding box, as a long-press
+  // does on touch; anywhere else it is an ordinary press.
+  pointer.onContextPress = (sp) => {
+    // In Repeat, on the central motif: its bounding box (as a long-press does on touch).
+    if (controller.doc.view.workspace === 'repeat') return !controller.referenceTransform && openRepeatBoxAt(controller, getToolView(), sp);
+    if (controller.doc.view.workspace !== 'intersection' || controller.tool !== 'select' || controller.intersectionPickKind !== 'instance') return false;
+    if (controller.referenceTransform) return false;
+    openBoxAt(controller, getToolView(), sp);
+    return true;
+  };
   const autosave = guideReturn
     ? inertAutosave
     : attachAutosave(controller, { dirty: () => tracker.dirty(controller.doc), baseHash: () => tracker.base(), prefsBase: () => tracker.prefsBase(), savedBase: () => (session?.controller === controller ? session.savedBase : savedBase) });
@@ -419,6 +451,18 @@ function boot(doc: Doc, opts: { fitToScreen: boolean; history?: { undo: Doc[]; r
       resolvePoint: (id: string) => resolvePoint(controller.doc, id),
       pointScreen: (id: string) => paperToScreen(getView(), worldToScreen(getView(), resolvePoint(controller.doc, id))),
     };
+  }
+
+  /** The highest point of what floats over the bottom of the canvas (the dock, and the Undo, view and
+   * Fit buttons above it) — page px. */
+  function chromeTop(): number {
+    let top = overlay.getBoundingClientRect().top;
+    for (const el of overlay.querySelectorAll<HTMLElement>('button, [role="group"]')) {
+      if (!el.offsetParent) continue;
+      const r = el.getBoundingClientRect();
+      if (r.height > 0 && r.top < top) top = r.top;
+    }
+    return top;
   }
 
   // Mobile performance: frames are drawn only when something changed — an idle drawing costs no
@@ -457,17 +501,16 @@ function boot(doc: Doc, opts: { fitToScreen: boolean; history?: { undo: Doc[]; r
       if (placing) drawAnchorLoupe(ctx!, moving, view, anchorWorld(moving, controller.anchorDraft!), controller.anchorLoupe!);
     }
     ctx!.restore();
-    // Intersect, a construction tool at work: its own feedback (previews, points, snap marks) on
-    // the active instance, through that instance's view.
-    if (linkedTool()) {
-      const toolView = getToolView();
+    // Intersect, a construction tool at work: its own feedback (previews, the layer's points, snap
+    // marks) on Intersect's own construction layer.
+    if (linkedTool() || (controller.doc.view.workspace === 'intersection' && controller.tool === 'select' && controller.selection.length > 0)) {
       ctx!.save();
-      if (toolView.screen) {
-        ctx!.translate(toolView.screen.w / 2, toolView.screen.h / 2);
-        ctx!.rotate(toolView.screen.turn);
-        ctx!.translate(-toolView.w / 2, -toolView.h / 2);
+      if (view.screen) {
+        ctx!.translate(view.screen.w / 2, view.screen.h / 2);
+        ctx!.rotate(view.screen.turn);
+        ctx!.translate(-view.w / 2, -view.h / 2);
       }
-      drawInteraction(ctx!, controller, toolView);
+      drawInteraction(ctx!, layerController(controller), view);
       ctx!.restore();
     }
     diagnostics?.record(performance.now() - t0, copies);
@@ -647,6 +690,145 @@ function saveAsNewArtwork(): void {
   });
 }
 
+// ---- Project files: one artwork, complete and editable, to take to another browser or device ----
+
+/** A short notice with a single OK. */
+function notice(title: string, body: string): void {
+  openConfirmSheet({ title, body, confirmLabel: 'OK', noCancel: true, onConfirm: () => {} });
+}
+
+/** Menu → Save project file…: the artwork as it is on screen now (unsaved changes included). */
+function saveOpenAsProjectFile(): void {
+  const s = session;
+  if (!s) return;
+  void offerProjectFile(s.controller.doc);
+}
+
+/** Makes the project file for `doc`, then offers it — Share… (the system share sheet, where this
+ * browser can share such a file) or Download. The file is handed over from the tap on that button,
+ * so iOS still counts it as the participant's own action however long the file took to make. */
+async function offerProjectFile(doc: Doc): Promise<void> {
+  // Said only if it takes a moment (a large reference image).
+  const slow = setTimeout(() => showToast('Preparing the project file…', 1600), 400);
+  let built: Awaited<ReturnType<typeof buildProjectFile>>;
+  try {
+    built = await buildProjectFile(doc);
+  } catch (err) {
+    clearTimeout(slow);
+    console.warn('Project file failed:', err);
+    notice('Couldn’t make the project file', 'Something went wrong while preparing it. Nothing was changed — please try again.');
+    return;
+  }
+  clearTimeout(slow);
+  const filename = shareFilename(doc, PROJECT_EXTENSION);
+  const share = canShareFile(built.blob, filename);
+  const reference =
+    built.reference === 'embedded'
+      ? ' Its reference image is included.'
+      : built.reference === 'missing'
+        ? ' Its reference image isn’t on this device, so it can’t be included (its placement is kept).'
+        : '';
+  const downloaded = () => showToast(`Downloaded ${filename}`, 2600);
+  openConfirmSheet({
+    title: 'Project file ready',
+    body: `${filename} · ${sizeLabel(built.bytes)}. Open it in Compass Repeat on any device or browser to keep editing.${reference} Undo and Timelapse history aren’t included.`,
+    confirmLabel: share ? 'Share…' : 'Download',
+    onConfirm: () =>
+      void deliverFile(built.blob, filename).then((r) => {
+        if (r === 'shared') showToast('Project file shared', 2200);
+        else if (r === 'saved') downloaded();
+      }),
+    ...(share
+      ? {
+          secondary: {
+            label: 'Download',
+            onSelect: () => {
+              saveFile(built.blob, filename);
+              downloaded();
+            },
+          },
+        }
+      : {}),
+  });
+}
+
+let projectInput: HTMLInputElement | null = null;
+
+/** Menu / Start screen → Open project file…: the device's own file picker (from the tap itself). */
+function chooseProjectFile(): void {
+  closeAnyPopover();
+  if (!projectInput) {
+    const input = document.createElement('input');
+    input.type = 'file';
+    input.accept = '.json,application/json';
+    input.tabIndex = -1;
+    input.setAttribute('aria-hidden', 'true');
+    input.style.cssText = 'position:fixed;left:0;top:0;width:1px;height:1px;opacity:0;pointer-events:none;';
+    input.addEventListener('change', () => {
+      const file = input.files?.[0];
+      input.value = ''; // the same file can be chosen again
+      if (file) void importProjectFile(file);
+    });
+    document.body.appendChild(input);
+    projectInput = input;
+  }
+  projectInput.click();
+}
+
+/** Reads and checks the file (nothing is written yet), then asks before adding it as a new artwork. */
+async function importProjectFile(file: Blob): Promise<void> {
+  let p: ProjectToImport;
+  try {
+    p = await readProjectFile(file, upgradeSnapshot);
+  } catch (err) {
+    if (!(err instanceof ProjectFileError)) console.warn('Project file could not be read:', err);
+    const e = err instanceof ProjectFileError ? err : new ProjectFileError('This file can’t be opened', 'It couldn’t be read on this device. Nothing on this device was changed.');
+    notice(e.title, e.message);
+    return;
+  }
+  // A new artwork never takes the name of one already here.
+  const taken = new Set((await listArtworks().catch(() => [] as ArtworkSummary[])).filter((a) => a.named).map((a) => a.name));
+  let name = p.name;
+  if (p.named && taken.has(name)) {
+    name = `${p.name} (imported)`;
+    for (let n = 2; taken.has(name); n++) name = `${p.name} (imported ${n})`;
+  }
+  const shown = p.named ? p.name : 'Untitled artwork';
+  const notes = [
+    'It will be added to My Artworks as a new artwork — nothing on this device is replaced.',
+    name !== p.name ? `An artwork called “${p.name}” is already here, so this one will be “${name}”.` : '',
+    p.reference.status === 'embedded' ? 'Its reference image comes with it.' : '',
+    p.reference.status === 'missing' ? 'Its reference image wasn’t in the file, so it opens without it (its placement is kept — choose the image again under Reference image…).' : '',
+    p.reference.status === 'damaged' ? 'Its reference image in the file is damaged, so it opens without it (its placement is kept).' : '',
+    p.contactDropped ? 'Contact details in the file were left out.' : '',
+  ].filter(Boolean);
+  openConfirmSheet({
+    title: `Open “${shown}”?`,
+    body: notes.join(' '),
+    confirmLabel: 'Open',
+    onConfirm: () => confirmLeave(() => void finishImport(p, name)),
+  });
+}
+
+async function finishImport(p: ProjectToImport, name: string): Promise<void> {
+  let id: string;
+  try {
+    id = await writeImportedArtwork(p, name);
+  } catch (err) {
+    const quota = (err as DOMException | null)?.name === 'QuotaExceededError';
+    console.warn('Project import failed:', err);
+    notice('The artwork couldn’t be added', quota ? 'There isn’t enough storage on this device for it. Nothing was changed.' : 'Something went wrong while adding it. Nothing was changed.');
+    return;
+  }
+  closeAnyPopover();
+  if (!(await openArtwork(id))) {
+    showToast('The artwork was added to My Artworks but couldn’t be opened', 3200, 'error');
+    showStart('artworks');
+    return;
+  }
+  showToast(`Opened “${p.named ? name : 'Untitled'}” · a new artwork`, 3000);
+}
+
 /** The process history of a saved artwork goes back to its last Save (a never-saved artwork's is
  * removed). An artwork saved before UI-1 has no record of that: its history is left as it is. */
 async function restoreSavedProcess(id: string): Promise<void> {
@@ -764,6 +946,7 @@ function showStart(focus: 'frames' | 'artworks'): void {
     guide: { onStart: () => startGuide() },
     onChooseFrame: (k) => confirmLeave(() => armDrawFrame(k)),
     onOpenArtwork: (id) => confirmLeave(() => void openFromStart(id)),
+    onOpenProject: () => chooseProjectFile(),
   });
 }
 
@@ -784,6 +967,14 @@ const cardActions: CardActions = {
     void duplicateArtwork(a).then((name) => {
       if (name) showToast(`Duplicated as “${name}”`);
       done();
+    });
+  },
+  /** The saved version of an artwork, as a project file (unsaved changes in hand are not in it). */
+  exportProject(a, done) {
+    void loadDocument(a.id).then((record) => {
+      done();
+      if (!record?.snapshot) return showToast('That artwork could not be read', 2600, 'error');
+      void offerProjectFile(upgraded(record));
     });
   },
   remove(a, done) {

@@ -81,10 +81,63 @@ export interface InstancePose {
   translate: Vec2;
   rotation: number; // radians, base motif rotation + this instance's orientation-rule rotation
   mirror: boolean;
+  /** Uniform scale about the pivot (applied with the reflection and turn, before the shift). Absent =
+   * 1 — and every function here then computes exactly what it always has (× 1 and ÷ 1 are exact), so a
+   * placement without scale is the rigid placement it always was. */
+  scale?: number;
 }
 
-function parity(i: number, j: number): 0 | 1 {
-  return (((i + j) % 2) + 2) % 2 === 0 ? 0 : 1;
+export const MIN_SCALE = 0.25;
+export const MAX_SCALE = 4;
+
+/** A placement's scale: 1 when absent — or when not a usable number, so nothing malformed can ever
+ * collapse or invert a motif. */
+export function poseScale(pose: { scale?: number }): number {
+  const s = pose.scale;
+  return typeof s === 'number' && Number.isFinite(s) && s > 0 ? s : 1;
+}
+
+/** A stored scale as placements carry it: absent when 1 (so a pose, a cache key or a record made from
+ * an unscaled motif keeps exactly its old shape), otherwise kept within the offered range. */
+export function scaleField(scale: number | undefined): { scale?: number } {
+  const s = poseScale({ scale });
+  if (s === 1) return {};
+  return { scale: Math.min(MAX_SCALE, Math.max(MIN_SCALE, s)) };
+}
+
+const odd = (n: number) => ((n % 2) + 2) % 2 === 1;
+
+/** Which copies a Repeat rule changes: every other copy (i + j odd — the original rule, a checkerboard
+ * in lattice coordinates, which on a 60° lattice reads as stripes), every other row (j odd) or every
+ * other column (i odd). Null for a rule that changes no copy. */
+export type Alternation = 'cells' | 'rows' | 'columns';
+
+export function alternationOf(rule: RepeatSystem['rule']): Alternation | null {
+  if (rule.kind !== 'alternate' && rule.kind !== 'mirror') return null;
+  return rule.by ?? 'cells';
+}
+
+/** Whether copy (i, j) is one the alternation changes. */
+export function isAlternateCopy(alt: Alternation, i: number, j: number): boolean {
+  return alt === 'rows' ? odd(j) : alt === 'columns' ? odd(i) : odd(i + j);
+}
+
+/** A lattice shift (si, sj) made into one that keeps copies alike under the alternation — the
+ * nearest such shift, found the way Space and weave identities have always found it (Alternate and
+ * Mirror: i + j even), so their keys are unchanged. */
+export function evenShift(alt: Alternation | null, si: number, sj: number): [number, number] {
+  if (alt === 'cells' && odd(si + sj)) return [si + 1, sj];
+  if (alt === 'rows' && odd(sj)) return [si, sj + 1];
+  if (alt === 'columns' && odd(si)) return [si + 1, sj];
+  return [si, sj];
+}
+
+/** The rule as it identifies Space classes and caches: just its kind for every rule there has always
+ * been (so every saved Space colour keeps its key); a reflection axis or row/column alternation, only
+ * when chosen, is added. */
+export function ruleKey(rule: RepeatSystem['rule']): string {
+  const alt = alternationOf(rule);
+  return `${rule.kind}${rule.kind === 'mirror' && rule.flip === 'h' ? ':h' : ''}${alt && alt !== 'cells' ? `:${alt}` : ''}`;
 }
 
 /** Phase 5 item 8: the orientation rule is a property of the REPETITION, not something applied
@@ -93,54 +146,125 @@ function parity(i: number, j: number): 0 | 1 {
  * special-casing at any boundary. */
 function ruleAdjustment(rule: RepeatSystem['rule'], i: number, j: number): { rotation: number; mirror: boolean } {
   if (i === 0 && j === 0) return { rotation: 0, mirror: false }; // the reference instance is always plain
-  switch (rule.kind) {
-    case 'alternate':
-      return { rotation: parity(i, j) === 1 ? Math.PI : 0, mirror: false };
-    case 'mirror':
-      return { rotation: 0, mirror: parity(i, j) === 1 };
-    case 'same':
-    case 'around':
-    default:
-      return { rotation: 0, mirror: false };
-  }
+  const alt = alternationOf(rule);
+  if (!alt || !isAlternateCopy(alt, i, j)) return { rotation: 0, mirror: false };
+  // Alternate: a half turn. Mirror: reflected across the motif's own horizontal axis (top and bottom
+  // swap) — or, with flip 'h', across its vertical axis (left and right swap: the same reflection and a
+  // half turn). Both axes turn with the motif's rotation, as Mirror always has.
+  if (rule.kind === 'alternate') return { rotation: Math.PI, mirror: false };
+  return { rotation: rule.flip === 'h' ? Math.PI : 0, mirror: true };
 }
 
 export function instancePose(repeat: RepeatSystem, i: number, j: number): InstancePose {
   const adj = ruleAdjustment(repeat.rule, i, j);
+  if (repeat.motif.mirror === true) {
+    // The shared reflection (the motif's own vertical axis: a reflection across its horizontal axis
+    // and a half turn), then the turn; a legacy alternation is applied within it, as composePose
+    // would (a reflection reverses the inner turn).
+    const base = repeat.motif.rotation + Math.PI;
+    return {
+      i,
+      j,
+      translate: { x: repeat.a.x * i + repeat.b.x * j, y: repeat.a.y * i + repeat.b.y * j },
+      rotation: base - adj.rotation,
+      mirror: !adj.mirror,
+      ...scaleField(repeat.motif.scale),
+    };
+  }
   return {
     i,
     j,
     translate: { x: repeat.a.x * i + repeat.b.x * j, y: repeat.a.y * i + repeat.b.y * j },
     rotation: repeat.motif.rotation + adj.rotation,
     mirror: adj.mirror,
+    ...scaleField(repeat.motif.scale),
   };
 }
 
 /**
- * One placement after another, as one: `inner` first (never mirrored), then `outer`. With a
- * placement p ↦ turn(mirror(p − pivot)) + pivot + t: the result mirrors as `outer` does, turns by
- * outer's angle plus inner's (minus, when mirrored — a mirror reverses the inner turn), and lands
- * inner's shift where `outer` carries it.
+ * One placement after another, as one: `inner` first, then `outer`. With a placement
+ * p ↦ turn(mirror(p − pivot)) + pivot + t: the result is mirrored when exactly one of them is (two
+ * reflections make a turn), turns by outer's angle plus inner's (minus, when `outer` mirrors — a mirror
+ * reverses the inner turn), and lands inner's shift where `outer` carries it.
  */
 export function composePose(outer: InstancePose, inner: InstancePose): InstancePose {
-  const y = outer.mirror ? -inner.translate.y : inner.translate.y;
+  // Scale: outer's scale also carries inner's shift; the two scales multiply.
+  const so = poseScale(outer);
+  const y = (outer.mirror ? -inner.translate.y : inner.translate.y) * so;
+  const x = inner.translate.x * so;
   const c = Math.cos(outer.rotation);
   const n = Math.sin(outer.rotation);
   return {
     i: outer.i,
     j: outer.j,
-    translate: { x: outer.translate.x + inner.translate.x * c - y * n, y: outer.translate.y + inner.translate.x * n + y * c },
+    translate: { x: outer.translate.x + x * c - y * n, y: outer.translate.y + x * n + y * c },
     rotation: outer.mirror ? outer.rotation - inner.rotation : outer.rotation + inner.rotation,
-    mirror: outer.mirror,
+    mirror: outer.mirror !== inner.mirror,
+    ...productScale(so, poseScale(inner)),
   };
+}
+
+function productScale(a: number, b: number): { scale?: number } {
+  const s = a * b;
+  return s === 1 ? {} : { scale: s };
+}
+
+/** How placement `b` looks from inside placement `a` — the placement a⁻¹ ∘ b, so that
+ * transformPoint(pivot, a, transformPoint(pivot, relativePlacement(a, b), p)) = transformPoint(pivot, b, p). */
+export function relativePlacement(a: InstancePose, b: InstancePose): InstancePose {
+  const t = poseVectorInverse(a, { x: b.translate.x - a.translate.x, y: b.translate.y - a.translate.y });
+  const by = b.rotation - a.rotation;
+  const sa = poseScale(a);
+  const sb = poseScale(b);
+  return { i: b.i, j: b.j, translate: t, rotation: a.mirror ? -by : by, mirror: a.mirror !== b.mirror, ...(sa === sb ? {} : { scale: sb / sa }) };
+}
+
+/** An offset as a placement carries it: mirrored, scaled, then turned — no shift. (A unit direction
+ * comes out at the placement's scale: normalise it where only its direction matters.) */
+export function poseVector(pose: InstancePose, v: Vec2): Vec2 {
+  const s = poseScale(pose);
+  const y = (pose.mirror ? -v.y : v.y) * s;
+  const x = v.x * s;
+  const c = Math.cos(pose.rotation);
+  const n = Math.sin(pose.rotation);
+  return { x: x * c - y * n, y: x * n + y * c };
+}
+
+/** The inverse of poseVector: turned back, unscaled, then un-mirrored. */
+export function poseVectorInverse(pose: InstancePose, v: Vec2): Vec2 {
+  const s = poseScale(pose);
+  const c = Math.cos(pose.rotation);
+  const n = Math.sin(pose.rotation);
+  const x = (v.x * c + v.y * n) / s;
+  const y = (-v.x * n + v.y * c) / s;
+  return { x, y: pose.mirror ? -y : y };
+}
+
+/** How a placement changes a length (a radius, a distance) — its scale. */
+export function poseLength(pose: InstancePose, length: number): number {
+  return length * poseScale(pose);
+}
+
+/** Where a world position lies in the construction's own (unplaced) coordinates — transformPoint's
+ * inverse. */
+export function inversePoint(pivot: Vec2, pose: InstancePose, w: Vec2): Vec2 {
+  const l = poseVectorInverse(pose, { x: w.x - pivot.x - pose.translate.x, y: w.y - pivot.y - pose.translate.y });
+  return { x: l.x + pivot.x, y: l.y + pivot.y };
+}
+
+/** An arc range [from → to] (anticlockwise, the construction's own angles) as a placement shows it:
+ * turned — and, when mirrored, reflected, which reverses it. */
+export function poseArcRange(pose: InstancePose, from: number, to: number): [number, number] {
+  return pose.mirror ? [pose.rotation - to, pose.rotation - from] : [pose.rotation + from, pose.rotation + to];
 }
 
 /** Maps a point in the ORIGINAL Construct-world onto where it sits for one repeat instance —
  * mirror (reflect across the pivot's local x-axis) applies before rotation, matching the angle
  * convention `poseArcAngles` below relies on. */
 export function transformPoint(pivot: Vec2, pose: InstancePose, p: Vec2): Vec2 {
-  let lx = p.x - pivot.x;
-  let ly = p.y - pivot.y;
+  const s = poseScale(pose);
+  let lx = (p.x - pivot.x) * s;
+  let ly = (p.y - pivot.y) * s;
   if (pose.mirror) ly = -ly;
   const cos = Math.cos(pose.rotation);
   const sin = Math.sin(pose.rotation);
@@ -166,7 +290,7 @@ const MAX_INSTANCES = 400; // a hard safety cap — never render/iterate more th
 export function visibleInstances(doc: Doc, view: ViewTransform, unitReach?: number): InstancePose[] {
   // `unitReach`: how far what is drawn at each lattice position reaches from it, when that is more
   // than one motif (Repeat from an Intersect arrangement — geometry/repeatUnit.ts).
-  const reach = unitReach ?? motifExtent(doc);
+  const reach = (unitReach ?? motifExtent(doc)) * poseScale(doc.repeat.motif);
   const range = visibleLatticeRange(doc, view, reach);
   if (!range) return [instancePose(doc.repeat, 0, 0)]; // degenerate basis — just the reference
   const { i0, i1, j0, j1 } = range;
@@ -276,7 +400,7 @@ export function fitInstances(doc: Doc): InstancePose[] {
  * handles have room to be dragged, never flooding the screen with a full field on first look. */
 export function firstEntryBounds(doc: Doc): { minX: number; minY: number; maxX: number; maxY: number } {
   const pivot = doc.frame.origin;
-  const r = motifRadius(doc) * 1.8; // the reference motif plus a peek of the handle direction — not a whole neighbour ring
+  const r = motifRadius(doc) * poseScale(doc.repeat.motif) * 1.8; // the reference motif plus a peek of the handle direction — not a whole neighbour ring
   return { minX: pivot.x - r, maxX: pivot.x + r, minY: pivot.y - r, maxY: pivot.y + r };
 }
 
@@ -285,7 +409,7 @@ export function firstEntryBounds(doc: Doc): { minX: number; minY: number; maxX: 
  * geometry/bounds.ts's computeVisibleBounds feeds Construct's Fit. */
 export function fitBounds(doc: Doc): { minX: number; minY: number; maxX: number; maxY: number } {
   const pivot = doc.frame.origin;
-  const r = motifRadius(doc);
+  const r = motifRadius(doc) * poseScale(doc.repeat.motif);
   let minX = Infinity;
   let minY = Infinity;
   let maxX = -Infinity;
@@ -424,7 +548,7 @@ export function contactModel(doc: Doc, dir: 'a' | 'b'): ContactModel {
   const snapEps = R * 0.03;
 
   if (doc.frame.kind === 'circle') {
-    const twoR = doc.frame.radius * 2;
+    const twoR = doc.frame.radius * 2 * poseScale(doc.repeat.motif);
     return {
       classify(t) {
         const d = Math.hypot(t.x, t.y);

@@ -18,9 +18,9 @@
 import type { Camera, Doc, Entity, Vec2 } from '../model/types.ts';
 import { resolveEntityGeom } from './kernel.ts';
 import { defaultSegmentKind, deriveSegments, paramInRange } from './segments.ts';
-import type { InstancePose } from './lattice.ts';
+import { inversePoint, poseArcRange, poseLength, poseScale, poseVector, relativePlacement, transformPoint, type InstancePose } from './lattice.ts';
 import type { IntersectionCopy } from './intersection.ts';
-import { localPoints, pointShown } from './intersectionSnap.ts';
+import { localPoints, pointOnDrawn, pointShown } from './intersectionSnap.ts';
 
 const turn = (v: Vec2, a: number): Vec2 => {
   const c = Math.cos(a);
@@ -34,9 +34,13 @@ const turn = (v: Vec2, a: number): Vec2 => {
  * s = centre + turnCam((q + pan) × zoom): pan′ = turn⁻¹(pivot + t + pan) − pivot, and the rotations add.
  */
 export function instanceCamera(camera: Camera, pivot: Vec2, pose: InstancePose): Camera {
+  // A camera can turn but not reflect: a reflected instance is never edited through (main.ts — the
+  // construction tools work only on the Original and unreflected copies).
+  if (pose.mirror) throw new Error('instanceCamera: a reflected instance has no camera');
+  const s = poseScale(pose);
   const r = turn({ x: pivot.x + pose.translate.x + camera.pan.x, y: pivot.y + pose.translate.y + camera.pan.y }, -pose.rotation);
   const rotation = (camera.rotation ?? 0) + pose.rotation;
-  return { zoom: camera.zoom, pan: { x: r.x - pivot.x, y: r.y - pivot.y }, ...(rotation ? { rotation } : null) };
+  return { zoom: camera.zoom * s, pan: { x: r.x / s - pivot.x, y: r.y / s - pivot.y }, ...(rotation ? { rotation } : null) };
 }
 
 // ---- what a copy draws, as pieces (once per document) ----
@@ -91,10 +95,6 @@ function localPieces(doc: Doc): LocalPiece[] {
 
 type Placed = { copy: string } & ({ kind: 'line'; a: Vec2; d: Vec2; t0: number; t1: number; whole: boolean } | { kind: 'arc'; c: Vec2; r: number; from: number; to: number; full: boolean });
 
-/** How instance `b` lies in instance `a`'s own frame: p ↦ turn(p − pivot, by) + pivot + shift. */
-function relativePose(a: InstancePose, b: InstancePose): { by: number; shift: Vec2 } {
-  return { by: b.rotation - a.rotation, shift: turn({ x: b.translate.x - a.translate.x, y: b.translate.y - a.translate.y }, -a.rotation) };
-}
 
 const TOL = 1e-7;
 /** An angle in [0, 2π) — how arc ranges are kept (paramInRange). */
@@ -177,19 +177,22 @@ function placedNear(doc: Doc, copies: IntersectionCopy[], active: IntersectionCo
   const pivot = doc.frame.origin;
   const out: Placed[] = [];
   for (const copy of copies) {
-    const rel = relativePose(active.pose, copy.pose);
+    // How this copy lies in the active one's frame (turned, shifted — and reflected when exactly one
+    // of the two is).
+    const rel = relativePlacement(active.pose, copy.pose);
     // The finger, in this copy's own frame — so its pieces are tested where they are stored.
-    const back = turn({ x: m.x - pivot.x - rel.shift.x, y: m.y - pivot.y - rel.shift.y }, -rel.by);
-    const local = { x: back.x + pivot.x, y: back.y + pivot.y };
-    const place = (p: Vec2): Vec2 => {
-      const r = turn({ x: p.x - pivot.x, y: p.y - pivot.y }, rel.by);
-      return { x: r.x + pivot.x + rel.shift.x, y: r.y + pivot.y + rel.shift.y };
-    };
+    const local = inversePoint(pivot, rel, m);
+    const place = (p: Vec2): Vec2 => transformPoint(pivot, rel, p);
+    // Distances in the copy's own frame, at its scale relative to the active frame.
+    const s = poseScale(rel);
     for (const p of localPieces(doc)) {
       if (p.ext && !copy.extensions) continue;
-      if (distToPiece(p, local) > reach) continue;
-      if (p.kind === 'line') out.push({ copy: copy.key, kind: 'line', a: place(p.a), d: turn(p.d, rel.by), t0: p.t0, t1: p.t1, whole: p.whole });
-      else out.push({ copy: copy.key, kind: 'arc', c: place(p.c), r: p.r, from: norm(p.from + rel.by), to: norm(p.to + rel.by), full: p.full });
+      if (distToPiece(p, local) * s > reach) continue;
+      if (p.kind === 'line') out.push({ copy: copy.key, kind: 'line', a: place(p.a), d: poseVector(rel, p.d), t0: p.t0, t1: p.t1, whole: p.whole });
+      else {
+        const [from, to] = poseArcRange(rel, p.from, p.to);
+        out.push({ copy: copy.key, kind: 'arc', c: place(p.c), r: poseLength(rel, p.r), from: norm(from), to: norm(to), full: p.full });
+      }
     }
   }
   return out;
@@ -212,10 +215,9 @@ export function contextPointNear(doc: Doc, copies: IntersectionCopy[], activeKey
   // Other instances' own points (those that read as points in what they draw).
   for (const copy of copies) {
     if (copy.key === activeKey) continue;
-    const rel = relativePose(active.pose, copy.pose);
+    const rel = relativePlacement(active.pose, copy.pose);
     for (const p of localPoints(doc)) {
-      const r = turn({ x: p.at.x - pivot.x, y: p.at.y - pivot.y }, rel.by);
-      const at = { x: r.x + pivot.x + rel.shift.x, y: r.y + pivot.y + rel.shift.y };
+      const at = transformPoint(pivot, rel, p.at);
       if (Math.abs(at.x - m.x) > reach || Math.abs(at.y - m.y) > reach) continue;
       if (pointShown(doc, p.id, p.at, copy.extensions)) consider(at, `Point · ${copy.label}`);
     }
@@ -264,17 +266,17 @@ export function instanceUnder(doc: Doc, copies: IntersectionCopy[], fromKey: str
   let best: { key: string; d: number } | null = null;
   for (const copy of copies) {
     if (copy.key === fromKey) continue;
-    const rel = relativePose(from.pose, copy.pose);
-    const back = turn({ x: m.x - pivot.x - rel.shift.x, y: m.y - pivot.y - rel.shift.y }, -rel.by);
-    const local = { x: back.x + pivot.x, y: back.y + pivot.y };
+    const rel = relativePlacement(from.pose, copy.pose);
+    const local = inversePoint(pivot, rel, m);
+    const s = poseScale(rel);
     for (const p of localPieces(doc)) {
       if (p.ext && !copy.extensions) continue;
       if (p.kind === 'arc' && !p.full && !paramInRange(Math.atan2(local.y - p.c.y, local.x - p.c.x), p.from, p.to, true)) continue;
-      const d = distToPiece(p, local);
+      const d = distToPiece(p, local) * s;
       if (d <= reach && (!best || d < best.d)) best = { key: copy.key, d };
     }
     for (const p of localPoints(doc)) {
-      const d = Math.hypot(local.x - p.at.x, local.y - p.at.y);
+      const d = Math.hypot(local.x - p.at.x, local.y - p.at.y) * s;
       if (d <= reach && (!best || d < best.d) && pointShown(doc, p.id, p.at, copy.extensions)) best = { key: copy.key, d };
     }
   }
@@ -289,19 +291,88 @@ export function instanceDistances(doc: Doc, copies: IntersectionCopy[], w: Vec2,
   const pivot = doc.frame.origin;
   const out = new Map<string, number>();
   for (const copy of copies) {
-    const back = turn({ x: w.x - pivot.x - copy.pose.translate.x, y: w.y - pivot.y - copy.pose.translate.y }, -copy.pose.rotation);
-    const local = { x: back.x + pivot.x, y: back.y + pivot.y };
+    const local = inversePoint(pivot, copy.pose, w);
+    // Measured in the copy's own frame, then at its scale: world distances.
+    const s = poseScale(copy.pose);
     let best = Infinity;
     for (const p of localPieces(doc)) {
       if (p.ext && !copy.extensions) continue;
       if (p.kind === 'arc' && !p.full && !paramInRange(Math.atan2(local.y - p.c.y, local.x - p.c.x), p.from, p.to, true)) continue;
-      best = Math.min(best, distToPiece(p, local));
+      best = Math.min(best, distToPiece(p, local) * s);
     }
     for (const p of localPoints(doc)) {
-      const d = Math.hypot(local.x - p.at.x, local.y - p.at.y);
+      const d = Math.hypot(local.x - p.at.x, local.y - p.at.y) * s;
       if (d < best && pointShown(doc, p.id, p.at, copy.extensions)) best = d;
     }
     if (best <= reach) out.set(copy.key, best);
   }
   return out;
+}
+
+// ---- Intersect's own construction layer (geometry/intersectLayer.ts) ----
+//
+// The construction tools in Intersect draw on the layer, in the workspace's own coordinates: no copy is
+// "active", every copy is another construction lying there. Contextual places are then every copy's
+// shown points, and every crossing between two drawn pieces of which at least one is a copy's — the
+// layer's crossings with itself are its own kernel's (as in Construct).
+
+const WORKSPACE: IntersectionCopy = { key: '', label: 'Intersect', i: 0, j: 0, colour: '', extensions: true, pose: { i: 0, j: 0, translate: { x: 0, y: 0 }, rotation: 0, mirror: false } } as unknown as IntersectionCopy;
+const LAYER_KEY = '·layer';
+
+/** The layer's own drawn pieces near `m` (workspace coordinates). */
+function layerPiecesNear(layer: Doc, m: Vec2, reach: number): Placed[] {
+  const out: Placed[] = [];
+  for (const p of localPieces(layer)) {
+    if (distToPiece(p, m) > reach) continue;
+    if (p.kind === 'line') out.push({ copy: LAYER_KEY, kind: 'line', a: p.a, d: p.d, t0: p.t0, t1: p.t1, whole: p.whole });
+    else out.push({ copy: LAYER_KEY, kind: 'arc', c: p.c, r: p.r, from: norm(p.from), to: norm(p.to), full: p.full });
+  }
+  return out;
+}
+
+/** The contextual place nearest `m` (workspace coordinates) for the layer's tools: a copy's shown
+ * point, or a crossing involving a copy's drawn geometry. Null when there is none within `reach`. */
+export function layerContextPointNear(doc: Doc, layer: Doc, copies: IntersectionCopy[], m: Vec2, reach: number): ContextPoint | null {
+  if (copies.length === 0) return null;
+  const pivot = doc.frame.origin;
+  let best: ContextPoint | null = null;
+  const consider = (at: Vec2, label: string) => {
+    const d = Math.hypot(at.x - m.x, at.y - m.y);
+    if (d <= reach && (!best || d < best.d - 1e-12)) best = { at, d, label };
+  };
+  for (const copy of copies) {
+    for (const p of localPoints(doc)) {
+      const at = transformPoint(pivot, copy.pose, p.at);
+      if (Math.abs(at.x - m.x) > reach || Math.abs(at.y - m.y) > reach) continue;
+      if (pointOnDrawn(doc, p.id, p.at, copy.extensions)) consider(at, `Point · ${copy.label}`);
+    }
+  }
+  const near = [...placedNear(doc, copies, WORKSPACE, m, reach), ...layerPiecesNear(layer, m, reach)];
+  for (let i = 0; i < near.length; i++) {
+    for (let j = i + 1; j < near.length; j++) {
+      if (near[i]!.copy === LAYER_KEY && near[j]!.copy === LAYER_KEY) continue;
+      for (const at of crossings(near[i]!, near[j]!)) consider(at, 'Crossing');
+    }
+  }
+  return best;
+}
+
+/** Every copy's straight line within `reach` of `m` (workspace coordinates), nearest first — a
+ * Parallel / Perpendicular reference for the layer's Line. */
+export function layerContextLinesNear(doc: Doc, copies: IntersectionCopy[], m: Vec2, reach: number): { a: Vec2; b: Vec2; d: number }[] {
+  const out: { a: Vec2; b: Vec2; d: number }[] = [];
+  for (const p of placedNear(doc, copies, WORKSPACE, m, reach)) {
+    if (p.kind !== 'line') continue;
+    const len2 = p.d.x * p.d.x + p.d.y * p.d.y;
+    let t = ((m.x - p.a.x) * p.d.x + (m.y - p.a.y) * p.d.y) / len2;
+    if (!p.whole) t = Math.min(p.t1, Math.max(p.t0, t));
+    const d = Math.hypot(m.x - (p.a.x + p.d.x * t), m.y - (p.a.y + p.d.y * t));
+    out.push({ a: p.a, b: { x: p.a.x + p.d.x, y: p.a.y + p.d.y }, d });
+  }
+  return out.sort((x, y) => x.d - y.d);
+}
+
+/** Whether any copy's drawn geometry lies within `reach` of `m` (workspace coordinates). */
+export function layerCopiesNear(doc: Doc, copies: IntersectionCopy[], m: Vec2, reach: number): boolean {
+  return instanceDistances(doc, copies, m, reach).size > 0;
 }

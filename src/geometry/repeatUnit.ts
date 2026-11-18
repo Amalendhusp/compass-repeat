@@ -12,12 +12,13 @@
 // build from, not geometry.
 
 import type { Doc, Vec2 } from '../model/types.ts';
-import { motifExtent, type InstancePose } from './lattice.ts';
+import { motifExtent, poseScale, type InstancePose } from './lattice.ts';
 import { developedFeatures, repeatComposition, type CompositionMember } from './repeatComposition.ts';
 import { closestOn, endsOf, len, motifRuns, placePrim, sub, type Prim } from './fairGeometry.ts';
 import { developedSegments } from './intersection.ts';
 import { formEps, midOf } from './formSegments.ts';
 import { repeatSourceOf, type RepeatSourceKind } from './repeatSetup.ts';
+import { cutFeature, exclusionMap, exclusionSignature } from './developExclusions.ts';
 
 export type RepeatSource = RepeatSourceKind;
 
@@ -55,21 +56,27 @@ export function repeatUnit(doc: Doc): RepeatUnit | null {
     const members = comp.map((m) => m.pose);
     const developed = all.some((m) => m.owner === 'developed') ? notDrawnBy(doc, developedFeatures(doc).map((f) => f.prim), comp) : [];
     const reaches = [
-      ...members.map((m) => Math.hypot(m.translate.x, m.translate.y) + motifExtent(doc)),
+      ...members.map((m) => Math.hypot(m.translate.x, m.translate.y) + motifExtent(doc) * poseScale(m)),
       ...developed.map((p) => reachOf(doc.frame.origin, p)),
     ];
-    const devIds = developed.length ? `|dev:${developedSegments(doc).map((s) => s.id).join(',')}` : '';
+    const devIds = (developed.length ? `|dev:${developedSegments(doc).map((s) => s.id).join(',')}` : '') + exclusionSignature(doc, comp.map((m) => m.key));
     unit = {
       members,
       keys: comp.map((m) => m.key),
       // Nothing to repeat (an empty composition): one motif's reach, so nothing downstream divides by zero.
       extent: reaches.length ? Math.max(...reaches) : motifExtent(doc),
-      key: members.map((m) => `${m.translate.x},${m.translate.y},${m.rotation}`).join(';') + devIds,
+      key: members.map((m) => `${m.translate.x},${m.translate.y},${m.rotation}${m.mirror ? ",m" : ""}${m.scale !== undefined ? `,s${m.scale}` : ''}`).join(';') + devIds,
       developed,
     };
     cache.set(doc, unit);
   }
   return unit;
+}
+
+/** How far Repeat's drawn artwork reaches from each lattice position: the unit's (or the motif's) own
+ * reach, at the Repeat motif's scale. */
+export function repeatReach(doc: Doc): number {
+  return (repeatUnit(doc)?.extent ?? motifExtent(doc)) * poseScale(doc.repeat.motif);
 }
 
 /** How far a primitive reaches from `pivot`. */
@@ -84,7 +91,11 @@ function notDrawnBy(doc: Doc, developed: Prim[], members: CompositionMember[]): 
   if (!members.length) return developed;
   const pivot = doc.frame.origin;
   const runs = motifRuns(doc);
-  const placed = members.flatMap((m) => runs.map((r) => placePrim(r.prim, pivot, m.pose)));
+  // (What Develop took out of a Whole copy is not drawn by it.)
+  const placed = members.flatMap((m) => {
+    const cut = exclusionMap(doc, m.key);
+    return runs.flatMap((r) => cutFeature(doc, cut, r.entity, r.prim).map((p) => placePrim(p, pivot, m.pose)));
+  });
   const tol = formEps(doc) * 10;
   const along = (p: Prim, q: Prim): boolean => {
     if (p.k !== q.k) return false;

@@ -90,6 +90,11 @@ export class PointerManager {
   /** Desktop pinch / ⌘-scroll (factor) and ⌥-scroll / Safari's turn (radians) about a canvas point,
    * offered first to something that wants them (the reference in Transform) — true if it took them. */
   onWheelTransform: (at: Vec2, factor: number, turn: number) => boolean = () => false;
+  /** A mouse right-click (or Control-click) at a canvas point — true if something took it (then it is
+   * not an ordinary press, and the browser's own menu doesn't open). */
+  onContextPress: (at: Vec2) => boolean = () => false;
+  /** The last press was taken as a context press: its contextmenu event is swallowed. */
+  private contextTaken = false;
   /** The current touch's takeover, if it has one. */
   private takeover: PointerTakeover | null = null;
 
@@ -110,6 +115,10 @@ export class PointerManager {
     canvas.addEventListener('pointermove', this.onMove);
     canvas.addEventListener('pointerup', this.onUp);
     canvas.addEventListener('pointercancel', this.onCancelPointer);
+    canvas.addEventListener('contextmenu', (e) => {
+      if (this.contextTaken) e.preventDefault();
+      this.contextTaken = false;
+    });
     // Phase 5.12c: desktop zoom and pan (trackpad pinch, ⌘/Ctrl + scroll, plain scroll).
     canvas.addEventListener('wheel', this.onWheel, { passive: false });
     canvas.addEventListener('gesturestart', this.onGestureStart as EventListener, { passive: false });
@@ -287,6 +296,16 @@ export class PointerManager {
   }
 
   private onDown = (e: PointerEvent): void => {
+    // A mouse right-click (or Control-click on a Mac) is offered first as a context press.
+    this.contextTaken = false;
+    if (e.pointerType === 'mouse' && this.active.size === 0 && (e.button === 2 || (e.button === 0 && e.ctrlKey))) {
+      const at = this.toLocal(e);
+      if (this.onContextPress(this.toolPaper(at))) {
+        this.contextTaken = true;
+        e.preventDefault();
+        return;
+      }
+    }
     try {
       this.canvas.setPointerCapture(e.pointerId);
     } catch {

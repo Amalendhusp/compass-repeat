@@ -24,6 +24,8 @@ export function openConfirmSheet(opts: {
   onCancel?: () => void;
   /** UI-1: a third choice between Cancel and the confirmation (e.g. Don't save). */
   secondary?: { label: string; onSelect: () => void; danger?: boolean };
+  /** A notice with a single button (the confirmation) — no Cancel. */
+  noCancel?: boolean;
 }): void {
   if (current?.isConnected) return;
 
@@ -76,7 +78,8 @@ export function openConfirmSheet(opts: {
     close();
     opts.onConfirm();
   });
-  actions.appendChild(cancelBtn);
+  if (!opts.noCancel) actions.appendChild(cancelBtn);
+  else actions.classList.add('one');
   if (opts.secondary) {
     const second = opts.secondary;
     const btn = document.createElement('button');
@@ -99,5 +102,5 @@ export function openConfirmSheet(opts: {
   document.body.appendChild(layer);
   current = layer;
   document.addEventListener('keydown', onKey, true);
-  cancelBtn.focus({ preventScroll: true });
+  (opts.noCancel ? confirmBtn : cancelBtn).focus({ preventScroll: true });
 }

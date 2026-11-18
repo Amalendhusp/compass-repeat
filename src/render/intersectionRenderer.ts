@@ -22,18 +22,20 @@
 // construction's rotation ring showing which construction would move.
 
 import { drawArtworkLayer, type ScreenLayers } from './underlay.ts';
-import type { FormLayer } from '../geometry/formSegments.ts';
+import { exclusionMap, remainingRanges } from '../geometry/developExclusions.ts';
 import type { Doc, Entity, Vec2 } from '../model/types.ts';
 import type { AppController, ViewTransform } from '../app/controller.ts';
 import { screenToWorld, worldToScreen } from '../app/controller.ts';
 import type { Prim } from '../geometry/fairGeometry.ts';
-import { CHOICE_MARKER_R, drawLabelPill, drawNumberBadge, fanMarkers, RUN_COLOURS, RUN_DASHES } from './renderer.ts';
+import { CHOICE_MARKER_R, drawConstructionOnly, drawLabelPill, drawNumberBadge, fanMarkers, RUN_COLOURS, RUN_DASHES } from './renderer.ts';
+import { hasLayerGeometry, layerController } from '../geometry/intersectLayer.ts';
 import { resolveEntityGeom } from '../geometry/kernel.ts';
 import { defaultSegmentKind, deriveSegments } from '../geometry/segments.ts';
-import { motifRadius, poseArcAngle, transformPoint, type InstancePose } from '../geometry/lattice.ts';
-import { developedSegments, inComposition, intersectionBounds, intersectionCopies, type IntersectionCopy } from '../geometry/intersection.ts';
+import { motifRadius, poseArcAngle, poseLength, poseScale, transformPoint, type InstancePose } from '../geometry/lattice.ts';
+import { developedSegments, inComposition, intersectionBounds, shownCopies, type IntersectionCopy } from '../geometry/intersection.ts';
 import { pickedEdge, planMatchEdge, resolvePick, type IntersectionPick, type ResolvedPick, type ShownLine } from '../geometry/intersectionSnap.ts';
 import { color, stroke } from './tokens.ts';
+import { BOX_HANDLE_R, copyBox, openBox, ringRadius, scaleLabel, type BoxHandle, type CopyBox } from './copyBox.ts';
 
 type Piece = { entity: Entity; kind: 'construction' | 'extension' | 'fair'; from?: number; to?: number };
 
@@ -75,7 +77,7 @@ function appendPiece(path: Path2D, doc: Doc, view: ViewTransform, pose: Instance
   const g = resolveEntityGeom(doc, piece.entity);
   if (g.kind === 'circle') {
     const c = worldToScreen(view, transformPoint(pivot, pose, g.centre));
-    const r = g.radius * view.zoom;
+    const r = poseLength(pose, g.radius) * view.zoom;
     const from = piece.from === undefined ? 0 : poseArcAngle(pose, piece.from);
     const to = piece.to === undefined ? Math.PI * 2 : poseArcAngle(pose, piece.to);
     path.moveTo(c.x + r * Math.cos(from), c.y + r * Math.sin(from));
@@ -96,7 +98,8 @@ function appendWholeLine(path: Path2D, doc: Doc, view: ViewTransform, pose: Inst
   const g = resolveEntityGeom(doc, entity);
   if (g.kind !== 'line') return;
   const pivot = doc.frame.origin;
-  const far = (Math.hypot(view.w, view.h) / view.zoom) * 2 + motifRadius(doc) * 4;
+  // Far enough, in the construction's own (unscaled) units, to cross the whole view.
+  const far = ((Math.hypot(view.w, view.h) / view.zoom) * 2) / poseScale(pose) + motifRadius(doc) * 4;
   const a = worldToScreen(view, transformPoint(pivot, pose, { x: g.a.x - g.dir.x * far, y: g.a.y - g.dir.y * far }));
   const b = worldToScreen(view, transformPoint(pivot, pose, { x: g.a.x + g.dir.x * far, y: g.a.y + g.dir.y * far }));
   path.moveTo(a.x, a.y);
@@ -112,9 +115,13 @@ export function renderIntersection(ctx: CanvasRenderingContext2D, controller: Ap
   ctx.fillRect(0, 0, view.w, view.h);
   // On screen only: the reference just above the background (underlay.ts).
   layers?.underlay(ctx, view);
+  // An open bounding box: its quiet grey ground under the copies, so it never covers a line.
+  const boxed = openBox(controller);
+  const box = boxed ? copyBox(doc, view, boxed) : null;
+  if (box) drawBoxGround(ctx, box);
 
   const sc = scaffold(doc);
-  const copies = intersectionCopies(doc, { drag: controller.intersectionDrag, spread: controller.intersectionSpreadDraft });
+  const copies = shownCopies(doc, { drag: controller.intersectionDrag, spread: controller.intersectionSpreadDraft });
   ctx.lineCap = 'round';
   ctx.lineJoin = 'round';
   // Picks, worked out from the copies as shown right now (so they follow a live move or Spread).
@@ -134,9 +141,14 @@ export function renderIntersection(ctx: CanvasRenderingContext2D, controller: Ap
   // translucent and the Developed Primary opaque.
   const developing = controller.tool === 'fair';
   drawArtworkLayer(ctx, layers, (ctx) => {
-    if (developing) drawFairOnly(ctx, doc, view, sc, copies, controller.formLayer);
+    // (Guides only while their switches are on — never in Whole mode, which takes whole copies.)
+    const guides = { construction: !controller.formWhole && controller.formConstruction, extension: !controller.formWhole && controller.formExtension };
+    if (developing) drawDevelop(ctx, doc, view, sc, copies, guides);
     else drawCopies(ctx, doc, view, sc, copies);
-    drawDevelopedPrimary(ctx, doc, view);
+    // Intersect's own construction (older artworks) — over the copies, under the developed design; in
+    // Develop only while Construction is offered (it is a guide there).
+    if (hasLayerGeometry(doc) && (!developing || guides.construction || guides.extension)) drawConstructionOnly(ctx, layerController(controller), view);
+    drawDevelopedPrimary(ctx, doc, view, developing ? DEVELOP_WIDTH : PRIMARY_WIDTH);
   });
   // What a finger on Fair would add or remove, the loupe it is choosing in, and "Which line?".
   if (developing) drawFormFeedback(ctx, controller, view, sc, copies);
@@ -157,13 +169,127 @@ export function renderIntersection(ctx: CanvasRenderingContext2D, controller: Ap
   // Select arranges: the selected construction shows its rotation ring. A construction tool builds
   // on the ACTIVE instance (the selected one — the Primary until another is): only a quiet ring.
   const building = !!controller.tool && controller.tool !== 'select' && !developing;
-  const selected = copies.find((c) => c.key === controller.intersectionSelected) ?? (building ? copies[0] : undefined);
+  // (A reflected copy is never built on — the Original stands in for it: main.ts activeCopy.)
+  const picked = copies.find((c) => c.key === controller.intersectionSelected);
+  const selected = building ? (picked && !picked.pose.mirror ? picked : copies[0]) : picked;
   // A locked construction has nothing to grab: its ring, without a handle.
   if (selected && !developing) drawRotationRing(ctx, doc, view, selected, controller.intersectionDrag?.key === selected.key && controller.intersectionDrag.mode === 'turn', !building && !selected.locked);
   // Locked constructions: a small padlock at the centre, in their own colour (screen only).
   for (const c of copies) if (c.locked) drawLockMark(ctx, doc, view, c);
+  // The open bounding box's outline and corner handles, over everything; the scale while it is dragged.
+  if (box) drawBoxHandles(ctx, view, box, controller.intersectionDrag?.mode === 'scale' && controller.intersectionDrag.key === box.copy.key ? controller.intersectionDrag.scale ?? 1 : null);
   ctx.restore();
   return copies.length;
+}
+
+/** The box's ground: a faint grey wash (drawn under the copies). */
+function drawBoxGround(ctx: CanvasRenderingContext2D, box: CopyBox): void {
+  ctx.save();
+  ctx.fillStyle = color.muted;
+  ctx.globalAlpha = 0.07;
+  ctx.beginPath();
+  ctx.roundRect(box.x0, box.y0, box.x1 - box.x0, box.y1 - box.y0, 10);
+  ctx.fill();
+  ctx.restore();
+}
+
+/** The box's outline and its four handles (and, while scaling, the scale readout). */
+function drawBoxHandles(ctx: CanvasRenderingContext2D, view: ViewTransform, box: CopyBox, scaling: number | null): void {
+  ctx.save();
+  ctx.strokeStyle = color.muted;
+  ctx.globalAlpha = 0.45;
+  ctx.lineWidth = 1;
+  ctx.setLineDash([4, 4]);
+  ctx.beginPath();
+  ctx.roundRect(box.x0, box.y0, box.x1 - box.x0, box.y1 - box.y0, 10);
+  ctx.stroke();
+  ctx.restore();
+  for (const h of box.handles) drawBoxHandle(ctx, h.at, h.id, h.enabled, box.copy, scaling !== null && h.id === 'scale');
+  if (scaling !== null) {
+    const at = box.handles.find((h) => h.id === 'scale')!.at;
+    const below = at.y + 46 < view.h;
+    drawLabelPill(ctx, { x: at.x - 30, y: below ? at.y + 34 : at.y - 34 }, [`Scale ${scaleLabel(scaling)}`, scaling === 1 ? 'As constructed' : 'Release to keep'], view);
+  }
+}
+
+/** One corner handle: a paper disc with its symbol, in ink (faded when it can't be used now). */
+function drawBoxHandle(ctx: CanvasRenderingContext2D, at: Vec2, id: BoxHandle, enabled: boolean, copy: IntersectionCopy, active: boolean): void {
+  ctx.save();
+  ctx.translate(at.x, at.y);
+  ctx.shadowColor = 'rgba(30,42,54,0.18)';
+  ctx.shadowBlur = 6;
+  ctx.beginPath();
+  ctx.arc(0, 0, BOX_HANDLE_R, 0, Math.PI * 2);
+  ctx.fillStyle = active ? color.ink : color.paper;
+  ctx.fill();
+  ctx.shadowColor = 'transparent';
+  ctx.lineWidth = 1.2;
+  ctx.strokeStyle = color.hairline;
+  ctx.stroke();
+  ctx.globalAlpha = enabled ? 1 : 0.32;
+  const ink = active ? color.paper : color.ink;
+  ctx.strokeStyle = ink;
+  ctx.fillStyle = ink;
+  ctx.lineWidth = 1.6;
+  ctx.lineCap = 'round';
+  ctx.lineJoin = 'round';
+  ctx.beginPath();
+  if (id === 'reflect') {
+    // ◁ ┆ ▷ — left and right swap across the vertical axis.
+    ctx.moveTo(-2, -6);
+    ctx.lineTo(-7, 0);
+    ctx.lineTo(-2, 6);
+    ctx.closePath();
+    ctx.moveTo(2, -6);
+    ctx.lineTo(7, 0);
+    ctx.lineTo(2, 6);
+    ctx.closePath();
+    ctx.stroke();
+    if (copy.pose.mirror) {
+      ctx.beginPath();
+      ctx.moveTo(2, -6);
+      ctx.lineTo(7, 0);
+      ctx.lineTo(2, 6);
+      ctx.closePath();
+      ctx.fill();
+    }
+  } else if (id === 'delete') {
+    // A bin.
+    ctx.moveTo(-6, -4.5);
+    ctx.lineTo(6, -4.5);
+    ctx.moveTo(-2, -4.5);
+    ctx.lineTo(-2, -6.5);
+    ctx.lineTo(2, -6.5);
+    ctx.lineTo(2, -4.5);
+    ctx.moveTo(-4.5, -4.5);
+    ctx.lineTo(-3.8, 6.5);
+    ctx.lineTo(3.8, 6.5);
+    ctx.lineTo(4.5, -4.5);
+    ctx.moveTo(-1.2, -1.5);
+    ctx.lineTo(-1, 4);
+    ctx.moveTo(1.2, -1.5);
+    ctx.lineTo(1, 4);
+    ctx.stroke();
+  } else if (id === 'lock') {
+    // A padlock: closed (filled) when locked, open when not.
+    if (copy.locked) ctx.arc(0, -2, 3.6, Math.PI, 0);
+    else ctx.arc(0, -2, 3.6, Math.PI, -0.35);
+    ctx.stroke();
+    if (copy.locked) ctx.fillRect(-5.5, -1.5, 11, 8);
+    else ctx.strokeRect(-5, -1, 10, 7);
+  } else {
+    // ↖↘ — scale out from the centre.
+    ctx.moveTo(-6, -6);
+    ctx.lineTo(6, 6);
+    ctx.moveTo(-6, -1);
+    ctx.lineTo(-6, -6);
+    ctx.lineTo(-1, -6);
+    ctx.moveTo(6, 1);
+    ctx.lineTo(6, 6);
+    ctx.lineTo(1, 6);
+    ctx.stroke();
+  }
+  ctx.restore();
 }
 
 /** A quiet padlock at a locked construction's centre. */
@@ -191,10 +317,12 @@ function drawLockMark(ctx: CanvasRenderingContext2D, doc: Doc, view: ViewTransfo
 const EXTENSION_ALPHA = 0.36;
 const CONSTRUCTION_ALPHA = 0.45;
 const FAIR_WIDTH = 2.8;
-/** Fair in Intersect: the copies' Fair strokes, translucent (the Developed Primary is opaque). */
-const REFERENCE_FAIR_ALPHA = 0.3;
-/** …and a Primary-copy's: in Repeat whole, so stronger — still under the opaque Developed Primary. */
-const PRIMARY_COPY_ALPHA = 0.62;
+/** Develop: every copy's Fair as a thin reference (the source), and what is in the design thick — screen
+ * px, so the difference reads at any zoom. Guides (Construction, Extension) thinner still. */
+const SOURCE_FAIR_WIDTH = 2;
+const SOURCE_FAIR_ALPHA = 0.5;
+const DEVELOP_WIDTH = 4;
+const GUIDE_WIDTH = 1.1;
 /** The Developed Primary's one stroke style (screen px, ink, opaque). */
 const PRIMARY_WIDTH = 3.2;
 const PRIMARY_CASING = 1.6;
@@ -212,27 +340,28 @@ function edgeShown(doc: Doc, copies: IntersectionCopy[], pick: IntersectionPick)
   return { copyKey: copy.key, entityId: pick.entity, p: a, u: { x: (b.x - a.x) / len, y: (b.y - a.y) / len }, extent: [0, len] };
 }
 
-/** Fair in Intersect: each copy's Fair strokes only, in its own colour — translucent (a reference), or
- * stronger for a Primary-copy (repeated whole with the Developed Primary). */
-function drawFairOnly(ctx: CanvasRenderingContext2D, doc: Doc, view: ViewTransform, sc: Scaffold, copies: IntersectionCopy[], layer: FormLayer = 'fair'): void {
+/** Develop: the editing view. Every copy's Fair thin (about 2 px — the source, for reference); what is in
+ * the developed design thick (about 4 px): each Whole copy's Fair, less what was taken out of it, in the
+ * copy's colour (the developed segments are drawn after, in ink). Construction and Extension pieces, while
+ * offered, as quiet guides beneath (Extension dashed). Screen widths: the thickness marks editing only —
+ * Repeat draws the design with its own stroke settings. */
+function drawDevelop(ctx: CanvasRenderingContext2D, doc: Doc, view: ViewTransform, sc: Scaffold, copies: IntersectionCopy[], offer: { construction: boolean; extension: boolean }): void {
   ctx.lineCap = 'round';
   ctx.lineJoin = 'round';
-  // Release R2: Construction (and Extensions) offered too — drawn thin beneath the Fair strokes, in each
-  // copy's colour, so what can be taken is visible (Extension pieces dashed).
-  if (layer !== 'fair') {
+  if (offer.construction || offer.extension) {
     for (const copy of copies) {
       const solid = new Path2D();
       const dashed = new Path2D();
       for (const piece of sc.pieces) {
-        if (piece.kind === 'construction') appendPiece(solid, doc, view, copy.pose, piece);
-        else if (piece.kind === 'extension' && layer === 'extension') appendPiece(dashed, doc, view, copy.pose, piece);
+        if (piece.kind === 'construction' && offer.construction) appendPiece(solid, doc, view, copy.pose, piece);
+        else if (piece.kind === 'extension' && offer.extension) appendPiece(dashed, doc, view, copy.pose, piece);
       }
       ctx.strokeStyle = copy.colour;
-      ctx.globalAlpha = 0.55;
-      ctx.lineWidth = 1.1;
+      ctx.lineWidth = GUIDE_WIDTH;
+      ctx.globalAlpha = 0.5;
       ctx.stroke(solid);
       ctx.setLineDash([...stroke.extensionDash]);
-      ctx.globalAlpha = 0.5;
+      ctx.globalAlpha = 0.45;
       ctx.stroke(dashed);
       ctx.setLineDash([]);
     }
@@ -242,15 +371,42 @@ function drawFairOnly(ctx: CanvasRenderingContext2D, doc: Doc, view: ViewTransfo
     const fair = new Path2D();
     for (const piece of sc.pieces) if (piece.kind === 'fair') appendPiece(fair, doc, view, copy.pose, piece);
     ctx.strokeStyle = copy.colour;
-    ctx.globalAlpha = inComposition(doc, copy.key) ? PRIMARY_COPY_ALPHA : REFERENCE_FAIR_ALPHA;
-    ctx.lineWidth = FAIR_WIDTH;
+    ctx.globalAlpha = SOURCE_FAIR_ALPHA;
+    ctx.lineWidth = SOURCE_FAIR_WIDTH;
     ctx.stroke(fair);
+  }
+  for (const copy of copies) {
+    if (!inComposition(doc, copy.key)) continue;
+    const cut = exclusionMap(doc, copy.key);
+    const kept = new Path2D();
+    for (const piece of sc.pieces) {
+      if (piece.kind !== 'fair') continue;
+      const ex = cut?.get(piece.entity.id);
+      if (!ex?.length) {
+        appendPiece(kept, doc, view, copy.pose, piece);
+        continue;
+      }
+      const circle = resolveEntityGeom(doc, piece.entity).kind === 'circle';
+      let from = piece.from ?? 0;
+      let to = piece.to ?? (circle ? Math.PI * 2 : 1);
+      if (circle && to <= from) to += Math.PI * 2;
+      if (!circle && to < from) [from, to] = [to, from];
+      for (const [f, t] of remainingRanges(from, to, ex, circle)) appendPiece(kept, doc, view, copy.pose, { ...piece, from: f, to: t });
+    }
+    ctx.strokeStyle = color.paper;
+    ctx.globalAlpha = 0.9;
+    ctx.lineWidth = DEVELOP_WIDTH + 2;
+    ctx.stroke(kept);
+    ctx.strokeStyle = copy.colour;
+    ctx.globalAlpha = 1;
+    ctx.lineWidth = DEVELOP_WIDTH;
+    ctx.stroke(kept);
   }
   ctx.globalAlpha = 1;
 }
 
 /** The Developed Primary — exact lines and arcs where they were developed — in the Primary style. */
-function drawDevelopedPrimary(ctx: CanvasRenderingContext2D, doc: Doc, view: ViewTransform): void {
+function drawDevelopedPrimary(ctx: CanvasRenderingContext2D, doc: Doc, view: ViewTransform, width = PRIMARY_WIDTH): void {
   const segs = developedSegments(doc);
   if (!segs.length) return;
   const path = new Path2D();
@@ -275,10 +431,10 @@ function drawDevelopedPrimary(ctx: CanvasRenderingContext2D, doc: Doc, view: Vie
   ctx.setLineDash([]);
   // Cased: a paper casing under an ink core — apart from every copy colour, the ink Original's too.
   ctx.strokeStyle = color.paper;
-  ctx.lineWidth = PRIMARY_WIDTH + PRIMARY_CASING * 2;
+  ctx.lineWidth = width + PRIMARY_CASING * 2;
   ctx.stroke(path);
   ctx.strokeStyle = color.ink;
-  ctx.lineWidth = PRIMARY_WIDTH;
+  ctx.lineWidth = width;
   ctx.stroke(path);
   ctx.restore();
 }
@@ -347,8 +503,8 @@ function drawFormFeedback(ctx: CanvasRenderingContext2D, controller: AppControll
     const centreWorld = screenToWorld(view, l.centreScreen);
     const zoom = view.zoom * l.mag;
     const mv: ViewTransform = { ...view, zoom, pan: { x: (l.x - view.w / 2) / zoom - centreWorld.x, y: (l.y - view.h / 2) / zoom - centreWorld.y } };
-    drawFairOnly(ctx, doc, mv, sc, copies, controller.formLayer);
-    drawDevelopedPrimary(ctx, doc, mv);
+    drawDevelop(ctx, doc, mv, sc, copies, { construction: !controller.formWhole && controller.formConstruction, extension: !controller.formWhole && controller.formExtension });
+    drawDevelopedPrimary(ctx, doc, mv, DEVELOP_WIDTH);
     press.picks.forEach((p, i) => {
       drawCandidate(ctx, mv, p.prim, p.action === 'add', i === press.active);
       const truePos = worldToScreen(mv, p.marker);
@@ -504,16 +660,13 @@ function drawPointMark(ctx: CanvasRenderingContext2D, view: ViewTransform, r: Ex
   ctx.restore();
 }
 
-/** The radius (screen px) of a construction's rotation ring — just outside its frame, as Repeat's. */
-export function ringRadius(doc: Doc, view: ViewTransform): number {
-  return motifRadius(doc) * view.zoom + 26;
-}
+export { ringRadius };
 
 /** Where a construction's rotation handle sits on its ring (screen) — "up" at zero rotation. */
 export function rotationHandle(doc: Doc, view: ViewTransform, copy: IntersectionCopy): Vec2 {
   const pivot = doc.frame.origin;
   const centre = worldToScreen(view, { x: pivot.x + copy.pose.translate.x, y: pivot.y + copy.pose.translate.y });
-  const r = ringRadius(doc, view);
+  const r = ringRadius(doc, view, copy);
   const a = -Math.PI / 2 + copy.pose.rotation;
   return { x: centre.x + r * Math.cos(a), y: centre.y + r * Math.sin(a) };
 }
@@ -522,7 +675,7 @@ export function rotationHandle(doc: Doc, view: ViewTransform, copy: Intersection
 function drawRotationRing(ctx: CanvasRenderingContext2D, doc: Doc, view: ViewTransform, copy: IntersectionCopy, active: boolean, handle = true): void {
   const pivot = doc.frame.origin;
   const centre = worldToScreen(view, { x: pivot.x + copy.pose.translate.x, y: pivot.y + copy.pose.translate.y });
-  const r = ringRadius(doc, view);
+  const r = ringRadius(doc, view, copy);
   ctx.save();
   ctx.strokeStyle = copy.colour;
   ctx.globalAlpha = 0.45;

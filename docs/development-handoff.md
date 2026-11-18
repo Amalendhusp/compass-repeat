@@ -550,10 +550,376 @@ Keep this short and current. It is a starting point, not a substitute for readin
 7. After merging: check the Actions tab (Deploy to GitHub Pages: success), open the public URL on the iPhone, hard
    refresh once, and test one saved artwork.
 
+## Interface refinement (November 2026) — branch `feature/interface-refinement`
+
+Branched from the published `main` (9a4ea59); no upstream, never pushed to `main`. Staged plan approved by the
+user (D1–D9 as recommended). Do not merge or deploy without explicit approval.
+
+- **Stage 1a — Fair independence.** Line in Intersect no longer offers Promote to Fair (`line.ts` offerAfterLine,
+  `shell.ts` ribbon guard). Intersect Fair writes only `doc.intersection.form.developed`, as before.
+- **Stage 1b — selection first = tool first** (`interaction/selectionFirst.ts`, used by `controller.setTool`, Construct
+  only). A Select selection gives the tool chosen next the same first input a tap would: point → Line (A), point →
+  Circle By radius (centre), point → Arc (Measure: A; Same radius: the compass opens on it), segment / run / line /
+  arc / circle → Divide (target previewed, never applied). A point under Divide stays selected, as before. A
+  selection a tool can't start from is cleared with a short message (`controller.onNotice` → toast). Nothing is
+  made until the tool's next input. Divide's target helpers moved to `interaction/divideTarget.ts` (unchanged).
+- Checks: `scratchpad/refine-tests/stage1.mjs` (isolated headless Chrome on port 9334, dev server 5188), touch at
+  390 × 844 and mouse at 1280 × 800 — 29/29 each.
+- **Stage 2a — reflection-aware placement maths** (`lattice.ts`: composePose mirror = XOR, relativePlacement,
+  inversePoint, poseVector(Inverse), poseArcRange). Intersect linking / snapping / Match Edge use them;
+  `instanceCamera` refuses a reflected pose. Repeat unit cache key includes reflection (only when set).
+- **Stage 2b — Intersect copy reflection.** `layout.pieces[].mirror?: true` (written only when true; never the
+  Original; never a locked copy). `withReflection(doc, key, 'h' | 'v')`: ↔ → mirror toggles, turn → π − turn;
+  ↕ → mirror toggles, turn → −turn (twice = identity; both = half turn). Construction tools never draw through a
+  reflected copy (main.ts `activeCopy` falls back to the Original; a touch on one → notice). Temporary Reflect
+  buttons under a copy's colour swatches until Stage 3.
+- **Stage 2c — Repeat rules.** `rule.flip?: 'h'` (mirror only: reflect across the motif's vertical axis = mirror +
+  half turn) and `rule.by?: 'rows' | 'columns'` (absent = every other copy, i + j odd, as always). Shared helpers
+  in `lattice.ts`: `alternationOf`, `isAlternateCopy`, `evenShift`, `ruleKey` (= `rule.kind` for every older rule,
+  so Space keys / caches are unchanged). Space periods (`patternPeriod`): rows → (a, 2b), columns → (2a, b).
+  Close gap bases per alternation. UI: Transformation (As drawn · Rotate 180° · Reflect ↔ · Reflect ↕) and
+  Apply to (Alternating · Rows · Columns, shown only while something changes).
+- Stage 2 checks (`scratchpad/refine-tests/`): `stage2-math.mjs` 17/17; `stage2-ui.mjs` 36/36 touch and mouse;
+  `stage2-features.mjs` (Plate 113: Space colours, Fill targets, interlacing, Close gap, PNG/SVG under every new
+  rule and with a reflected copy in the Intersect source); `stage2-timelapse.mjs`; `compat-compare.mjs` (Plate
+  113 on published main — `preview_start main-baseline`, a `git archive origin/main` copy in the session
+  scratchpad on port 5191 — vs the branch: drawing, Space keys and crossings identical under Uniform /
+  Alternate / Mirror / turned motif / Intersect source); `compat-saved.mjs` (an artwork saved by the release,
+  opened and re-saved by the branch: identical record).
+- **Stage 3 — Intersect panels.** Copies panel (`showIntersectionCopiesPanel`): "Arrangement · moves all copies"
+  (the shared Spread row + Reference, and a hint that follows it — `ixSpreadHint`), then one row per construction
+  (`.copy-row[data-copy]`: colour, name, tags In Repeat / ⇋ Reflected / turn° / Locked / No extensions). A row
+  selects that copy on the canvas and opens its settings (Include in Repeat, Show extensions, Reflect ↔ / ↕, Colour,
+  Remove); the canvas selection opens with the panel. Original: no Reflect / Remove. Bookmarks popover: Save
+  arrangement + the list only (stored data unchanged: `intersectionSnapshots`); reference-image visibility stays in
+  Menu → Reference image…. Checks: `stage3-ui.mjs` 33/33 touch and mouse (shared setup: `setup.mjs`);
+  `compat-saved.mjs` also restores the release's bookmark through the new popover.
+- **Stage 4 — one colour control; Repeat rows.** The top-right control (`selectionColouring`, Construct + Select):
+  with a selection it shows the selection's colour (a small wheel when mixed) and edits only it — one swatch row for
+  construction lines (Entity.colour, the whole line or circle — said so) and Fair pieces (stroke) together, Fair width
+  when Fair pieces are included, Fill (No fill, opacity kept) + Line for a Fair region; one Undo step each. Nothing
+  selected: the tool's drawing colour as before (Fair width, Fill opacity kept). The Select ribbon's Colour / Width
+  chips are gone. `colourSwatchRow(current = '')` lights no swatch (mixed). Repeat panel, top to bottom: Source ·
+  Transformation · Apply to · Fill (own row `.fill-entry-row`); Space colouring's alternation reads "Colour every other:
+  Copy · Row · Column". Checks: `stage4-ui.mjs` 39/39 and `stage4-region.mjs` 7/7, touch and mouse.
+- **Baseline correction:** the published release's Plate 113 Repeat fingerprint is `b6c2014136565e92·4729`
+  (measured on main 9a4ea59); the `c25d06fd…·4321` value below predates the last release changes.
+- **Transformation caption** (commit after Stage 4): a small visible "Transformation" label above Repeat's four
+  choices (`.rule-line .row-caption`, aria-hidden — the group already has that accessible name). Display only.
+  Check: `label.mjs` 7/7.
+
+## Project files (November 2026) — `src/persist/projectFile.ts`
+
+One artwork, complete and editable, as a single `Name.compass-repeat.json` file for another browser or device.
+
+- **Controls.** Menu → Save project file… (the work in hand, unsaved changes included) and Open project file…; My
+  Artworks → Open project file… (works on a device with nothing saved) and card ⋮ → Save project file (the saved
+  version). Never in Share, which stays PNG / SVG / Timelapse.
+- **Format v1.** `{ format: 'compass-repeat-project', formatVersion: 1, app, exportedAt, contains, check, payload }`.
+  `payload.artwork` = name, named, dates, schemaVersion and the Doc exactly as stored (Maps `{__map}`, Sets `{__set}`,
+  non-finite numbers `{__num}`); `payload.reference` = the reference image's record and its working copy as a data
+  URL. `check` = `check64` (64-bit, cyrb-style) of `JSON.stringify(payload)` — re-indenting keeps it valid, any
+  content change fails. Not included: Undo history, process / Timelapse history, email, phone.
+- **Export.** Built first, then a sheet "Project file ready" (name, size, reference included / not on this device,
+  what is left out) with Share… (only where `navigator.canShare` accepts this very file — iOS Safari) and Download.
+  The file is handed over from the tap on that button, so the share sheet keeps its user activation.
+- **Import.** `readProjectFile` does everything in memory: size, JSON, format, version (newer → "Made with a newer
+  Compass Repeat"), check, `snapshotProblem` (frame, points, entities and their references, Maps, Repeat, view,
+  bookmarks, underlay), `upgradeSnapshot`, then a test drawing (every point resolves, `artworkHash`,
+  `makeThumbnail`); the image is decoded (`createImageBitmap`) and its library thumbnail redrawn. Refused files show
+  a notice with OK only, and storage is untouched. Accepted files ask "Open “Name”?" (notes: renamed because the
+  name is taken → "Name (imported)", reference included / missing / damaged, contact details left out); then the
+  usual unsaved-changes question (`confirmLeave`). `writeImportedArtwork` writes a NEW artwork (new id, now, no
+  history); the image is reused only if this device holds the same bytes, otherwise added with scope `'artwork'`;
+  if the artwork write fails that new image is removed again. A missing or damaged image: the artwork opens without
+  it and keeps its placement (shown as missing, as before).
+- **No storage change.** No database, store, key or version changed; nothing existing is ever rewritten or cleared.
+- **Checks** (scratchpad/refine-tests, two isolated Chrome profiles on two origins — A: port 9334 /
+  `localhost:5188`, B: port 9335 / `[::1]:5188`): `project.mjs [A] [B]` 63/63 desktop→phone and phone→desktop
+  (export → transfer → import → edit → save → reload; drawing fingerprints equal; re-import; 7 refused files with
+  storage unchanged; missing / damaged image; contact details; share path with a stubbed share sheet);
+  `project-extra.mjs` 8/8 phone and desktop (Menu, card ⋮, Share panel); `compat-project.mjs` — an artwork saved by
+  the published release, exported by the branch and opened on device B, draws identically and saves an identical
+  record.
+
+## Intersect construction independence (November 2026) — `src/geometry/intersectLayer.ts`
+
+Approved decisions D1 (independent Intersect construction) and D4 (one Extensions switch, later stage); D2
+(what Repeat takes from Intersect) awaits approval of its example; D3 (older states kept as they are).
+
+- **Why Construct used to change.** Line / Circle / Arc / Divide in Intersect were Construct's own tools run
+  through the active copy's camera (`onActiveInstance`, `instanceCamera`), committing to `doc.points` /
+  `doc.entities`; a point taken from another copy became a free point of Construct. Removed.
+- **The layer.** `doc.intersection.construction = { points, entities, segmentStates: [key, state][] }` in
+  workspace coordinates (plain data: Timelapse's `plain()` would flatten a Map). Absent until something is drawn.
+  A layer document (`layerDoc(doc)`, one per artwork state) gives the kernel, tools and renderer a Doc whose
+  geometry is the layer's and whose every other field reads/writes the artwork (accessors). Frame: no entities,
+  centre `ix_centre` (a hidden free point at the frame centre).
+- **Editing.** `layerController(controller)` (a Proxy): `doc` = layer document, `commit` = one commit of the
+  artwork writing the layer back through `withConstruction` (which records an empty Form for a 'new' artwork,
+  as any first Intersect write does). main.ts wraps the four tools (`onLayer`); shell.ts's ribbon actions use
+  `geo()` (Divide preview / Apply, Horizontal / Vertical, Extend). The tools work through the workspace camera.
+- **From the copies.** `layerContextPointNear` / `layerContextLinesNear` / `layerCopiesNear` (intersectionLink.ts):
+  every copy's points that lie on what it draws (`pointOnDrawn` — divisions and midpoints included, unlike
+  Snap's `pointShown`), and crossings between any two drawn pieces, at least one a copy's. Taken, they become
+  fixed free points of the layer. Reflected copies work like any other (the "draw on the Original" notice is gone).
+- **Fixed.** Moving, turning, reflecting a copy never moves the layer or the developed Fair.
+- **Drawn** by Construct's entity renderer (`drawConstructionOnly`) over the copies, under the developed Fair,
+  quieter while Fair is the tool; included in Intersect's Fit.
+- **Intersect Fair** (`formSegments`): the layer's construction pieces are always offered (its extensions with the
+  Extensions setting), split wherever they meet anything offered; origin `copy: 'ix'` ("Intersect construction").
+- **Never Construct, never Repeat.** Nothing reads the layer outside Intersect except Undo, the draft, Timelapse
+  state and project files (validated: `snapshotProblem`, and every layer point must resolve).
+- **Old artworks.** Unchanged: construction drawn in Intersect before this change stays in Construct (no migration).
+- **Select / delete / recolour** (`intersectSelect` in main.ts): a press nearer Intersect construction than any
+  shown copy (16 px reach, 4 px in its favour) goes to Construct's own Select on the layer; else the copy tool
+  (and the construction selection clears). `renderLayerSelectRibbon`: Delete (whole shapes with dependents,
+  confirmed; pieces; points). `lens()` points the top-right colour control at the layer. Developed Fair stays.
+- **Checks:** `layer.mjs` 22/22, `layer-fair.mjs` 13/13, `layer-select.mjs` 21/21, phone and desktop.
+
+## Intersect Fair composition, Show/Hide and the compact Copies panel (November 2026)
+
+- **What Repeat takes from Intersect** = developed Intersect Fair + whole source motifs in the design. Whole
+  motifs are the stored `primaryCopy` flag (formerly "Include in Repeat"), unchanged in meaning: the Original is
+  in by default, copies out; a legacy artwork keeps every instance until its first change (asForm keeps them).
+  Construction never repeats.
+- **Whole motif** (`controller.formWhole`; Fair's ribbon in Intersect, first): a tap toggles a copy's whole motif
+  (`withPrimaryCopy`), one Undo step; drawn 0.95 / 0.2 strong / faint while on; overlapping copies → "Which
+  copy?" chooser (`LineChoice.title`). Hidden copies are never offered.
+- **Show/Hide** (`intersection.copies[key].hidden: true`, absent when shown; `withHidden`, `shownCopies`):
+  hidden copies are not drawn, picked, snapped to, offered to Fair, fitted or repeated (`repeatComposition`
+  filters them). Pose, colour, lock and `primaryCopy` are kept. Bookmarks now record `visibility: true`; an older
+  bookmark (none) keeps the copies' current visibility on restore (`withArrangement(…, recordsVisibility)`).
+- **Copies panel** (`showIntersectionCopiesPanel`): chips (colour; ⇋ reflected; dashed hidden; ◆ whole motif in
+  the design; ring selected) + Add; the selected copy's Colour · Reflect ↔ (`withReflection 'h'` only; never the
+  Original or a locked copy) · Shown/Hidden, and Remove; footer: Spread + Reference, one Extensions switch for all
+  copies (writes every copy's `extensions`; an older mix shows "Extensions · some copies" until used). Older ↕
+  reflections keep their pose and show ⇋.
+- **Checks:** `hidden.mjs` 15, `whole.mjs` 18, `copies-panel.mjs` 28, `repeat-cases.mjs` 8 (the four cases),
+  phone and desktop; `stage2-ui.mjs` / `stage3-ui.mjs` updated to the chip panel.
+
+## Bounding boxes, Stage 2a: the scale foundation (November 2026)
+
+Plan approved 2026-11-13 (Intersect copy box; Repeat Uniform box, Alternate kept with its old Transformation rows;
+no Rows/Columns keyframes yet). Stage 2a adds scale underneath, with no interface yet.
+
+- **Data:** `InstancePose.scale?` (absent = 1). Stored as `layout.pieces[].scale?` (a copy; written only when not
+  1) and the existing `repeat.motif.scale` (always 1 until now; now applied). `poseScale` reads malformed values as
+  1; `scaleField` keeps 25–400 % and writes nothing for 1. Pivots unchanged: a copy's own frame centre; Repeat's
+  frame centre for both sources.
+- **Maths** (`lattice.ts`): transformPoint / poseVector scale; inverse, compose and relativePlacement include it;
+  `poseLength` for radii and distances. At scale 1 every result is bit-identical (× 1 and ÷ 1 are exact).
+- **Callers:** arc radii (placePrim, both renderers), distances measured in a copy's own frame
+  (instanceDistances, instanceUnder, contextual pieces), Snap's shown lines (unit direction, extents × scale), hit
+  areas and the rotation ring, Intersect bounds and Fit, Repeat reach (visibleInstances, `repeatReach`), Fit,
+  circle contact, Spaces / weave / Fill openings / construction spaces / Close Gap tolerances (all × the Repeat
+  scale, keys gain `scale:` only when not 1), Spaces' and colouring's inverse, Timelapse bounds.
+- **Line weight is constant:** Repeat's screen bitmap is drawn with the scale inside it and stamped with turn and
+  mirror only.
+- **Fair:** developed Fair is stored geometry and never moves or scales with a copy. A whole-motif copy's Fair is
+  its motif placed by its pose, so it scales with it. Repeat's doubled-stroke filter means a developed piece that
+  a copy drew at 100 % is drawn again when that copy is scaled.
+- **Match Edge:** `EdgePlan.lengthsDiffer` (the middles meet; ends can't). The warning is shown in Stage 2b.
+- **Checks:** `scale1-compare.mjs` (checkpoint tag on port 5192 vs branch, and the branch with `scale: 1` written:
+  306 exact comparisons over nine scenarios), `scale-math.mjs` 38 (maths; a 2× / ½× copy; the field at ½× / 2× equals
+  the 100 % field scaled, for both sources).
+
+## Bounding boxes, Stage 2b: an Intersect copy's bounding box (November 2026)
+
+- **Opening and closing** (`controller.intersectionBox`, session only): a long-press of 450 ms without moving
+  (`holdForBox`), or a right-click or Control-click (`PointerManager.onContextPress` → `openBoxAt`), on a copy in
+  Select. It opens on the selected copy when the press is on it, else the nearest. It never moves on to the next
+  of several overlapping copies; a tap does that. A tap or click outside it, selecting another copy, an alignment
+  (Parallel / Point Snap / Match Edge), another tool or leaving Intersect closes it (`openBox` normalises).
+- **Box** (`render/copyBox.ts`): canvas-aligned around the copy's frame and Fair and its rotation ring (corners
+  stay ≥ 44 px from the ring's handle); kept inside the canvas and above the dock and its buttons
+  (`ViewTransform.usableBottom`, set by `getView` while a box is open). Grey ground under the copies; dashed
+  outline and handles over everything.
+- **Handles**, answered before everything (also before Intersect's own construction, in `intersectSelect`):
+  top-left Reflect ↔ (`withReflection 'h'`; never the Original or a locked copy); top-right Delete (`withoutCopy`;
+  never the Original); bottom-left Lock / Unlock; bottom-right Scale. Each is one Undo step. Scale is a drag
+  (`draggedScale`: proportional to the finger's distance from the copy's centre, 25–400 %, snapping to 100 % within 4 %;
+  stored with `withCopyScale`, nothing stored at 100 %). The live draft is `intersectionDrag` mode `'scale'` with
+  a readout pill "Scale n %".
+- **Copies panel**: Colour · Shown/Hidden (eye) · Reset (`withCopyReset`: 100 %, no turn, no reflection, same
+  place; off while locked or as constructed) · Delete (bin; not for the Original). Reflect ↔ moved to the box.
+- **Match Edge**: when a scaled copy's edges differ in length (`EdgePlan.lengthsDiffer`), the status line and a
+  toast on applying say that the middles meet, not the ends.
+- **Timelapse kinds**: `intersect-scale`, `intersect-reflect`, `intersect-reset`, `repeat-scale`,
+  `repeat-reflect` (new moments only; recorded histories keep theirs).
+- **Developed Fair** is unchanged by any of this. Stored pieces stay where they are, and Intersect always draws
+  them. Repeat draws a piece again once a scaled copy no longer draws the same line.
+- **Checks:** `box.mjs` phone 41 (touch) and desktop 39 (mouse, right-click, Control-click); `copies-panel.mjs`,
+  `stage2-ui.mjs`, `stage3-ui.mjs` updated (Reflect through the box handle; Delete; Reset). `setup.mjs`
+  `motifRetry` reloads when headless touch emulation drops a touch during setup.
+
+## Intersect: Duplicate and Reset Intersect (November 2026)
+
+- **Duplicate** (Copies panel, the selected copy: Colour · Shown · Reset · Duplicate · Delete — `withDuplicate`): a new
+  copy with the same turn, reflection, scale, colour and Extensions setting, offset right and down by a quarter of
+  its frame radius (at its scale). Unlocked, shown, its whole motif not in the design. The Original duplicates as an
+  ordinary copy. Off at six constructions. Selected afterwards; one Undo step. Timelapse kind `intersect-duplicate`.
+- **Reset Intersect…** (Copies panel footer, confirmed — `withIntersectReset`): back to the Original alone at its
+  centre, unturned, 100 % (its colour and Extensions kept); every copy, Intersect's own construction and developed
+  Fair removed; a Form Development arrangement whose design is the Original's whole motif. Construct and bookmarks
+  are never touched. One Undo step. Off when there is nothing to reset (`intersectResettable`). Timelapse kind
+  `intersect-clear`.
+- **Checks:** `intersect-extra.mjs` 26/26 phone and desktop; `copies-panel.mjs` and `box.mjs` updated for Duplicate.
+
+## Repeat redesign: Source → Fill and the motif's bounding box (November 2026)
+
+- **Panel:** Undo / Redo (as before, above) → Source (Construct | Intersect) → Fill. Uniform (`rule: same`, As drawn)
+  is the default for new work, as it already was in `doc.ts`. Transformation and Apply to are folded away.
+- **Legacy alternating rules** are never changed silently: an artwork whose rule alternates (`alternationOf`) keeps
+  it exactly and shows a row "Alternating rule · Rotate 180° · every other copy" with **Edit** (shows the old
+  Transformation · Apply to rows until Done) and **Uniform** (rule → same, one Undo step). Grid settings →
+  **Alternating rules…** opens the same rows on any artwork (`controller.repeatLegacyRules`, session only).
+- **Box** (`render/repeatBox.ts`, `controller.repeatBox`, session only): long-press (450 ms) on the central design
+  (within its reach of the frame centre) or right-click / Control-click (`openRepeatBoxAt`). Square about the pivot,
+  as large as the design reaches (`repeatUnit.extent` or `motifExtent`, × scale) — turning or reflecting never moves
+  its corners; frames the whole Intersect composition for that source; kept on screen and above the panel
+  (`usableBottom`). Closes on a tap outside, Fill, crossings, Close Gap, hidden handles or leaving Repeat.
+  Corners: top-left **Reset** (rotation 0, scale 1, no mirror; A / B kept; off when already so), top-right **Rotate**
+  (drag round the centre, by the angle swept, `snapRotation`; readout "Turn 1/6 turn"), bottom-left **Reflect**
+  (toggles `motif.mirror`), bottom-right **Scale** (`draggedScale`, 25–400 %, snap at 100 %; readout "Scale n %").
+  Each change is one Undo step. Touch order: A / B handles, then the box's corners, then the motif.
+- **The ring is gone** (`drawRotationRing`, `rotateRingGesture` removed). Guides panel: "Handles · A, B and the box".
+- **Reflection** (`motif.mirror?: true`, written only when on): the motif reflected across its own vertical axis,
+  then turned — pose rotation θ + π, mirror; a legacy alternation is applied within it as `composePose` would
+  (rotation θ + π − adj, mirror XOR). Absent = exactly the old pose. Space and weave cache keys gain `mirror` only
+  when on. Close Gap's inside test turns its tiny ray tilt the other way in a reflected repeat
+  (`insideOutline(…, reflected)`), so a reflected design gets exactly the mirror image of the unreflected one's gaps.
+- **Constant line weight:** the sprite carries the scale; stamping applies turn and mirror only (unchanged).
+- **Timelapse:** `repeat-rotation`, `repeat-reflect`, `repeat-scale`, `repeat-reset`.
+- **Checks:** `repeat-box.mjs` 52/52 phone and desktop; `repeat-mirror.mjs` (Plate 113: reflected field = the mirror
+  image of the unreflected field with the lattice reflected — Spaces, crossings, Close Gap candidates, Fill
+  openings, both sources, Uniform and Alternate; export draws); `ring-check.mjs` (scale1-compare with handles
+  hidden: 306/306 identical to the checkpoint — the only change to existing artworks is the ring no longer drawn);
+  `label.mjs`, `stage2-ui.mjs`, `stage4-ui.mjs`, `project.mjs` open the folded rules first (`openLegacyRules`).
+- **Test harness:** headless Chrome is now stopped every few minutes on this Mac (the updater wakes, then the
+  browser is terminated). `refine-tests/run.sh "suite mode" …` starts Chrome in its own session when needed and
+  retries a suite once if the browser is lost mid-run.
+
+## Intersect refinement, Stage A: interface simplification (November 2026)
+
+Brief: Select and arrange copies → observe intersections → develop a new motif → repeat it. Stages A–D,
+stopping for review after each; Stage A is the interface only (Develop's behaviour is Stage B).
+
+- **Dock in Intersect:** Select · Develop · Spread · Reset (`shell.ts`: Circle, Line, Arc, Divide, Fill and the
+  divider hidden there; the Fair button is labelled Develop in Intersect only — Construct's dock is unchanged).
+  The construction tools stay in Construct. Intersect's own construction layer from older artworks is still
+  drawn, selectable and deletable with Select, and offered to Develop; nothing new can be drawn there.
+- **Select:** unchanged — tap selects (rotation handle at once), drag moves, the handle turns, snapping and the
+  alignments (Parallel · Join, Point Snap, Match Edge, Lock) as before. Long-press / right-click: the Stage 2b box
+  (Reflect ↔, Delete, Lock, Scale). The Original has no Delete and, as decided in Stage 2b, no Reflect.
+- **Copies panel** (`showIntersectionCopiesPanel`): a coloured circle per construction (tap = select, on the
+  canvas too; hidden copies stay selectable), a small eye under each (Show/Hide, one Undo step, never a change of
+  selection; a hidden copy's circle at 20 % opacity), and Add. Removed from the panel: Duplicate, Colour,
+  Shown/Hidden button, Reset copy, Delete (it is on the canvas box), Spread, the Extensions switch and Reset
+  Intersect. `withDuplicate` / `withCopyReset` stay in `intersection.ts` (Timelapse kinds kept for recorded
+  histories); nothing calls them from the interface now.
+- **Spread** (dock): a compact column on the canvas's left edge (`.ix-spread-panel`), open while the dock's
+  Spread is lit: the percentage, a vertical track (same log mapping, 25–500 %, `withSpreadAround` unchanged; a
+  light hold at 100 %), a brass reference line at 100 % with **Ref** beside it (a tap goes back to 100 %), and
+  **Set ref.** (`asReference`, as before). A changed set of copies: "Copies changed", the track rests until Set
+  ref. Every press on the track may drag (a touch near Ref is often given to it); a still press on Ref = 100 %.
+  Closes with Develop, an alignment, or leaving Intersect; opening it from Develop returns to Select.
+- **Reset** (dock, confirmed — `confirmIntersectReset`, `withIntersectReset`): the Original and two copies in
+  `defaultLayout` (as a new artwork starts), Spread 100 % with that group as reference; other copies, every copy
+  setting (lock, hidden, colour, whole motif), Intersect's construction and the developed design removed; the
+  Original keeps its colour and Extensions setting. Construct and its Fair, and bookmarks, untouched. One Undo
+  step. Off when Intersect is already as it starts (`intersectResettable` now compares with the start). Timelapse
+  `intersect-clear` recognises both the new start and the older "Original alone" reset; deleting the one extra
+  copy of an untouched start stays a deletion.
+- **Wording:** owner tag "Develop · Intersect’s own design (Construct is never changed)"; Develop's hint; the
+  empty-composition card points to Develop.
+- **Checks:** `stage-a.mjs` 59/59 phone (touch) and desktop (mouse, right-click). `run.sh` now calls
+  `/usr/bin/python3` (the Homebrew python3 first on bash's PATH is an x86 build that no longer runs).
+
+## Intersect refinement, Stage B: Develop independent of Construct Fair (November 2026)
+
+Stage A decisions applied with it: the Original is never reflected (it stays the reference); a quiet Delete for
+the selected copy in the Copies panel (`.copy-delete`, never the Original; asks first only when the copy's whole
+Fair is in the design; one Undo step); Reset Intersect now gives every copy its default colour and Extensions
+setting too (`copies: {}`); no permanent Extensions switch; older Intersect construction kept (selectable,
+deletable, used in Develop with Construction on); the Spread column sits low on the left on a narrow canvas,
+just above the floating controls (`placeSpreadPanel`; top-left on wider screens or when there is no room).
+
+- **Develop ribbon** (`shell.ts`, Intersect + `fair`): the copy it works with (chip with its colour — a tap moves to
+  the next shown copy; selection only, never a change to the design), then **Whole · Construction · Extension**,
+  always together. The canvas "Whole motif" mode and its "Which copy?" chooser are gone.
+- **Whole** (`setWhole` in `interaction/formPick.ts`): the target copy's whole Construct Fair in or out of the design
+  — the existing `primaryCopy` flag, unchanged in meaning and storage; turning it on or off forgets that copy's
+  exclusions (one Undo step).
+- **Exclusions** (`geometry/developExclusions.ts`, `intersection.copies[key].excluded?: { entity, t0, t1 }[]`, written
+  only when there is one): a stretch of a Whole copy's Fair taken out of the design, as a range along one Construct
+  line (t along A→B) or circle (start angle, start + sweep) — the copy's OWN coordinates, so it follows every move,
+  turn, reflection and scale, other copies moving never changes it, and Construct is never touched. Interval
+  helpers: `remainingRanges`, `withExcluded` (merge), `withoutExcluded`, `localRange` (a placed segment back into
+  the copy's coordinates via `inversePoint`), `cutFeature`.
+- **A tap** (`formPicksAt` / `commitPick`): a segment is in the design when a developed segment lies along it or it is
+  Fair of a Whole copy not excluded there (`segmentIncluded`, `wholeRefsOf` — Fair origins only). In → out removes
+  the developed segment along it and excludes it on every Whole copy it belongs to; out → in restores a Whole
+  copy's excluded stretch, otherwise adds the exact geometry as a developed segment (as before). Developed
+  segments no offered segment stands for stay removable. The chooser / loupe for crowded taps are unchanged
+  (Stage C replaces them); wording "Add to the design" / "Take out of the design".
+- **Construction / Extension** (`controller.formConstruction`, `formExtension`, session only): independent;
+  `formSegments(doc, { construction, extension })` (a FormLayer string still reads as before). Each shows its
+  pieces as quiet guides (1.1 px; Extension dashed; Intersect construction only while one is on) and offers them;
+  neither ever changes what is already developed.
+- **Editing widths** (`drawDevelop`, intersectionRenderer): every copy's Fair 2 px at 50 % (the source), what is in
+  the design 4 px — Whole copies' Fair less exclusions in the copy's colour on a paper casing, developed segments
+  in ink cased. Screen px, Develop only; Select draws as before (developed 3.2 px).
+- **Repeat** reads exclusions everywhere the composition is used: `compositionFeatures` (Fill spaces, unit regions,
+  crossings / interlacing, Close Gap) cuts them out of Whole members (untouched features keep their ids, so every
+  artwork without exclusions is unchanged); `repeatUnit` key gains `|ex:…` only when there are any, and
+  `notDrawnBy` uses the cut runs; `drawCopy` strokes only the kept ranges (`keptRanges`); `unitSkips` never lets a
+  partly drawn stroke stand in for a whole one. Repeat draws with its own stroke settings — never the 4 px.
+- **Bookmarks** restore arrangements, not the design: `withArrangement` keeps the current exclusions (as it keeps
+  developed segments).
+- **Checks:** `stage-b.mjs` 47/47 phone and desktop (ribbon; independent offers; Whole segment out → excluded, not
+  developed; back in; non-Whole copy → developed; exclusion through move / turn / reflect / scale; target chip;
+  Repeat composition, pixels and one stroke width; Save → reload identical; project file round trip; bookmark;
+  Whole off / on; 2 px / 4 px; Delete; Reset defaults; Spread placement). `whole.mjs` rewritten for the ribbon
+  (16/16). Suites updated for the new controls (Intersect construction now injected — `setup.mjs` `layerAdd`):
+  hidden, layer-fair, layer-select, stage2-ui, stage3-ui, box, repeat-cases. Retired (kept in
+  `refine-tests/retired/` with a note): copies-panel, intersect-extra, layer.
+
+## Intersect refinement, Stage B review: Fill, Spread, Develop toolbar (November 2026)
+
+- **Fill regression — root cause.** `drawUnit` (repeatRenderer.ts) drew, for each copy of the design, the Whole
+  members' fills AND lines, then the unit's region fills, then the developed lines. Region fills were painted
+  over the members' lines: a line of the design between two filled regions (a Whole copy's Fair — shown as part
+  of the design in Develop — and any developed segment lying along it, which `notDrawnBy` leaves to that member)
+  vanished; with one side filled, half of it. Reproduced through Construct → Intersect → Develop → Repeat: the
+  Original's Fair line between two filled regions went from ink (52,62,72) to the fill colour (215,183,99).
+  Developed segments, exclusions and region keys were never changed — only the paint order. **Fix:** within a
+  unit, every fill (members' own, then region fills) before every line (members', then developed); and, from
+  Intersect with fills in use, a fill pass for every lattice copy before a line pass (sprite keys `fill` / `all`),
+  so a neighbouring unit's fill never covers a line where units overlap. Construct-source Repeat is drawn exactly
+  as before (one pass).
+- **Spread.** The reference follows the copies: `withAddedCopy`, `withDuplicate` and `withoutCopy` make the
+  arrangement (unchanged, nothing moves) the 100 % reference at once (`asReference`). An artwork stored earlier
+  with an out-of-date reference is made current, as one step, the first time Spread is used (`stale()` in shell.ts
+  — never refuses). Set ref. kept. The column is on the canvas's right edge (`right: 6px`), its track 184 px; on a
+  narrow canvas low down, above the floating controls (Fit included); Ref on the track's left.
+- **Develop toolbar:** Whole | Fair | Construction | Extension (`.develop-bar`: equal shares, short labels "Constr." /
+  "Ext." under 480 px, never a scroll). Whole is a mode (`controller.formWhole`): a tap on a copy's Fair puts its
+  whole Fair in or out (`setWhole`; nearest copy, the selected one in a near-tie, no chooser). Fair, Construction
+  and Extension (`formFair`, `formConstruction`, `formExtension`) are independent sources for segment taps
+  (`FormOffer.fair` — Fair off still splits the other pieces where Fair meets them); choosing one leaves Whole.
+  Entering Develop always starts Fair on, Whole off, no guides (`setTool`); no switch ever changes the design.
+  The target-copy chip is gone; the "Develop · Intersect's own design" banner is never shown.
+- **Checks:** `stage-b2.mjs` 39/39 phone and desktop (toolbar order / defaults / fit / no banner / dock; Whole mode
+  taps with Undo; Fair off; not carried over; Fill: line between two filled regions and the developed arc still
+  ink, design unchanged by filling, a real Fill tap, Undo, Save → reload; Spread: start = reference, Add → reference
+  at once, works at once, Set ref., older stale reference, right edge, track ≥ 180 px, clear of Fit / Undo / dock;
+  Construct unchanged). `stage-a`, `stage-b`, `whole` updated.
+
 ## Exact next step
 
-Release refinements R1–R5 done on `feature/release-candidate`; release candidate on the phone-preview server. Stop
-for the user's physical iPhone approval. Do not merge, push or deploy. No further features this cycle.
+The Stage B review refinements are committed locally; stop for the user's review before Stage C (proximity
+selection). Do not merge, push or deploy.
 
 ## Commands
 

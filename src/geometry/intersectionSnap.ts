@@ -32,7 +32,7 @@
 import type { Doc, Entity, EntityId, PointId, Vec2 } from '../model/types.ts';
 import { epsilon, findPoint, projectOntoEntity, resolveEntityGeom, resolvePoint } from './kernel.ts';
 import { defaultSegmentKind, deriveSegments, paramInRange } from './segments.ts';
-import { transformPoint } from './lattice.ts';
+import { inversePoint, poseScale, poseVector, transformPoint } from './lattice.ts';
 import type { IntersectionCopy } from './intersection.ts';
 
 /** One straight line of one construction, in world space, as shown. */
@@ -178,10 +178,13 @@ export function pointShown(doc: Doc, id: PointId, at: Vec2, extensions: boolean)
   return doc.entities.some((e) => e.kind === 'line' && (e.a === id || e.b === id) && drawnAt(doc, e.id, extensions, at));
 }
 
-function turn(v: Vec2, rotation: number): Vec2 {
-  const c = Math.cos(rotation);
-  const s = Math.sin(rotation);
-  return { x: v.x * c - v.y * s, y: v.x * s + v.y * c };
+/** Whether one of the construction's own points (at `at`, unplaced) lies on something a copy draws —
+ * every point pointShown accepts, and also the places that only mark a spot on a drawn line or circle
+ * (divisions, midpoints, points on a curve). What Intersect's own construction can start from, as
+ * Construct's tools can from any of its points. */
+export function pointOnDrawn(doc: Doc, id: PointId, at: Vec2, extensions: boolean): boolean {
+  if (pointShown(doc, id, at, extensions)) return true;
+  return doc.entities.some((e) => drawnAt(doc, e.id, extensions, at));
 }
 
 /** One line of one construction as shown, or null if nothing of it is shown. */
@@ -193,7 +196,12 @@ function shownLine(doc: Doc, copy: IntersectionCopy, l: LocalLine): ShownLine | 
     if (parts.length === 0) return null;
     extent = [Math.min(...parts.map((r) => r[0])), Math.max(...parts.map((r) => r[1]))];
   }
-  return { copyKey: copy.key, entityId: l.entityId, p: transformPoint(doc.frame.origin, copy.pose, l.a), u: turn(l.dir, copy.pose.rotation), extent };
+  // A scaled copy: the direction stays a unit one, and its extents (lengths along it) scale.
+  const s = poseScale(copy.pose);
+  const v = poseVector(copy.pose, l.dir);
+  const u = s === 1 ? v : { x: v.x / s, y: v.y / s };
+  if (s !== 1 && extent) extent = [extent[0] * s, extent[1] * s];
+  return { copyKey: copy.key, entityId: l.entityId, p: transformPoint(doc.frame.origin, copy.pose, l.a), u, extent };
 }
 
 /** Every line of one construction that is shown, placed by its pose. */
@@ -302,9 +310,7 @@ const hostOf = (pick: IntersectionPick) => (pick.kind === 'crossing' ? pick.a.co
 
 /** A world position placed in (or back out of) a copy's unplaced construction — the inverse pose. */
 function toLocal(doc: Doc, copy: IntersectionCopy, w: Vec2): Vec2 {
-  const pivot = doc.frame.origin;
-  const r = turn({ x: w.x - pivot.x - copy.pose.translate.x, y: w.y - pivot.y - copy.pose.translate.y }, -copy.pose.rotation);
-  return { x: r.x + pivot.x, y: r.y + pivot.y };
+  return inversePoint(doc.frame.origin, copy.pose, w);
 }
 
 /** The pick with where the finger was, kept relative to its own construction. */
@@ -521,6 +527,9 @@ export type EdgePlan =
       shift: Vec2;
       /** Already coincident. */
       matched: boolean;
+      /** The two edges, as shown, are not the same length (a scaled copy, or two different edges):
+       * their middles meet, but their ends cannot all coincide. */
+      lengthsDiffer: boolean;
       /** The two edges as shown now (world): moving, then target. */
       edges: [[Vec2, Vec2], [Vec2, Vec2]];
     };
@@ -564,7 +573,8 @@ export function planMatchEdge(doc: Doc, copies: IntersectionCopy[], moving: Inte
   const rotation = wrapAngle(mc.pose.rotation + turnBy);
   const mid = { x: (me.a.x + me.b.x) / 2, y: (me.a.y + me.b.y) / 2 };
   const goal = { x: (v1.x + v2.x) / 2, y: (v1.y + v2.y) / 2 };
-  const r = turn(sub(mid, pivot), rotation);
+  // The moving copy keeps its own reflection: only its turn and place change.
+  const r = poseVector({ ...mc.pose, rotation }, sub(mid, pivot));
   const translate = { x: goal.x - pivot.x - r.x, y: goal.y - pivot.y - r.y };
   const shift = sub(translate, mc.pose.translate);
   return {
@@ -576,6 +586,7 @@ export function planMatchEdge(doc: Doc, copies: IntersectionCopy[], moving: Inte
     turn: turnBy,
     shift,
     matched: Math.abs(turnBy) < PARALLEL_EPS && Math.hypot(shift.x, shift.y) < COINCIDENT_EPS,
+    lengthsDiffer: Math.abs(Math.hypot(dw.x, dw.y) - Math.hypot(dv.x, dv.y)) > Math.max(Math.hypot(dv.x, dv.y), Math.hypot(dw.x, dw.y)) * 1e-6,
     edges: [
       [w1, w2],
       [v1, v2],

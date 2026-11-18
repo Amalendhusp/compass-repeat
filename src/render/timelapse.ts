@@ -38,8 +38,8 @@ import { loadEvents, loadMeta, type ProcessEvent } from '../persist/processStore
 import { walkProcess } from '../persist/processReplay.ts';
 import { captureState, stateHash, stateToDoc, type ArtworkState } from '../persist/processState.ts';
 import { drawnShapes } from '../geometry/bounds.ts';
-import { developedSegments, intersectionCopies } from '../geometry/intersection.ts';
-import { transformPoint, type InstancePose } from '../geometry/lattice.ts';
+import { developedSegments, shownCopies } from '../geometry/intersection.ts';
+import { poseScale, transformPoint, type InstancePose } from '../geometry/lattice.ts';
 
 const MAX_SIDE = 1080; // px, the video's longest side
 const FPS = 30;
@@ -133,7 +133,7 @@ function drawnBox(mode: 'construct' | 'intersect', state: ArtworkState, liveDoc:
   const { points, discs } = drawnShapes(doc, construction);
   let box: Box | null = null;
   const place = (p: Vec2, pose: InstancePose | null) => (pose ? transformPoint(doc.frame.origin, pose, p) : p);
-  for (const pose of mode === 'construct' ? [null] : intersectionCopies(doc).map((c) => c.pose)) {
+  for (const pose of mode === 'construct' ? [null] : shownCopies(doc).map((c) => c.pose)) {
     for (const p of points) {
       const q = place(p, pose);
       box = grow(box, q.x, q.y);
@@ -141,7 +141,8 @@ function drawnBox(mode: 'construct' | 'intersect', state: ArtworkState, liveDoc:
     // A circle turns into itself: its centre placed, its radius either side.
     for (const d of discs) {
       const q = place(d, pose);
-      box = grow(grow(box, q.x - d.r, q.y - d.r), q.x + d.r, q.y + d.r);
+      const r = pose ? d.r * poseScale(pose) : d.r;
+      box = grow(grow(box, q.x - r, q.y - r), q.x + r, q.y + r);
     }
   }
   // Stage D: the Developed Primary stands where it was developed (copies may have moved since).

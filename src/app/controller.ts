@@ -6,6 +6,9 @@ import { carryAppearanceAcross } from '../geometry/repeatSetup.ts';
 import type { PointRef } from '../interaction/pointref.ts';
 import type { EdgeCircle } from '../geometry/incircle.ts';
 import type { IntersectionPick, PickKind } from '../geometry/intersectionSnap.ts';
+import { resolvePoint } from '../geometry/kernel.ts';
+import { selectionStart } from '../interaction/selectionFirst.ts';
+import { dividePreviewPoints } from '../interaction/divideTarget.ts';
 
 /** Phase 5.2 item 1: Polygon is no longer a creation tool (connected Lines make any polygon);
  * existing polygon groups stay fully supported as data and as Select targets. */
@@ -240,6 +243,8 @@ export interface FairRun {
 }
 
 export interface LineChoice {
+  /** The chooser's heading (absent: "Which line?"). */
+  title?: string;
   anchorScreen: Vec2;
   candidates: FairRun[];
   focus: number | null;
@@ -275,6 +280,7 @@ type GestureTransientKey =
   | 'fillDiagnostic'
   | 'repeatDrag'
   | 'repeatRotateDrag'
+  | 'repeatScaleDrag'
   | 'intersectionDrag'
   | 'incircle'
   | 'copyRadius';
@@ -314,6 +320,9 @@ export class AppController {
    * Primary — and, held in a crowded spot, the loupe it is choosing in. Never history. */
   formPress: import('../interaction/formPick.ts').FormPress | null = null;
   cue: { at: Vec2; text: string; until: number } | null = null;
+  /** A short message for the participant (the shell shows it as a toast) — e.g. why a selection
+   * could not start the tool just chosen. */
+  onNotice: ((text: string) => void) | null = null;
   /** Phase 3.4 item 2: Line's own creation mode — every new line commits as either a finite
    * Construction line or a through-both-points Extension line (spec's extension-line logic,
    * dashed/subdued). Sticky across gestures, like Fair's old stroke default was. */
@@ -330,9 +339,16 @@ export class AppController {
   /** Repeat Colouring (geometry/repeatColour.ts): while on, a tap in Repeat colours a region —
    * of every copy ('motif'), or of the second group of copies ('pattern'). Session state. */
   repeatColourMode: 'motif' | 'pattern' | null = null;
-  /** Release R2 — what Intersect Fair offers to develop the Primary from: Fair only (default), or also
-   * Construction, or also Extensions. Session state. */
-  formLayer: import('../geometry/formSegments.ts').FormLayer = 'fair';
+  /** Develop (Intersect) — what it offers beside every copy's Fair: Construction pieces and Extension
+   * pieces, each on its own (shown as guides and tappable while on; what is already developed stays
+   * whatever is shown). Session state, never history. */
+  formConstruction = false;
+  formExtension = false;
+  /** Develop's Fair switch: every copy's Fair segments can be tapped (on whenever Develop starts). */
+  formFair = true;
+  /** Develop's Whole mode: a tap on a copy includes or excludes its whole Fair motif (off whenever Develop
+   * starts — never carried over from an earlier visit). */
+  formWhole = false;
   /** Interlaced (Sprint S3): while on, a tap in Repeat reverses the over/under of the crossing under it.
    * Session state. */
   weaveEdit = false;
@@ -407,10 +423,21 @@ export class AppController {
   /** Phase 5 item 7: non-null while the rotation ring is being dragged — same draft/commit split
    * as `repeatDrag`. */
   repeatRotateDrag: { rawRotation: number } | null = null;
+  /** Repeat: non-null while the box's Scale handle is being dragged — the scale shown (un-committed). */
+  repeatScaleDrag: { scale: number } | null = null;
+  /** Repeat: whether the bounding box on the central motif is open (long-press / right-click on it) —
+   * its corner handles Reset · Rotate · Reflect · Scale (render/repeatBox.ts). Session state. */
+  repeatBox = false;
+  /** Repeat: whether the legacy alternating-rule rows (Transformation · Apply to) are open. Session. */
+  repeatLegacyRules = false;
   /** Intersection: the construction being moved or turned, as shown (un-committed) — and the one
    * selected (its rotation ring is shown). Session state, never saved. */
-  intersectionDrag: { key: string; x: number; y: number; rotation: number; mode: 'move' | 'turn' } | null = null;
+  intersectionDrag: { key: string; x: number; y: number; rotation: number; mode: 'move' | 'turn' | 'scale'; scale?: number } | null = null;
   intersectionSelected: string | null = null;
+  /** Intersection: the copy whose bounding box is open (long-press / right-click on it) — its corner
+   * handles Reflect · Delete · Lock · Scale. Shown only while that copy is the selected one and Select
+   * arranges copies (interaction/copyBox.ts — openBox). Session state, never saved. */
+  intersectionBox: string | null = null;
   /** Intersection: the Spread slider while it is being dragged (un-committed). */
   intersectionSpreadDraft: number | null = null;
   /** Intersection: the lines or points picked for Snap — the reference first, then the moving one.
@@ -549,6 +576,7 @@ export class AppController {
         fillDiagnostic: this.fillDiagnostic,
         repeatDrag: this.repeatDrag,
         repeatRotateDrag: this.repeatRotateDrag,
+        repeatScaleDrag: this.repeatScaleDrag,
         intersectionDrag: this.intersectionDrag,
         incircle: this.incircle,
         copyRadius: this.copyRadius,
@@ -661,11 +689,26 @@ export class AppController {
     if (!LIVE_TOOLS.has(tool)) return;
     // Release R1 — point first: one point selected (Select, Construct), then a tool — exactly as if the
     // tool had been chosen first and the point tapped.
+    // Stage 1 — selection first: the same holds for Arc (the point is A, or the compass opens on it with
+    // Same radius) and for Divide (a selected line, arc, circle or segment is previewed, not applied).
+    // Worked out before anything is cleared; nothing is made until the tool's next input.
     const was = this.tool;
     const sel = this.selection;
-    const pointFirst = was === 'select' && sel.length === 1 && sel[0]!.kind === 'point' && this.doc.view.workspace === 'construct' && this.doc.points.some((p) => p.id === (sel[0] as { id: string }).id) ? (sel[0] as { kind: 'point'; id: string }).id : null;
+    const next: ToolId = tool === this.tool || tool === 'select' ? 'select' : tool;
+    const start =
+      was === 'select' && next !== 'select'
+        ? selectionStart(this.doc, next, sel, { circleVariant: this.circleVariant, arcMode: this.doc.toolPrefs.arcMode, lastRadius: this.doc.toolPrefs.lastRadius })
+        : null;
     this.lineChoice = null;
     this.formPress = null;
+    // Develop always starts the same way: Fair, Whole off, no guides (nothing in the design changes).
+    if (next === 'fair' && was !== 'fair') {
+      this.formWhole = false;
+      this.formFair = true;
+      this.formConstruction = false;
+      this.formExtension = false;
+    }
+    this.intersectionBox = null;
     this.incircle = null;
     this.copyRadius = null;
     this.noPoint = null;
@@ -688,19 +731,27 @@ export class AppController {
     this.multiRegion = null;
     this.pointEdit = null;
     this.clearFillDiagnostic();
-    this.tool = tool === this.tool || tool === 'select' ? 'select' : tool;
+    this.tool = next;
     // Line always starts Free: Parallel / Perpendicular last only for the Line session they were
     // chosen in (Construction / Extension — lineMode — is kept, as ever).
     this.lineGuide = 'free';
     this.lineReference = null;
     if (this.tool !== 'select') this.selection = [];
-    if (pointFirst && this.tool !== 'select') {
-      // Line: the point is A. Circle (By radius): the point is the centre. Nothing is made until the
-      // second input, as ever. Any other tool (Divide's first input is a curve): the point simply stays
-      // selected — no operation is started.
-      if (this.tool === 'line') this.pending = { kind: 'line', a: { kind: 'existing', id: pointFirst } };
-      else if (this.tool === 'circle' && this.circleVariant === 'centre-radius') this.pending = { kind: 'circle', centre: { kind: 'existing', id: pointFirst } };
-      else if (this.tool === 'divide') this.selection = sel;
+    if (start) {
+      // Line: the point is A. Circle (By radius): the centre. Arc: A, or the compass's centre. Divide:
+      // its target, previewed. Nothing is made until the tool's next input, as when it was tapped.
+      if (start.kind === 'line') this.pending = { kind: 'line', a: { kind: 'existing', id: start.point } };
+      else if (start.kind === 'circle') this.pending = { kind: 'circle', centre: { kind: 'existing', id: start.point } };
+      else if (start.kind === 'arc-measure') this.pending = { kind: 'arc', stage: 'measure-b', a: { kind: 'existing', id: start.point } };
+      else if (start.kind === 'arc-compass') {
+        this.pending = { kind: 'arc', stage: 'compass', radius: start.radius, centre: { kind: 'existing', id: start.point } };
+        this.preview = { kind: 'arc', centre: resolvePoint(this.doc, start.point), radius: start.radius };
+      } else if (start.kind === 'divide') {
+        const n = this.doc.dividePrefs.lastN;
+        this.divide = { target: start.target, n, angle: 0 };
+        this.dividePreview = { target: start.target, points: dividePreviewPoints(this.doc, start.target, n, 0) };
+      } else if (start.kind === 'keep') this.selection = sel;
+      else if (start.kind === 'reject') this.onNotice?.(start.message);
     }
     this.notify();
   }
@@ -768,6 +819,9 @@ export interface ViewTransform {
   h: number;
   /** The canvas's own size and the camera's turn, when turned. */
   screen?: { w: number; h: number; turn: number };
+  /** How far down the canvas a finger can reach (canvas px), above what floats over its bottom (the
+   * dock and its buttons) — given while an Intersect bounding box is open (render/copyBox.ts). */
+  usableBottom?: number;
 }
 
 /** The view for a workspace camera on a canvas of w × h (CSS px). */

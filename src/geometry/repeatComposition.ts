@@ -18,6 +18,7 @@ import type { InstancePose } from './lattice.ts';
 import { developedSegments, inComposition, intersectionCopies } from './intersection.ts';
 import { repeatSourceOf, type RepeatSourceKind } from './repeatSetup.ts';
 import { motifPieces, motifRuns, placePrim, type Feature, type FeatureSource, type MotifFeature } from './fairGeometry.ts';
+import { cutFeature, exclusionMap } from './developExclusions.ts';
 
 export interface CompositionMember {
   /** 'motif' for the Construct source; an Intersect instance key otherwise ('0,0' = the Original). */
@@ -47,7 +48,7 @@ export function repeatComposition(doc: Doc): RepeatComposition {
     if (repeatSourceOf(doc) !== 'intersect') comp = { source: 'motif', members: [{ key: 'motif', pose: IDENTITY, owner: 'construct' }] };
     else {
       const members: CompositionMember[] = intersectionCopies(doc)
-        .filter((c) => inComposition(doc, c.key))
+        .filter((c) => inComposition(doc, c.key) && !c.hidden)
         .map((c) => ({ key: c.key, pose: c.pose, owner: 'construct' as const }));
       if (developedSegments(doc).length > 0) members.push({ key: DEVELOPED, pose: IDENTITY, owner: 'developed' });
       comp = { source: 'intersect', members };
@@ -66,15 +67,20 @@ export function compositionFeatures(doc: Doc, kind: 'pieces' | 'runs'): Feature[
   const own: MotifFeature[] = kind === 'runs' ? motifRuns(doc) : motifPieces(doc);
   const comp = repeatComposition(doc);
   const pivot = doc.frame.origin;
-  return comp.members.flatMap((m) =>
-    m.owner === 'developed'
-      ? developedFeatures(doc)
-      : own.map((f) => ({
-          id: `${m.key}|${f.id}`,
-          prim: comp.source === 'motif' ? f.prim : placePrim(f.prim, pivot, m.pose),
-          source: { owner: m.owner, member: m.key, entity: f.entity },
-        })),
-  );
+  return comp.members.flatMap((m) => {
+    if (m.owner === 'developed') return developedFeatures(doc);
+    // Develop: what was taken out of a Whole copy is not part of what repeats (an untouched feature
+    // keeps exactly its id and geometry).
+    const cut = comp.source === 'intersect' ? exclusionMap(doc, m.key) : null;
+    return own.flatMap((f) => {
+      const parts = cutFeature(doc, cut, f.entity, f.prim);
+      return parts.map((prim, n) => ({
+        id: parts.length === 1 && prim === f.prim ? `${m.key}|${f.id}` : `${m.key}|${f.id}~${n}`,
+        prim: comp.source === 'motif' ? prim : placePrim(prim, pivot, m.pose),
+        source: { owner: m.owner, member: m.key, entity: f.entity },
+      }));
+    });
+  });
 }
 
 /** The Developed Primary as features: each stored segment, exactly, where it stands. */

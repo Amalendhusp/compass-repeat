@@ -86,8 +86,16 @@ export interface RepeatSystem {
   a: { x: number; y: number };
   b: { x: number; y: number };
   rowOffset: number;
-  motif: { rotation: number; scale: number };
-  rule: { kind: 'same' | 'alternate' | 'mirror' | 'around'; rotation?: number; order?: number };
+  /** The transformation every copy shares, about the frame centre: a turn, a scale (1 = as drawn)
+   * and — written only when true — a reflection across the motif's own vertical axis (left and right
+   * swap, before the turn). An artwork made before reflection existed has none, and keeps its look. */
+  motif: { rotation: number; scale: number; mirror?: true };
+  /** How copies differ. `same` (Uniform): none do. `alternate`: the changed copies are turned half a
+   * turn. `mirror`: they are reflected across the motif's own horizontal axis — or, with `flip: 'h'`,
+   * across its vertical axis. `by` says which copies change: absent = every other copy (i + j odd, as
+   * always), or every other row / column. `flip` and `by` are absent on every rule made before they
+   * existed — and written only when chosen — so older artworks keep exactly their look and keys. */
+  rule: { kind: 'same' | 'alternate' | 'mirror' | 'around'; rotation?: number; order?: number; flip?: 'h'; by?: 'rows' | 'columns' };
   footprint: 'design' | 'frame';
   overlap: 'stack' | 'clip';
   showStrokes: boolean;
@@ -99,8 +107,11 @@ export interface RepeatSystem {
  * shown is centre + spread × (reference − centre): Spread moves centres in or out about the
  * reference group's centre — sizes and rotations never change. */
 export interface IntersectionLayout {
-  /** The Primary first ("0,0"), then each copy, in the order added. */
-  pieces: { key: string; x: number; y: number; rotation: number }[];
+  /** The Primary first ("0,0"), then each copy, in the order added. `mirror`: the copy is reflected
+   * (across its own horizontal axis, before its turn) — written only when true, never on the Primary,
+   * so every arrangement made before reflection existed keeps exactly its shape. `scale`: the copy's
+   * uniform scale about its own frame centre (0.25–4) — written only when not 1, so likewise. */
+  pieces: { key: string; x: number; y: number; rotation: number; mirror?: true; scale?: number }[];
   /** Which constructions the reference was set with. When the copies present differ (one added or
    * removed since), the reference is out of date and Spread waits for a new one. Absent in
    * arrangements saved before copies could be added — those are always current. */
@@ -180,15 +191,37 @@ export interface DevelopedSegment {
 /** The Developed Primary. Its presence marks an artwork that uses Intersect Form Development: Repeat's
  * Intersect source is then the Original (unless demoted), the promoted Primary-copies and this —
  * not every instance (geometry/intersection.ts — formMode). */
+/** Develop (Stage B): a stretch of a Whole copy's Fair taken out of the developed design — along one
+ * Construct line (t0 < t1 in [0, 1], from its A to its B) or circle (t0 its start angle, t1 = t0 + sweep),
+ * in the copy's own coordinates, so it follows the copy (geometry/developExclusions.ts). */
+export interface DevelopExclusion {
+  entity: string;
+  t0: number;
+  t1: number;
+}
 export interface IntersectionForm {
   developed: DevelopedSegment[];
+}
+
+/** Intersect's own construction (geometry/intersectLayer.ts): lines, circles, arcs and divisions drawn in
+ * Intersect, in the workspace's own coordinates — never part of Construct, never repeated. Points taken
+ * from a copy (one of its points, or a crossing between copies) are fixed `free` points where they were
+ * taken. Kept as plain data (segment states as entries) so it clones, records and travels like the rest
+ * of `intersection`. Absent until something is drawn in Intersect. */
+export interface IntersectConstruction {
+  points: Point[];
+  entities: Entity[];
+  segmentStates: [SegmentKey, SegmentState][];
 }
 
 export interface IntersectionSnapshot {
   id: string;
   at: number;
   layout: IntersectionLayout;
-  copies: Record<string, { colour?: string; extensions?: boolean; locked?: boolean; primaryCopy?: boolean }>;
+  copies: Record<string, { colour?: string; extensions?: boolean; locked?: boolean; primaryCopy?: boolean; hidden?: true; excluded?: DevelopExclusion[] }>;
+  /** Show/Hide is recorded in this bookmark (bookmarks made before Show/Hide existed keep the copies'
+   * visibility as it is when restored). */
+  visibility?: true;
   /** A small picture of it (JPEG data URL), if one could be drawn. */
   thumb?: string;
 }
@@ -401,7 +434,7 @@ export interface Doc {
    * the copy's key; the primary is "0,0"), and the arrangement itself. Absent or partial = defaults
    * (see geometry/intersection.ts). Part of Undo; never part of the recorded artwork (it is a way of
    * exploring, not the design). */
-  intersection?: { copies: Record<string, { colour?: string; extensions?: boolean; locked?: boolean; primaryCopy?: boolean }>; layout?: IntersectionLayout; form?: IntersectionForm };
+  intersection?: { copies: Record<string, { colour?: string; extensions?: boolean; locked?: boolean; primaryCopy?: boolean; hidden?: true; excluded?: DevelopExclusion[] }>; layout?: IntersectionLayout; form?: IntersectionForm; construction?: IntersectConstruction };
   /** Intersection Snapshots: discoveries kept on purpose while exploring — not history, so Undo /
    * Redo never adds or removes one (carried across them like the cameras). */
   intersectionSnapshots?: IntersectionSnapshot[];

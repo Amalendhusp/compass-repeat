@@ -1,20 +1,22 @@
-// Fair in Intersect (Stage D): develops the Primary — Intersect's own geometry, independent of the
-// Construct source. Unlike Line, Circle, Arc and Divide (which edit the Construct motif through the
-// active instance, so every copy follows), Fair here never touches the Construct source: it shows
-// every copy's Fair geometry, translucent, and the Developed Primary, opaque, over it.
+// Develop (Intersect's Fair): the developed design — Intersect's own, independent of the Construct
+// source. Every copy's Fair is shown thin (2 px, a reference); what is in the design thick (4 px): Whole
+// copies' Fair (less what was taken out) and the developed segments. Construction and Extension pieces
+// show as quiet guides, and can be taken, while their switches are on (shell.ts — the Develop ribbon).
 //
-// - Tap a segment (between two places where Fair meets Fair): it joins the Developed Primary; tap a
-//   developed segment: it leaves. One Undo step each. Pressing already shows what the tap will do.
-// - Where candidates crowd (a crossing, coincident strokes): a tap opens the "Which line?" chooser;
-//   pressing and holding opens the precision loupe instead — slide to the one wanted, release.
+// - Tap a segment that is out of the design: it goes in; tap one that is in: it comes out — whether it
+//   was taken on its own or came with Whole (formPick.ts). One Undo step each. Pressing shows what the
+//   tap will do.
+// - Where candidates crowd (a crossing, coincident strokes): a tap opens the chooser; pressing and holding
+//   opens the precision loupe instead — slide to the one wanted, release. (Stage C replaces the chooser.)
 // - Moving the finger away before release does nothing. Nothing is joined up or closed automatically.
 
 import type { Vec2 } from '../../model/types.ts';
 import type { AppController, ViewTransform } from '../../app/controller.ts';
 import { screenToWorld, worldToScreen } from '../../app/controller.ts';
-import { endsOf } from '../../geometry/fairGeometry.ts';
+import { closestOn, endsOf, motifRuns, placePrim } from '../../geometry/fairGeometry.ts';
+import { inComposition, shownCopies } from '../../geometry/intersection.ts';
 import { dist } from '../../geometry/vec.ts';
-import { commitPick, describePick, formPicksAt, type FormPick, type FormPress } from '../formPick.ts';
+import { commitPick, describePick, formPicksAt, setWhole, type FormPick, type FormPress } from '../formPick.ts';
 import { loupeCentre, LOUPE_R, MARKER_GAP, spreadMarkers, SWITCH_PX } from '../precision.ts';
 import type { Gesture, ToolModule } from './types.ts';
 
@@ -28,12 +30,55 @@ const HOLD_MS = 380;
 const MOVE_PX = 10;
 const MAX_CANDIDATES = 4;
 
+/** Whole mode: the shown copy whose Fair passes nearest `sp` (within reach) — the selected copy when it is
+ * as near as the nearest (within CROWD_PX). Null when no copy's Fair is near. */
+function copyAt(controller: AppController, view: ViewTransform, sp: Vec2): string | null {
+  const doc = controller.doc;
+  const w = screenToWorld(view, sp);
+  const reach = REACH_PX / view.zoom;
+  const runs = motifRuns(doc);
+  let best: { key: string; d: number } | null = null;
+  let selD = Infinity;
+  for (const copy of shownCopies(doc)) {
+    let d = Infinity;
+    for (const r of runs) d = Math.min(d, closestOn(w, placePrim(r.prim, doc.frame.origin, copy.pose)).d);
+    if (d > reach) continue;
+    if (copy.key === controller.intersectionSelected) selD = d;
+    if (!best || d < best.d) best = { key: copy.key, d };
+  }
+  if (!best) return null;
+  return selD !== Infinity && (selD - best.d) * view.zoom < CROWD_PX ? controller.intersectionSelected : best.key;
+}
+
+/** Whole mode: a tap on a copy's Fair puts its whole Fair into the design, or takes it out (one Undo step);
+ * moving away before release does nothing. */
+function beginWholeGesture(controller: AppController, view: ViewTransform, sp: Vec2): Gesture | null {
+  const key = copyAt(controller, view, sp);
+  if (!key) return null;
+  let moved = false;
+  return {
+    onMove(p) {
+      if (dist(p, sp) > MOVE_PX) moved = true;
+    },
+    onUp() {
+      if (moved) return;
+      controller.intersectionSelected = key;
+      setWhole(controller, key, !inComposition(controller.doc, key));
+    },
+    onCancel() {},
+  };
+}
+
+/** What Develop offers now, beside Fair. */
+export const offerOf = (c: AppController) => ({ fair: c.formFair, construction: c.formConstruction, extension: c.formExtension });
+
 export const intersectFairTool: ToolModule = {
   id: 'fair',
-  hint: () => 'Tap a Fair segment to add it to the Primary — tap again to remove it',
+  hint: (c) => (c.formWhole ? 'Whole · tap a copy to put all its Fair in the design, or take it out' : 'Develop · tap a segment to add it to the design — tap it again to take it out'),
   beginGesture(controller, view, sp) {
+    if (controller.formWhole) return beginWholeGesture(controller, view, sp);
     const doc = controller.doc;
-    const picks = formPicksAt(doc, screenToWorld(view, sp), REACH_PX / view.zoom, MARKER_STEP_PX / view.zoom, controller.formLayer);
+    const picks = formPicksAt(doc, screenToWorld(view, sp), REACH_PX / view.zoom, MARKER_STEP_PX / view.zoom, offerOf(controller));
     if (picks.length === 0) return null;
     const crowded = picks.length > 1 && (picks[1]!.d - picks[0]!.d) * view.zoom < CROWD_PX;
     const press: FormPress = { picks: crowded ? picks.slice(0, MAX_CANDIDATES) : [picks[0]!], active: 0, anchorScreen: sp, loupe: null };
@@ -92,7 +137,7 @@ function openChooser(controller: AppController, anchorScreen: Vec2, picks: FormP
   controller.lineChoice = {
     anchorScreen,
     candidates: picks.map((p) => ({
-      label: p.action === 'add' ? 'Add to Primary' : 'Remove from Primary',
+      label: p.action === 'add' ? 'Add to the design' : 'Take out of the design',
       detail: describePick(doc, p),
       keys: [],
       draft: new Map(),

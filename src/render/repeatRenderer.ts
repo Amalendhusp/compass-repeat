@@ -26,6 +26,8 @@ import {
   motifExtent,
   motifRadius,
   poseArcAngle,
+  poseLength,
+  poseScale,
   transformPoint,
   visibleInstances,
   visibleLatticeRange,
@@ -36,6 +38,7 @@ import { colouringInUse, patternGroup, regionColour, regionKey } from '../geomet
 import { drawnLayers, weaves, type DrawnLayer } from '../geometry/repeatStroke.ts';
 import { latticeShape } from '../geometry/latticeSnap.ts';
 import { compositionFeatures } from '../geometry/repeatComposition.ts';
+import { exclusionMap, remainingRanges, type Excluded } from '../geometry/developExclusions.ts';
 import { copyFeatures } from '../geometry/closeGap.ts';
 import { placePrim, type Feature } from '../geometry/fairGeometry.ts';
 import { copyShift, type LocalGap } from '../interaction/closeGapMode.ts';
@@ -44,6 +47,9 @@ import { color, stroke } from './tokens.ts';
 import { makePath } from './svgContext.ts';
 import type { ArtworkExport } from './renderer.ts';
 import type { GapMarks } from '../geometry/repeatGaps.ts';
+import { repeatBox, repeatBoxOpen, shownMotif, type RepeatBox } from './repeatBox.ts';
+import { BOX_HANDLE_R, scaleLabel } from './copyBox.ts';
+import { drawLabelPill } from './renderer.ts';
 import { overStrand, periodTranslations, strandPiece, weaveNetwork, type WeaveCrossing, type WeaveNetwork } from '../geometry/weave.ts';
 
 function appendTransformedLoop(path: Path2D, view: ViewTransform, pivot: Vec2, pose: InstancePose, worldPts: Vec2[]): void {
@@ -65,7 +71,7 @@ function pathTransformedPiece(ctx: CanvasRenderingContext2D, view: ViewTransform
   ctx.beginPath();
   if (g.kind === 'circle') {
     const centreS = worldToScreen(view, transformPoint(pivot, pose, g.centre));
-    const r = g.radius * view.zoom;
+    const r = poseLength(pose, g.radius) * view.zoom;
     if (fromParam === undefined || toParam === undefined) {
       ctx.arc(centreS.x, centreS.y, r, 0, Math.PI * 2);
       return;
@@ -109,7 +115,7 @@ function drawFrameOutline(ctx: CanvasRenderingContext2D, view: ViewTransform, pi
   if (doc.frame.kind === 'circle') {
     const c = worldToScreen(view, transformPoint(pivot, pose, pivot));
     ctx.beginPath();
-    ctx.arc(c.x, c.y, doc.frame.radius * view.zoom, 0, Math.PI * 2);
+    ctx.arc(c.x, c.y, poseLength(pose, doc.frame.radius) * view.zoom, 0, Math.PI * 2);
     ctx.stroke();
   } else {
     const n = doc.frame.kind === 'square' ? 4 : doc.frame.kind === 'hexagon' ? 6 : 3;
@@ -291,35 +297,120 @@ function drawLatticeHandles(ctx: CanvasRenderingContext2D, controller: AppContro
   }
 }
 
-/** Phase 5 item 7: a circular drag handle around the reference motif — the whole ring is the
- * rotate gesture's target; the marker shows the current angle (live rotation while dragging). */
-function drawRotationRing(ctx: CanvasRenderingContext2D, controller: AppController, view: ViewTransform): void {
-  const doc = controller.doc;
-  const pivot = doc.frame.origin;
-  const centre = worldToScreen(view, pivot);
-  const r = motifRadius(doc) * view.zoom + 26;
-  const rotation = controller.repeatRotateDrag?.rawRotation ?? doc.repeat.motif.rotation;
-
+/** The bounding box's quiet ground, under the field (render/repeatBox.ts). */
+function drawRepeatBoxGround(ctx: CanvasRenderingContext2D, box: RepeatBox): void {
   ctx.save();
-  ctx.strokeStyle = color.hairline;
-  ctx.lineWidth = 1.4;
-  ctx.setLineDash([2, 4]);
+  ctx.fillStyle = color.muted;
+  ctx.globalAlpha = 0.07;
   ctx.beginPath();
-  ctx.arc(centre.x, centre.y, r, 0, Math.PI * 2);
+  ctx.roundRect(box.x0, box.y0, box.x1 - box.x0, box.y1 - box.y0, 10);
+  ctx.fill();
+  ctx.restore();
+}
+
+/** The box's dashed outline and its four corners, over everything — and, while turning or scaling,
+ * what the shared transformation reads. */
+function drawRepeatBox(ctx: CanvasRenderingContext2D, controller: AppController, view: ViewTransform, box: RepeatBox): void {
+  ctx.save();
+  ctx.strokeStyle = color.muted;
+  ctx.globalAlpha = 0.45;
+  ctx.lineWidth = 1;
+  ctx.setLineDash([4, 4]);
+  ctx.beginPath();
+  ctx.roundRect(box.x0, box.y0, box.x1 - box.x0, box.y1 - box.y0, 10);
   ctx.stroke();
   ctx.restore();
+  const turning = controller.repeatRotateDrag;
+  const scaling = controller.repeatScaleDrag;
+  const mirrored = !!controller.doc.repeat.motif.mirror;
+  for (const h of box.handles) drawRepeatBoxHandle(ctx, h.at, h.id, h.enabled, mirrored, (h.id === 'rotate' && !!turning) || (h.id === 'scale' && !!scaling));
+  const pill = (id: RepeatBox['handles'][number]['id'], lines: string[]) => {
+    const at = box.handles.find((h) => h.id === id)!.at;
+    const below = at.y + 46 < view.h;
+    drawLabelPill(ctx, { x: at.x - 30, y: below ? at.y + 34 : at.y - 34 }, lines, view);
+  };
+  if (turning) {
+    const r = turning.rawRotation;
+    const deg = Math.round(((((r * 180) / Math.PI) % 360) + 360) % 360);
+    pill('rotate', [`Turn ${rotationFractionLabel(r) ?? `${deg}°`}`, 'Release to keep']);
+  }
+  if (scaling) pill('scale', [`Scale ${scaleLabel(scaling.scale)}`, scaling.scale === 1 ? 'As drawn' : 'Release to keep']);
+}
 
-  const handleAngle = -Math.PI / 2 + rotation; // marker starts "up" at zero rotation
-  const hx = centre.x + r * Math.cos(handleAngle);
-  const hy = centre.y + r * Math.sin(handleAngle);
-  const active = !!controller.repeatRotateDrag;
+/** One corner: a paper disc with its symbol, in ink (faded when it can't be used now). */
+function drawRepeatBoxHandle(ctx: CanvasRenderingContext2D, at: Vec2, id: RepeatBox['handles'][number]['id'], enabled: boolean, mirrored: boolean, active: boolean): void {
+  ctx.save();
+  ctx.translate(at.x, at.y);
+  ctx.shadowColor = 'rgba(30,42,54,0.18)';
+  ctx.shadowBlur = 6;
   ctx.beginPath();
-  ctx.arc(hx, hy, active ? 12 : 9, 0, Math.PI * 2);
-  ctx.fillStyle = active ? color.brass : color.paper;
+  ctx.arc(0, 0, BOX_HANDLE_R, 0, Math.PI * 2);
+  ctx.fillStyle = active ? color.ink : color.paper;
   ctx.fill();
-  ctx.lineWidth = active ? 3 : 2;
-  ctx.strokeStyle = color.brass;
+  ctx.shadowColor = 'transparent';
+  ctx.lineWidth = 1.2;
+  ctx.strokeStyle = color.hairline;
   ctx.stroke();
+  ctx.globalAlpha = enabled ? 1 : 0.32;
+  const ink = active ? color.paper : color.ink;
+  ctx.strokeStyle = ink;
+  ctx.fillStyle = ink;
+  ctx.lineWidth = 1.6;
+  ctx.lineCap = 'round';
+  ctx.lineJoin = 'round';
+  ctx.beginPath();
+  if (id === 'reset') {
+    // ↺ — back as drawn.
+    ctx.arc(0, 0.5, 5.5, -Math.PI * 0.85, Math.PI * 0.6);
+    ctx.stroke();
+    ctx.beginPath();
+    ctx.moveTo(-6.6, -5.6);
+    ctx.lineTo(-5.4, -1.6);
+    ctx.lineTo(-1.6, -3.2);
+    ctx.stroke();
+  } else if (id === 'rotate') {
+    // A turning arrow, round the centre.
+    ctx.arc(0, 0, 6, -Math.PI * 0.95, Math.PI * 0.35);
+    ctx.stroke();
+    const ex = 6 * Math.cos(Math.PI * 0.35);
+    const ey = 6 * Math.sin(Math.PI * 0.35);
+    ctx.beginPath();
+    ctx.moveTo(ex - 4, ey + 0.5);
+    ctx.lineTo(ex, ey);
+    ctx.lineTo(ex + 0.8, ey - 4);
+    ctx.stroke();
+  } else if (id === 'reflect') {
+    // ◁ ┆ ▷ — left and right swap across the vertical axis (the right one filled while reflected).
+    ctx.moveTo(-2, -6);
+    ctx.lineTo(-7, 0);
+    ctx.lineTo(-2, 6);
+    ctx.closePath();
+    ctx.moveTo(2, -6);
+    ctx.lineTo(7, 0);
+    ctx.lineTo(2, 6);
+    ctx.closePath();
+    ctx.stroke();
+    if (mirrored) {
+      ctx.beginPath();
+      ctx.moveTo(2, -6);
+      ctx.lineTo(7, 0);
+      ctx.lineTo(2, 6);
+      ctx.closePath();
+      ctx.fill();
+    }
+  } else {
+    // ↖↘ — scale out from the centre.
+    ctx.moveTo(-6, -6);
+    ctx.lineTo(6, 6);
+    ctx.moveTo(-6, -1);
+    ctx.lineTo(-6, -6);
+    ctx.lineTo(-1, -6);
+    ctx.moveTo(6, 1);
+    ctx.lineTo(6, 6);
+    ctx.lineTo(1, 6);
+    ctx.stroke();
+  }
+  ctx.restore();
 }
 
 /** Phase 5 item 7: "1/6 turn" rather than degrees — null when the current rotation isn't at (or
@@ -392,7 +483,7 @@ function paintFor(colour: RepeatColouring | undefined, instanceKey: string | nul
  * 100% zoom), so lines scale with the pattern exactly as its geometry does — on screen, while a
  * pinch stretches the cached bitmap, in exports and in Timelapse alike, and the layers of a Double
  * or Triple keep their proportions at every zoom. (Guides, handles and rings stay screen-sized.) */
-function drawCopy(ctx: CanvasRenderingContext2D, doc: Doc, view: ViewTransform, pose: InstancePose, flat: FlatMotif, display: RepeatDisplay, showFills: boolean, showStrokes: boolean, skip?: ReadonlySet<number> | null, paint?: RegionPaint | null, layer?: DrawnLayer): void {
+function drawCopy(ctx: CanvasRenderingContext2D, doc: Doc, view: ViewTransform, pose: InstancePose, flat: FlatMotif, display: RepeatDisplay, showFills: boolean, showStrokes: boolean, skip?: ReadonlySet<number> | null, paint?: RegionPaint | null, layer?: DrawnLayer, cut?: Map<string, Excluded[]> | null): void {
   const pivot = doc.frame.origin;
   const filledMap = doc.fills.get(doc.activeColourway);
   if (showFills && flat.holesOf && (filledMap || paint)) {
@@ -422,9 +513,29 @@ function drawCopy(ctx: CanvasRenderingContext2D, doc: Doc, view: ViewTransform, 
     ctx.lineWidth = (widthOverride ?? state.stroke?.width ?? stroke.fairDefault) * view.zoom;
     ctx.lineCap = 'round';
     ctx.lineJoin = 'round';
+    const ex = cut?.get(entity.id);
+    if (ex?.length) {
+      // Develop took part of this Whole copy out of the design: only what is left is drawn.
+      for (const [f, t] of keptRanges(doc, entity, seg.fromParam, seg.toParam, ex)) {
+        pathTransformedPiece(ctx, view, pivot, pose, doc, entity, f, t);
+        ctx.stroke();
+      }
+      continue;
+    }
     pathTransformedPiece(ctx, view, pivot, pose, doc, entity, seg.fromParam, seg.toParam);
     ctx.stroke();
   }
+}
+
+/** A stroke's range [from → to] along its entity with Develop's exclusions taken out (a circle's range
+ * anticlockwise, possibly round past 0). */
+function keptRanges(doc: Doc, entity: Entity, from: number, to: number, ex: Excluded[]): [number, number][] {
+  if (resolveEntityGeom(doc, entity).kind === 'circle') {
+    let span = to - from;
+    if (span <= 0) span += Math.PI * 2;
+    return remainingRanges(from, from + span, ex, true);
+  }
+  return remainingRanges(Math.min(from, to), Math.max(from, to), ex, false);
 }
 
 // ---- Repeat from an Intersect arrangement: the unit ----
@@ -444,8 +555,9 @@ function unitSkips(doc: Doc, flat: FlatMotif, unit: RepeatUnit): (Set<number> | 
   const cell = (p: Vec2) => `${Math.round(p.x / q)},${Math.round(p.y / q)}`;
   const seen = new Set<string>();
   const skips: (Set<number> | null)[] = [];
-  for (const member of unit.members) {
+  unit.members.forEach((member, k) => {
     let skip: Set<number> | null = null;
+    const cut = exclusionMap(doc, unit.keys[k]!);
     flat.strokes.forEach(({ entity, seg, state }, n) => {
       const g = resolveEntityGeom(doc, entity);
       let ends: [Vec2, Vec2];
@@ -464,10 +576,10 @@ function unitSkips(doc: Doc, flat: FlatMotif, unit: RepeatUnit): (Set<number> | 
       const [e0, e1] = ends.map((p) => cell(transformPoint(pivot, member, p))).sort() as [string, string];
       const key = `${g.kind}|${e0}|${e1}|${cell(transformPoint(pivot, member, mid))}|${state.stroke?.colour ?? ''}|${state.stroke?.width ?? ''}`;
       if (seen.has(key)) (skip ??= new Set()).add(n);
-      else seen.add(key);
+      else if (!cut?.has(entity.id)) seen.add(key); // drawn only in part here: never stands in for a whole one
     });
     skips.push(skip);
-  }
+  });
   skipCache.set(doc, { key: unit.key, skips });
   return skips;
 }
@@ -477,9 +589,18 @@ function unitSkips(doc: Doc, flat: FlatMotif, unit: RepeatUnit): (Set<number> | 
 function drawUnit(ctx: CanvasRenderingContext2D, doc: Doc, view: ViewTransform, pose: InstancePose, unit: RepeatUnit, flat: FlatMotif, display: RepeatDisplay, showFills: boolean, showStrokes: boolean, group: 0 | 1, layer?: DrawnLayer): void {
   const skips = unitSkips(doc, flat, unit);
   const colour = doc.repeatSetup?.colour;
-  unit.members.forEach((member, k) => drawCopy(ctx, doc, view, composePose(pose, member), flat, display, showFills, showStrokes, skips[k], paintFor(colour, unit.keys[k]!, group), layer));
-  if (showFills) drawUnitRegionFills(ctx, doc, view, pose, display, colour, group);
-  if (showStrokes && unit.developed.length) drawDeveloped(ctx, doc, view, pose, unit, display, layer);
+  // Every fill under every line: the members' own fills, then the unit's region fills — and only then
+  // the members' lines and the developed lines. (Painting a region fill after a member's lines hid any
+  // line of the design lying between two filled regions — a Whole copy's Fair, and a developed segment
+  // that copy draws for it.)
+  if (showFills) {
+    unit.members.forEach((member, k) => drawCopy(ctx, doc, view, composePose(pose, member), flat, display, true, false, skips[k], paintFor(colour, unit.keys[k]!, group), layer));
+    drawUnitRegionFills(ctx, doc, view, pose, display, colour, group);
+  }
+  if (showStrokes) {
+    unit.members.forEach((member, k) => drawCopy(ctx, doc, view, composePose(pose, member), flat, display, false, true, skips[k], null, layer, exclusionMap(doc, unit.keys[k]!)));
+    if (unit.developed.length) drawDeveloped(ctx, doc, view, pose, unit, display, layer);
+  }
 }
 
 /** Final sprint, Stage 1: the Intersect unit's own regions (spaces.ts `unitRegions` — bounded by any
@@ -730,15 +851,17 @@ const LOD_COPIES = 150;
  * mirrored per copy as its pose says). While fingers are pinching/panning, the last bitmap is simply
  * scaled (`allowStale`) and redrawn sharp on release. Null when it would be too large to be worth it.
  */
-function motifSprite(doc: Doc, display: RepeatDisplay, zoom: number, detail: number, allowStale: boolean, unit: RepeatUnit | null, group: 0 | 1, pass: StampPass, layered: boolean): Sprite | null {
+function motifSprite(doc: Doc, display: RepeatDisplay, zoom: number, detail: number, allowStale: boolean, unit: RepeatUnit | null, group: 0 | 1, pass: StampPass, layered: boolean, motifScale = 1): Sprite | null {
   // With a unit (Repeat from Intersect) the bitmap is the whole unit, about the lattice position.
-  const key = `${display.artwork}|${display.fillOpacity}|${pass.key}:${pass.fills ? 'f' : ''}${pass.strokes ? 's' : ''}:${pass.layer.colour ?? ''}/${pass.layer.width ?? ''}|${detail}${unit ? `|unit:${unit.key}` : ''}`;
+  // The Repeat motif's scale is drawn INTO the bitmap (its geometry scaled, its strokes their own
+  // width), so stamping it only turns and mirrors — line weight never changes with scale.
+  const key = `${display.artwork}|${display.fillOpacity}|${pass.key}:${pass.fills ? 'f' : ''}${pass.strokes ? 's' : ''}:${pass.layer.colour ?? ''}/${pass.layer.width ?? ''}|${detail}${unit ? `|unit:${unit.key}` : ''}${motifScale !== 1 ? `|scale:${motifScale}` : ''}`;
   const slot = `${group}|${pass.key}`;
   const sprite = sprites.get(slot) ?? null;
   const sameKind = !!sprite && sprite.key.includes('|unit:') === !!unit;
   if (sprite && sprite.doc === doc && ((allowStale && sameKind) || (sprite.key === key && Math.abs(sprite.zoom / zoom - 1) < 0.005))) return sprite;
   const flat = flatMotif(doc);
-  const half = ((unit ? unit.extent : motifExtent(doc)) + (pass.layer.width ?? flat.maxStroke)) * zoom + 2; // CSS px
+  const half = ((unit ? unit.extent : motifExtent(doc)) * motifScale + (pass.layer.width ?? flat.maxStroke)) * zoom + 2; // CSS px
   const scale = effectiveDpr() * detail;
   const px = Math.ceil(half * 2 * scale);
   if (px > (layered ? MAX_LAYERED_SPRITE_PX : MAX_SPRITE_PX) || px < 4) return null;
@@ -751,8 +874,9 @@ function motifSprite(doc: Doc, display: RepeatDisplay, zoom: number, detail: num
   sctx.clearRect(0, 0, px, px);
   const pivot = doc.frame.origin;
   const local: ViewTransform = { zoom: zoom * scale, pan: { x: -pivot.x, y: -pivot.y }, w: px, h: px };
-  if (unit) drawUnit(sctx, doc, local, IDENTITY, unit, flat, display, pass.fills, pass.strokes, group, pass.layer);
-  else drawCopy(sctx, doc, local, IDENTITY, flat, display, pass.fills, pass.strokes, null, paintFor(doc.repeatSetup?.colour, null, group), pass.layer);
+  const base: InstancePose = motifScale === 1 ? IDENTITY : { ...IDENTITY, scale: motifScale };
+  if (unit) drawUnit(sctx, doc, local, base, unit, flat, display, pass.fills, pass.strokes, group, pass.layer);
+  else drawCopy(sctx, doc, local, base, flat, display, pass.fills, pass.strokes, null, paintFor(doc.repeatSetup?.colour, null, group), pass.layer);
   const made: Sprite = { canvas, doc, key, zoom, cssSize: px / scale };
   sprites.set(slot, made);
   return made;
@@ -777,15 +901,18 @@ export function renderRepeat(ctx: CanvasRenderingContext2D, controller: AppContr
   // preview the shown (un-committed) value so the field — and the grid — follow the finger.
   const drag = exp ? null : controller.repeatDrag;
   const rotating = exp ? null : controller.repeatRotateDrag;
+  const scalingDraft = exp ? null : controller.repeatScaleDrag;
+  // The bounding box (screen only): its ground under the field, its corners over everything.
+  const box = !exp && repeatBoxOpen(controller) ? repeatBox(controller, view) : null;
   // Close Gap's preview (Stage C): the corrected arm, drawn but never stored.
   const gap = !exp && controller.closeGap?.phase === 'preview' ? controller.closeGap.local[controller.closeGap.index] ?? null : null;
   const repeat: RepeatSystem = {
     ...doc.repeat,
     ...(gap ? { [gap.cand.arm]: gap.repeat[gap.cand.arm] } : null),
     ...(drag ? { [drag.dir]: drag.translate } : null),
-    motif: rotating ? { ...doc.repeat.motif, rotation: rotating.rawRotation } : doc.repeat.motif,
+    motif: rotating || scalingDraft ? shownMotif(controller) : doc.repeat.motif,
   };
-  const draftDoc = drag || rotating || gap ? { ...doc, repeat } : doc;
+  const draftDoc = drag || rotating || scalingDraft || gap ? { ...doc, repeat } : doc;
 
   const pivot = doc.frame.origin;
   // What stands at each lattice position: the motif, or the Intersect arrangement as one unit.
@@ -809,21 +936,28 @@ export function renderRepeat(ctx: CanvasRenderingContext2D, controller: AppContr
   // The outline style: one pass for a single style (or as designed), or one per layer.
   const style = drawnLayers(doc, exp ? null : controller.repeatStrokeDraft);
   const layered = style.length > 1;
+  // Repeat from Intersect with fills in use: every copy's fills go down before any copy's lines (one pass
+  // each), so a neighbouring unit's fill never covers a line where units overlap (developed designs often
+  // reach past the lattice spacing). Without fills — and from Construct, exactly as published — one pass.
+  const fillsInUse = !!unit && showFills && showStrokes && (colouringInUse(colour) || (doc.fills.get(doc.activeColourway)?.size ?? 0) > 0);
   const passes: StampPass[] = layered
     ? [{ key: 'fill', fills: showFills, strokes: false, layer: style[0]! }, ...style.map((layer, k) => ({ key: `L${k}`, fills: false, strokes: showStrokes, layer }))]
-    : [{ key: 'all', fills: showFills, strokes: showStrokes, layer: style[0]! }];
+    : fillsInUse
+      ? [{ key: 'fill', fills: true, strokes: false, layer: style[0]! }, { key: 'all', fills: false, strokes: true, layer: style[0]! }]
+      : [{ key: 'all', fills: showFills, strokes: showStrokes, layer: style[0]! }];
   const used = new Set<string>();
   const bitmapFor = (group: 0 | 1, pass: StampPass): Sprite | null => {
     if (exp) return null;
     used.add(`${group}|${pass.key}`);
-    return motifSprite(doc, display, view.zoom, detail, controller.viewGesture, unit, group, pass, layered);
+    return motifSprite(doc, display, view.zoom, detail, controller.viewGesture, unit, group, pass, layered, poseScale(repeat.motif));
   };
 
+  if (box) drawRepeatBoxGround(ctx, box);
   drawArtworkLayer(ctx, layers, (ctx) => {
     // Spaces sit on the background, under every motif. While a handle or the ring is being dragged
     // the arrangement is still changing, so they wait for release rather than show a stale shape.
     // (Spaces are worked out for whatever repeats — the motif, or the Intersect unit: spaces.ts.)
-    if (showFills && !drag && !rotating) drawSpaces(ctx, doc, view);
+    if (showFills && !drag && !rotating && !scalingDraft) drawSpaces(ctx, doc, view);
 
     for (const pass of passes) for (const pose of instances) {
       const group = groupOf(pose);
@@ -846,7 +980,7 @@ export function renderRepeat(ctx: CanvasRenderingContext2D, controller: AppContr
     // Sprint S3: Interlaced — over the flat bands, each crossing's over band (never while the
     // arrangement is still being dragged: it waits for release, like the Spaces).
     const strokeStyle = exp ? doc.repeatSetup?.stroke : (controller.repeatStrokeDraft ?? doc.repeatSetup?.stroke);
-    if (showStrokes && weaves(strokeStyle) && !drag && !rotating && !gap) drawWeave(ctx, view, weaveNetwork(doc), style, new Set(strokeStyle!.weave!.flips), display.background);
+    if (showStrokes && weaves(strokeStyle) && !drag && !rotating && !scalingDraft && !gap) drawWeave(ctx, view, weaveNetwork(doc), style, new Set(strokeStyle!.weave!.flips), display.background);
   });
   // Bitmaps no longer drawn (another style, group or pass) are let go at once.
   if (!exp) for (const slot of [...sprites.keys()]) if (!used.has(slot)) sprites.delete(slot);
@@ -882,8 +1016,8 @@ export function renderRepeat(ctx: CanvasRenderingContext2D, controller: AppContr
     }
   }
   if (!exp && display.handles && !controller.spaceMode && !controller.repeatColourMode) {
+    if (box) drawRepeatBox(ctx, controller, view, box);
     drawLatticeHandles(ctx, controller, repeat, view);
-    if (!controller.closeGap) drawRotationRing(ctx, controller, view);
   }
   if (gap) drawCloseGapInset(ctx, doc, view, gap);
   if (!exp && controller.weaveEdit && !drag && !rotating) drawWeaveMarks(ctx, doc, view, new Set(doc.repeatSetup?.stroke?.weave?.flips ?? []));

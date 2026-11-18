@@ -32,7 +32,7 @@ import { underlayImage } from '../render/underlay.ts';
 import { resolvePoint } from '../geometry/kernel.ts';
 import { isPointOrphanedByTrim } from '../geometry/usage.ts';
 import { isPointTargetEligibleIn } from '../interaction/hittest.ts';
-import { intersectionCopies } from '../geometry/intersection.ts';
+import { shownCopies } from '../geometry/intersection.ts';
 import { localPoints, pointShown } from '../geometry/intersectionSnap.ts';
 import { transformPoint } from '../geometry/lattice.ts';
 
@@ -99,7 +99,7 @@ export function anchorTargets(doc: Doc, ws: Workspace): Vec2[] {
     const out: Vec2[] = [];
     const pivot = doc.frame.origin;
     const pts = localPoints(doc);
-    for (const copy of intersectionCopies(doc)) for (const p of pts) if (pointShown(doc, p.id, p.at, copy.extensions)) out.push(transformPoint(pivot, copy.pose, p.at));
+    for (const copy of shownCopies(doc)) for (const p of pts) if (pointShown(doc, p.id, p.at, copy.extensions)) out.push(transformPoint(pivot, copy.pose, p.at));
     return out;
   }
   return [];

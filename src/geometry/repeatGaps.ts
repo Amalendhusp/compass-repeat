@@ -13,7 +13,7 @@
 // If neither is found the region is simply not enclosed; nothing is marked.
 
 import type { Doc, Vec2 } from '../model/types.ts';
-import { instancePose, motifExtent, motifRadius, transformPoint } from './lattice.ts';
+import { instancePose, motifExtent, motifRadius, poseScale, transformPoint } from './lattice.ts';
 import { GAP_FRACTION, repeatStrokes } from './spaces.ts';
 import { repeatUnit } from './repeatUnit.ts';
 
@@ -95,10 +95,12 @@ function closestPair(s: Seg, t: Seg): { a: Vec2; b: Vec2; d: number } {
 export function fillOpeningsAt(doc: Doc, w: Vec2): GapMarks | null {
   const strokes = repeatStrokes(doc);
   if (!strokes.length) return null;
-  const R = motifRadius(doc);
+  // Sizes as drawn: the Repeat motif's scale.
+  const S = poseScale(doc.repeat.motif);
+  const R = motifRadius(doc) * S;
   const tol = R * 0.003;
   const bridge = R * GAP_FRACTION;
-  const E = repeatUnit(doc)?.extent ?? motifExtent(doc);
+  const E = (repeatUnit(doc)?.extent ?? motifExtent(doc)) * S;
   const reach = E * 1.25;
   const pivot = doc.frame.origin;
   const { a, b } = doc.repeat;

@@ -1,4 +1,5 @@
 import type { AppController, PointVisibility, SelectCandidate, ToolId, ViewTransform } from '../app/controller.ts';
+import { layerController } from '../geometry/intersectLayer.ts';
 import { unturned } from '../app/controller.ts';
 import type { Doc, Entity, EntityId, PointId, SegmentKey, Vec2 } from '../model/types.ts';
 import {
@@ -33,9 +34,9 @@ import { describeGap } from '../interaction/closeGapMode.ts';
 import { isInConfirmLayer, openConfirmSheet } from './confirmsheet.ts';
 import { onTap } from './tap.ts';
 import { color, fairPalette, stroke } from '../render/tokens.ts';
-import { suggestedFamily, type LatticeFamily } from '../geometry/lattice.ts';
+import { alternationOf, suggestedFamily, type LatticeFamily } from '../geometry/lattice.ts';
 import { rotationFractionLabel } from '../render/repeatRenderer.ts';
-import { inComposition, withPrimaryCopy, withArrangement, asReference, intersectionCopies, layoutOf, MAX_CONSTRUCTIONS, placedAt, PRIMARY, referenceCurrent, sliderToSpread, SPREAD_SLIDER_MAX, spreadToSlider, withAddedCopy, withCopySetting, withLayout, withLock, withoutCopy, withSpreadAround, isLocked } from '../geometry/intersection.ts';
+import { inComposition, withoutCopy, withArrangement, asReference, intersectionCopies, layoutOf, MAX_CONSTRUCTIONS, placedAt, PRIMARY, referenceCurrent, sliderToSpread, SPREAD_MAX, SPREAD_MIN, SPREAD_SLIDER_MAX, spreadToSlider, withAddedCopy, withLayout, withLock, withSpreadAround, isLocked, withHidden, copyScale, withIntersectReset, intersectResettable } from '../geometry/intersection.ts';
 import { canMoveAgainst, convertPick, isPointPick, planMatchEdge, planSnap, resolvePick, type PickKind } from '../geometry/intersectionSnap.ts';
 import { PICK_REACH_PX } from '../interaction/tools/intersectionTool.ts';
 import { repeatSource, type RepeatSource } from '../geometry/repeatUnit.ts';
@@ -78,7 +79,8 @@ function colourSwatchRow(menu: HTMLElement, current: string | null, onPick: (col
   const row = document.createElement('div');
   row.className = 'swatch-row';
   const swatches: HTMLButtonElement[] = [];
-  let active = current ? colourRgb(current).toLowerCase() : null;
+  // '' = several colours (a mixed selection): no swatch is lit — not even Default.
+  let active = current ? colourRgb(current).toLowerCase() : current === '' ? '' : null;
   const refresh = () => swatches.forEach((el) => el.classList.toggle('active', (el.dataset.colour ?? null) === active));
   if (extra) {
     const none = document.createElement('button');
@@ -147,25 +149,6 @@ function sliderRow(menu: HTMLElement, opts: { min: number; max: number; step: nu
   row.appendChild(value);
   menu.appendChild(row);
 }
-
-function showColourPopover(anchor: HTMLElement, sections: { title: string; current: string | null; noFill?: boolean; defaultSwatch?: string; onPick: (colour: string | null) => void }[]): void {
-  mountPopover(anchor, (menu) => {
-    for (const s of sections) {
-      popoverSectionLabel(menu, s.title);
-      // C1: `defaultSwatch` offers "Default" — back to the default colour, shown as that colour.
-      const extra = s.noFill ? { label: 'No fill', value: null } : s.defaultSwatch ? { label: 'Default', value: null, swatch: s.defaultSwatch } : undefined;
-      colourSwatchRow(menu, s.current, s.onPick, extra);
-    }
-  });
-}
-
-function showSliderPopover(anchor: HTMLElement, title: string, opts: Parameters<typeof sliderRow>[1]): void {
-  mountPopover(anchor, (menu) => {
-    popoverSectionLabel(menu, title);
-    sliderRow(menu, opts);
-  });
-}
-
 
 /** Mounts an anchored popover shell (positioning, outside-tap dismissal, single-instance),
  * leaving the caller to fill in `menu`. Phase 5.3 item 1: it remembers which control opened it, so
@@ -914,56 +897,26 @@ function showRepeatAppearancePanel(anchor: HTMLElement, controller: AppControlle
 }
 
 /**
- * Intersection Snapshots: a promising arrangement kept on purpose — every construction's place and
+ * Intersection Bookmarks (stored as `intersectionSnapshots`): a promising arrangement kept on purpose — every construction's place and
  * turn, the Spread and its reference, and each copy's colour and extensions — to come back to. Not
  * Undo history: saving or deleting one is never undone; restoring one is a single Undo step.
  */
 const MAX_SNAPSHOTS = 24;
 
-function showIntersectionSnapshotsPanel(anchor: HTMLElement, controller: AppController, arrangement?: { spreadRow: HTMLElement; refresh: () => void }): void {
+function showIntersectionSnapshotsPanel(anchor: HTMLElement, controller: AppController): void {
   mountPopover(
     anchor,
     (menu, close) => {
       menu.classList.add('arrangement-panel');
       const build = () => {
         menu.replaceChildren();
-        // Release R3: the arrangement's own controls live here (not on the canvas): Spread with its
-        // Reference (what 100 % means), the reference image's visibility in Intersect, then bookmarks.
-        if (arrangement) {
-          popoverSectionLabel(menu, 'Arrangement');
-          arrangement.refresh();
-          arrangement.spreadRow.style.display = '';
-          menu.appendChild(arrangement.spreadRow);
-          panelHint(menu, 'Reference: this arrangement becomes Spread 100 %.');
-        }
-        if (controller.doc.underlay) {
-          const v = underlayViewOf(controller.doc, 'intersection');
-          const row = document.createElement('div');
-          row.className = 'popover-toggle-row';
-          const label = document.createElement('span');
-          label.className = 'popover-row-label';
-          label.textContent = 'Reference image';
-          const sw = document.createElement('button');
-          sw.className = 'toggle-switch' + (v.visible ? ' on' : '');
-          sw.innerHTML = '<span class="toggle-knob"></span>';
-          sw.setAttribute('aria-label', `Reference image ${v.visible ? 'shown' : 'hidden'}`);
-          sw.setAttribute('aria-pressed', String(v.visible));
-          sw.addEventListener('click', (e) => {
-            e.stopPropagation();
-            // A view, like the camera: never an Undo step (as in Menu → Reference image…).
-            controller.doc.underlayView = withUnderlayView(controller.doc, 'intersection', { visible: !v.visible });
-            controller.notify();
-            build();
-          });
-          row.appendChild(label);
-          row.appendChild(sw);
-          menu.appendChild(row);
-        }
-        popoverSectionLabel(menu, 'Snapshots');
+        // Stage 3: Bookmarks only — saved arrangements. Spread and its Reference live in the Copies panel;
+        // the reference image's visibility in Menu → Reference image….
+        popoverSectionLabel(menu, 'Bookmarks');
         const list = controller.doc.intersectionSnapshots ?? [];
         const save = document.createElement('button');
         save.className = 'popover-row snapshot-save';
-        save.textContent = list.length >= MAX_SNAPSHOTS ? `Full (${MAX_SNAPSHOTS}) — delete one to save` : 'Save this arrangement';
+        save.textContent = list.length >= MAX_SNAPSHOTS ? `Full (${MAX_SNAPSHOTS}) — delete one to save` : 'Save arrangement';
         save.disabled = list.length >= MAX_SNAPSHOTS;
         save.addEventListener('click', (e) => {
           e.stopPropagation();
@@ -973,6 +926,7 @@ function showIntersectionSnapshotsPanel(anchor: HTMLElement, controller: AppCont
             at: Date.now(),
             layout: structuredClone(layoutOf(doc)),
             copies: structuredClone(doc.intersection?.copies ?? {}),
+            visibility: true as const,
             thumb: intersectionThumbnail(doc),
           };
           doc.intersectionSnapshots = [...list, snap];
@@ -980,12 +934,13 @@ function showIntersectionSnapshotsPanel(anchor: HTMLElement, controller: AppCont
           build();
         });
         menu.appendChild(save);
+        if (list.length === 0) panelHint(menu, 'No bookmarks yet — save an arrangement to come back to it.');
         list.forEach((snap, n) => {
           const row = document.createElement('div');
           row.className = 'snapshot-row';
           const open = document.createElement('button');
           open.className = 'snapshot-open';
-          open.setAttribute('aria-label', `Restore snapshot ${n + 1}`);
+          open.setAttribute('aria-label', `Restore bookmark ${n + 1}`);
           if (snap.thumb) {
             const img = document.createElement('img');
             img.src = snap.thumb;
@@ -1002,20 +957,20 @@ function showIntersectionSnapshotsPanel(anchor: HTMLElement, controller: AppCont
             controller.commit((d) => {
               // A bookmark restores the ARRANGEMENT — positions, turns, Primary-copy states — never the
               // Developed Primary, which stays as it is (Stage D, decision D8).
-              d.intersection = withArrangement(d, structuredClone(snap.copies), structuredClone(snap.layout));
+              d.intersection = withArrangement(d, structuredClone(snap.copies), structuredClone(snap.layout), snap.visibility === true);
             });
             close();
           });
           const del = document.createElement('button');
           del.className = 'snapshot-delete';
-          del.setAttribute('aria-label', `Delete snapshot ${n + 1}`);
+          del.setAttribute('aria-label', `Delete bookmark ${n + 1}`);
           del.innerHTML = '<svg width="14" height="14" viewBox="0 0 14 14" aria-hidden="true"><path d="M3 3 L11 11 M11 3 L3 11" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"/></svg>';
           del.addEventListener('click', (e) => {
             e.stopPropagation();
             close();
             openConfirmSheet({
-              title: `Delete snapshot ${n + 1}?`,
-              body: 'A deleted snapshot cannot be brought back.',
+              title: `Delete bookmark ${n + 1}?`,
+              body: 'A deleted bookmark cannot be brought back.',
               confirmLabel: 'Delete',
               onConfirm: () => {
                 controller.doc.intersectionSnapshots = (controller.doc.intersectionSnapshots ?? []).filter((s) => s.id !== snap.id);
@@ -1035,118 +990,103 @@ function showIntersectionSnapshotsPanel(anchor: HTMLElement, controller: AppCont
 }
 
 /**
- * Intersection: the copies shown — the primary and each neighbour — with its analysis colour and
- * whether its extensions are drawn (its bounded construction always is). Every change is one commit
- * (Undo / Redo), on `doc.intersection` only. A tap on a copy's colour opens the app's colour row
- * beneath it.
+ * Intersection's Copies panel (Stage 3): first the arrangement as a whole — Spread and its Reference,
+ * which move every copy together — then one compact row per construction (its colour, name and state:
+ * In Repeat, Reflected, its turn, Locked). Choosing a row selects that copy on the canvas and opens its
+ * settings: Include in Repeat, Show extensions, Reflect ↔ / ↕ (never the Original; not while locked),
+ * its colour, Remove (never the Original). Every change is one commit (Undo / Redo), on
+ * `doc.intersection` only.
+ */
+const EYE_ICON = '<svg viewBox="0 0 16 16" width="14" height="14" fill="none" stroke="currentColor" stroke-width="1.5"><path d="M1.5 8s2.4-4.5 6.5-4.5S14.5 8 14.5 8 12.1 12.5 8 12.5 1.5 8 1.5 8z"/><circle cx="8" cy="8" r="2"/></svg>';
+const EYE_OFF_ICON = '<svg viewBox="0 0 16 16" width="14" height="14" fill="none" stroke="currentColor" stroke-width="1.5"><path d="M1.5 8s2.4-4.5 6.5-4.5S14.5 8 14.5 8 12.1 12.5 8 12.5 1.5 8 1.5 8z"/><path d="M2.5 13.5l11-11"/></svg>';
+
+/**
+ * Intersect's Copies panel: one coloured circle per construction (the Original first) and Add. A tap on
+ * a circle selects that copy (on the canvas too — its rotation handle shows); the small eye under it
+ * shows or hides it, independently of selection (a hidden copy's circle is faint, and stays
+ * selectable here). Everything else about a copy is on the canvas: drag to move, the handle to turn,
+ * and a long-press (or right-click) for Reflect, Scale, Lock and Delete. Spread and Reset Intersect are
+ * in the dock. Each change is one Undo step.
  */
 function showIntersectionCopiesPanel(anchor: HTMLElement, controller: AppController): void {
   mountPopover(
     anchor,
     (menu) => {
-      let open: string | null = null;
-      const set = (key: string, patch: { colour?: string; extensions?: boolean }) => {
-        controller.commit((d) => {
-          d.intersection = withCopySetting(d, key, patch);
-        });
-        build();
-      };
+      menu.classList.add('copies-panel');
       const build = () => {
         menu.replaceChildren();
-        // Two columns: each copy (its colour), and whether its extensions are drawn — its bounded
-        // construction always is.
-        const header = document.createElement('div');
-        header.className = 'copies-header';
-        popoverSectionLabel(header, 'Copies');
-        // Stage D: which constructions the Intersect Repeat repeats whole (Primary-copies), beside the
-        // Developed Primary.
-        popoverSectionLabel(header, 'In Repeat');
-        popoverSectionLabel(header, 'Extensions');
-        menu.appendChild(header);
-        for (const copy of intersectionCopies(controller.doc)) {
-          const row = document.createElement('div');
-          row.className = 'popover-toggle-row copy-row';
-          const dot = document.createElement('button');
-          dot.className = 'copy-colour';
+        const doc = controller.doc;
+        const all = intersectionCopies(doc);
+        const selectedKey = controller.intersectionSelected;
+        const chips = document.createElement('div');
+        chips.className = 'copy-chips';
+        chips.setAttribute('role', 'group');
+        chips.setAttribute('aria-label', 'Copies');
+        for (const copy of all) {
+          const selected = copy.key === selectedKey;
+          const inDesign = inComposition(doc, copy.key);
+          const status = [copy.hidden ? 'hidden' : 'shown', inDesign ? 'whole motif in the design' : '', copy.pose.mirror ? 'reflected' : '', copy.locked ? 'locked' : ''].filter(Boolean);
+          const cell = document.createElement('div');
+          cell.className = 'copy-cell' + (selected ? ' selected' : '') + (copy.hidden ? ' hidden-copy' : '');
+          cell.dataset.copy = copy.key;
+          const chipBtn = document.createElement('button');
+          chipBtn.className = 'copy-chip' + (selected ? ' selected' : '') + (copy.hidden ? ' hidden-copy' : '');
+          chipBtn.dataset.copy = copy.key;
+          chipBtn.setAttribute('aria-pressed', String(selected));
+          chipBtn.setAttribute('aria-label', `Select ${copy.label} · ${status.join(' · ')}`);
+          const dot = document.createElement('span');
+          dot.className = 'copy-chip-dot';
           dot.style.background = copy.colour;
-          dot.setAttribute('aria-label', `${copy.label} colour`);
-          dot.setAttribute('aria-expanded', String(open === copy.key));
-          dot.addEventListener('click', (e) => {
+          if (copy.pose.mirror) dot.textContent = '⇋';
+          if (inDesign) {
+            const diamond = document.createElement('span');
+            diamond.className = 'copy-chip-diamond';
+            diamond.textContent = '◆';
+            diamond.setAttribute('aria-hidden', 'true');
+            dot.appendChild(diamond);
+          }
+          const name = document.createElement('span');
+          name.className = 'copy-chip-name';
+          name.textContent = copy.key === PRIMARY ? 'Original' : copy.label.replace('Copy ', '');
+          chipBtn.append(dot, name);
+          chipBtn.addEventListener('click', (e) => {
             e.stopPropagation();
-            open = open === copy.key ? null : copy.key;
+            // Selecting here selects on the canvas too (a hidden copy is selected, though not drawn).
+            if (controller.intersectionSelected !== copy.key) {
+              controller.intersectionSelected = copy.key;
+              controller.intersectionBox = null;
+              controller.notify();
+            }
             build();
           });
-          const label = document.createElement('span');
-          label.className = 'popover-row-label';
-          label.textContent = copy.label;
-          const sw = document.createElement('button');
-          sw.className = 'toggle-switch' + (copy.extensions ? ' on' : '');
-          sw.innerHTML = '<span class="toggle-knob"></span>';
-          sw.setAttribute('aria-label', `${copy.label} extensions ${copy.extensions ? 'on' : 'off'}`);
-          sw.setAttribute('aria-pressed', String(copy.extensions));
-          sw.addEventListener('click', (e) => {
+          // Show / Hide: its own small control — never a change of selection.
+          const eye = document.createElement('button');
+          eye.className = 'copy-eye' + (copy.hidden ? ' off' : '');
+          eye.dataset.copy = copy.key;
+          eye.innerHTML = copy.hidden ? EYE_OFF_ICON : EYE_ICON;
+          eye.setAttribute('aria-pressed', String(!copy.hidden));
+          eye.setAttribute('aria-label', copy.hidden ? `Show ${copy.label}` : `Hide ${copy.label}`);
+          eye.title = copy.hidden ? 'Hidden — tap to show' : 'Shown — tap to hide';
+          eye.addEventListener('click', (e) => {
             e.stopPropagation();
-            set(copy.key, { extensions: !copy.extensions });
-          });
-          const inRepeat = inComposition(controller.doc, copy.key);
-          const rep = document.createElement('button');
-          rep.className = 'toggle-switch copy-in-repeat' + (inRepeat ? ' on' : '');
-          rep.innerHTML = '<span class="toggle-knob"></span>';
-          rep.setAttribute('aria-label', `${copy.label} in Repeat ${inRepeat ? 'on' : 'off'}`);
-          rep.setAttribute('aria-pressed', String(inRepeat));
-          rep.title = 'Repeat this whole construction, where it stands, with the Developed Primary';
-          rep.addEventListener('click', (e) => {
-            e.stopPropagation();
+            if (!copy.hidden && controller.intersectionBox === copy.key) controller.intersectionBox = null;
             controller.commit((d) => {
-              d.intersection = withPrimaryCopy(d, copy.key, !inRepeat);
+              d.intersection = withHidden(d, copy.key, !copy.hidden);
             });
             build();
           });
-          row.appendChild(dot);
-          row.appendChild(label);
-          row.appendChild(rep);
-          row.appendChild(sw);
-          // Any copy can be removed again (one Undo step); the Primary stays.
-          const remove = document.createElement('button');
-          remove.className = 'copy-remove';
-          if (copy.key === PRIMARY) {
-            remove.disabled = true;
-            remove.setAttribute('aria-hidden', 'true');
-          } else {
-            remove.setAttribute('aria-label', `Remove ${copy.label}`);
-            remove.innerHTML = '<svg width="14" height="14" viewBox="0 0 14 14" aria-hidden="true"><path d="M3 3 L11 11 M11 3 L3 11" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"/></svg>';
-            remove.addEventListener('click', (e) => {
-              e.stopPropagation();
-              const wasCurrent = referenceCurrent(layoutOf(controller.doc));
-              const next = withoutCopy(controller.doc, copy.key);
-              if (!next) return;
-              if (controller.intersectionSelected === copy.key) controller.intersectionSelected = null;
-              controller.commit((d) => {
-                d.intersection = next;
-              });
-              if (wasCurrent && !referenceCurrent(layoutOf(controller.doc))) showToast('Copies changed — set a new Reference to use Spread');
-              build();
-            });
-          }
-          row.appendChild(remove);
-          menu.appendChild(row);
-          if (open === copy.key) {
-            const host = document.createElement('div');
-            colourSwatchRow(host, copy.colour, (c) => {
-              if (c) set(copy.key, { colour: c });
-            });
-            const swatches = host.firstElementChild as HTMLElement;
-            swatches.classList.add('panel-swatches');
-            swatches.setAttribute('aria-label', `${copy.label} colour`);
-            menu.appendChild(swatches);
-          }
+          cell.append(chipBtn, eye);
+          chips.appendChild(cell);
         }
-        // + Copy: one more construction, in a free spot with a colour of its own (up to six in all).
-        const count = intersectionCopies(controller.doc).length;
+        // + Add copy: one more construction, in a free spot with a colour of its own (up to six in all).
+        const addCell = document.createElement('div');
+        addCell.className = 'copy-cell';
         const add = document.createElement('button');
-        add.className = 'popover-row copy-add';
-        add.textContent = count >= MAX_CONSTRUCTIONS ? `${MAX_CONSTRUCTIONS} constructions — the most for now` : '+ Copy';
-        add.disabled = count >= MAX_CONSTRUCTIONS;
+        add.className = 'copy-chip copy-add-chip';
+        const full = all.length >= MAX_CONSTRUCTIONS;
+        add.disabled = full;
+        add.setAttribute('aria-label', full ? `${MAX_CONSTRUCTIONS} constructions — the most for now` : `Add copy · ${all.length} of ${MAX_CONSTRUCTIONS}`);
+        add.innerHTML = '<span class="copy-chip-dot">+</span><span class="copy-chip-name">Add</span>';
         add.addEventListener('click', (e) => {
           e.stopPropagation();
           const wasCurrent = referenceCurrent(layoutOf(controller.doc));
@@ -1155,10 +1095,61 @@ function showIntersectionCopiesPanel(anchor: HTMLElement, controller: AppControl
           controller.commit((d) => {
             d.intersection = next;
           });
-          if (wasCurrent && !referenceCurrent(layoutOf(controller.doc))) showToast('Copies changed — set a new Reference to use Spread');
+          // The new copy is selected.
+          const added = layoutOf(controller.doc).pieces.at(-1)?.key ?? null;
+          controller.intersectionSelected = added;
+          controller.intersectionBox = null;
+          controller.notify();
+          if (wasCurrent && !referenceCurrent(layoutOf(controller.doc))) showToast('Copy added · set a new reference to use Spread');
           build();
         });
-        menu.appendChild(add);
+        addCell.appendChild(add);
+        chips.appendChild(addCell);
+        menu.appendChild(chips);
+
+        const sel = all.find((c) => c.key === selectedKey);
+        const more = window.matchMedia?.('(pointer: coarse)').matches ? 'hold it on the canvas' : 'right-click it on the canvas';
+        if (sel) {
+          const head = document.createElement('div');
+          head.className = 'copy-head';
+          const headText = document.createElement('span');
+          headText.textContent = `${sel.label} selected${sel.hidden ? ' · hidden' : ''}${sel.locked ? ' · locked' : ''}${inComposition(doc, sel.key) ? ' · ◆ whole motif in the design' : ''}`;
+          head.appendChild(headText);
+          // Delete: quiet, for the selected copy (hidden ones included) — never the Original. It asks
+          // first only when the copy's whole Fair is in the design; Undo always brings it back.
+          if (sel.key !== PRIMARY) {
+            const del = document.createElement('button');
+            del.className = 'copy-delete';
+            del.textContent = 'Delete';
+            del.setAttribute('aria-label', `Delete ${sel.label}`);
+            del.addEventListener('click', (e) => {
+              e.stopPropagation();
+              const run = () => {
+                const wasCurrent = referenceCurrent(layoutOf(controller.doc));
+                const next = withoutCopy(controller.doc, sel.key);
+                if (!next) return;
+                if (controller.intersectionSelected === sel.key) controller.intersectionSelected = null;
+                if (controller.intersectionBox === sel.key) controller.intersectionBox = null;
+                controller.commit((d) => {
+                  d.intersection = next;
+                });
+                const stale = wasCurrent && !referenceCurrent(layoutOf(controller.doc));
+                showToast(`${sel.label} deleted · Undo brings it back${stale ? ' · set a new reference to use Spread' : ''}`);
+                build();
+              };
+              if (!inComposition(controller.doc, sel.key)) return run();
+              openConfirmSheet({
+                title: `Delete ${sel.label}?`,
+                body: `Its whole Fair is in the design, so the design loses it too. Segments developed from it stay. Undo brings it back.`,
+                confirmLabel: 'Delete',
+                onConfirm: run,
+              });
+            });
+            head.appendChild(del);
+          }
+          menu.appendChild(head);
+          panelHint(menu, sel.hidden ? 'Hidden: not drawn, picked or developed from, and out of Repeat while hidden. Everything about it is kept — the eye shows it again.' : `Drag to move, the handle to turn; ${more} to reflect, scale, lock${sel.key === PRIMARY ? '' : ' or delete'} it.`);
+        } else panelHint(menu, `Tap a circle to select a copy; the eye shows or hides it. On the canvas, drag to move, the handle to turn, and ${more} for Reflect, Scale, Lock and Delete.`);
       };
       build();
     },
@@ -1513,7 +1504,7 @@ function showRepeatGuidesPanel(anchor: HTMLElement, controller: AppController, o
       void allOn;
       popoverSectionLabel(menu, 'Grid and guides');
       rows.push(popoverToggleRow(menu, 'Grid', () => display().grid, (on) => set(() => (display().grid = on))));
-      rows.push(popoverToggleRow(menu, 'Handles · rotation, A, B', () => display().handles, (on) => set(() => (display().handles = on))));
+      rows.push(popoverToggleRow(menu, 'Handles · A, B and the box', () => display().handles, (on) => set(() => (display().handles = on))));
       rows.push(popoverToggleRow(menu, 'Motif boundary', () => display().motifBoundary, (on) => set(() => (display().motifBoundary = on))));
       // Reset lattice: back to the lattice Repeat first suggests for this artwork and source — the
       // frame's natural shape (square; 60° for a triangle or hexagon frame) at its comfortable
@@ -1550,6 +1541,19 @@ function showRepeatGuidesPanel(anchor: HTMLElement, controller: AppController, o
         controller.notify();
       });
       menu.appendChild(closeGapRow);
+      // The alternating rules (Transformation · Apply to) are kept for artworks that use them; new work
+      // is Uniform, and its turn, reflection and scale are on the motif's box. Here they can still be
+      // reached for any artwork.
+      const legacy = document.createElement('button');
+      legacy.className = 'popover-row guides-reset';
+      legacy.textContent = 'Alternating rules…';
+      legacy.title = 'The older alternating rules: Rotate 180° or Reflect on every other copy, row or column';
+      onTap(legacy, () => {
+        closeAnyPopover();
+        controller.repeatLegacyRules = true;
+        controller.notify();
+      });
+      menu.appendChild(legacy);
     },
     { shieldCanvas: true, panel: true },
   );
@@ -1845,6 +1849,9 @@ export function buildShell(
     onOpen: () => void;
     onSave: () => void;
     onSaveAs: () => void;
+    /** Project files: the open artwork as a file to take elsewhere, and an artwork from such a file. */
+    onSaveProject: () => void;
+    onOpenProject: () => void;
     /** UI-1: whether the open artwork has changes not saved (named in the menu's heading). */
     unsaved: () => boolean;
     /** UI-2: a drawing preference changed (the saved artwork keeps it too). */
@@ -1883,6 +1890,10 @@ export function buildShell(
         { label: 'Open…', onSelect: () => opts.onOpen() },
         { label: 'Save', onSelect: () => opts.onSave() },
         { label: 'Save As…', onSelect: () => opts.onSaveAs() },
+        // Project files — the whole editable artwork, for another browser or device (images and
+        // Timelapse stay under Share).
+        { label: 'Save project file…', divided: true, onSelect: () => opts.onSaveProject() },
+        { label: 'Open project file…', onSelect: () => opts.onOpenProject() },
         // UI-3: the reference image (Reference Library, import, Transform, Lock, Remove, this
         // workspace's visibility and strength) — formerly the image button on the canvas row.
         { label: 'Reference image…', divided: true, onSelect: () => openReferencePanel() },
@@ -1926,44 +1937,95 @@ export function buildShell(
   // Sprint S2: Construct only — Repeat's appearance is its own Appearance panel at the top left.
   type AppearanceKind = 'construction' | 'fair' | 'fill';
   const appearanceKind = (): AppearanceKind => (controller.tool === 'fair' ? 'fair' : controller.tool === 'fill' ? 'fill' : 'construction');
-  /** The construction the panel can recolour: whole non-frame lines and circles under a non-Fair
-   * selection (Select only), or none. */
-  function ccTargets(): Entity[] {
-    if (controller.tool !== 'select' || controller.doc.view.workspace !== 'construct') return [];
-    const doc = controller.doc;
-    const sel = controller.selection.filter((c) => c.kind !== 'point');
-    if (sel.length === 0) return [];
-    const keys = selectionKeys(doc, sel);
-    const regions = sel.filter((c) => c.kind === 'region') as Extract<SelectCandidate, { kind: 'region' }>[];
-    if (regions.length > 0 ? regions[0]!.fair : isUniformlyFair(doc, keys)) return [];
-    const frame = new Set(doc.frame.entityIds);
-    return selectionEntityIds(doc, sel, keys)
-      .map((id) => doc.entities.find((e) => e.id === id))
-      .filter((e): e is Entity => !!e && !frame.has(e.id));
+  /**
+   * Stage 4 — what a Select selection gives the one colour control (Construct only): the whole lines and
+   * circles whose construction colour it changes (never the frame), the Fair pieces whose stroke it
+   * changes, and the Fair regions whose fill it changes. A construction colour belongs to the whole line
+   * or circle, so a construction segment stands for its whole line here. Null: nothing is selected (or
+   * only points) — the control then shows the drawing colour for the tool in hand.
+   */
+  interface SelectionColouring {
+    entities: Entity[];
+    fairKeys: SegmentKey[];
+    regions: Extract<SelectCandidate, { kind: 'region' }>[];
+    label: string;
   }
+  /** Whose geometry a selection, the colour control and the construction tools' ribbon act on: in
+   * Intersect, Intersect's own construction layer (geometry/intersectLayer.ts) — never Construct. */
+  const lens = (): AppController =>
+    controller.doc.view.workspace === 'intersection' && (['select', 'circle', 'line', 'arc', 'divide'] as ToolId[]).includes(controller.tool) ? layerController(controller) : controller;
+  function selectionColouring(): SelectionColouring | null {
+    const ws = controller.doc.view.workspace;
+    if (controller.tool !== 'select' || (ws !== 'construct' && ws !== 'intersection')) return null;
+    const doc = lens().doc;
+    const sel = controller.selection.filter((c) => c.kind !== 'point');
+    if (sel.length === 0) return null;
+    const keys = selectionKeys(doc, sel);
+    const fairKeys = keys.filter((k) => doc.segmentStates.get(k)?.state === 'fair');
+    const frame = new Set(doc.frame.entityIds);
+    const ids = new Set(
+      keys
+        .filter((k) => {
+          const st = doc.segmentStates.get(k)?.state;
+          return st !== 'fair' && st !== 'trimmed';
+        })
+        .map((k) => k.split(':')[0]!),
+    );
+    const entities = [...ids].map((id) => doc.entities.find((e) => e.id === id)).filter((e): e is Entity => !!e && !frame.has(e.id));
+    const regions = sel.filter((c): c is Extract<SelectCandidate, { kind: 'region' }> => c.kind === 'region' && c.fair);
+    const parts: string[] = [];
+    if (regions.length) parts.push(regions.length === 1 ? 'region' : `${regions.length} regions`);
+    if (entities.length) {
+      const circles = entities.filter((e) => e.kind === 'circle').length;
+      const lines = entities.length - circles;
+      parts.push(entities.length === 1 ? (circles ? 'whole circle' : 'whole line') : [lines && `${lines} line${lines === 1 ? '' : 's'}`, circles && `${circles} circle${circles === 1 ? '' : 's'}`].filter(Boolean).join(', '));
+    }
+    if (fairKeys.length && !regions.length) {
+      const n = segmentCount(doc, fairKeys) || fairKeys.length;
+      parts.push(`${n} Fair segment${n === 1 ? '' : 's'}`);
+    }
+    return { entities, fairKeys, regions, label: parts.join(' · ') || 'nothing with a colour of its own' };
+  }
+  const strokeOf = (doc: Doc, k: SegmentKey) => doc.segmentStates.get(k)?.stroke ?? doc.fairDefaults;
+  /** The colours a selection shows now: its fills (regions), else its construction and Fair colours. */
+  function selectionColours(sc: SelectionColouring): (string | null)[] {
+    const doc = lens().doc;
+    if (sc.regions.length) return [...new Set(sc.regions.map((r) => getRegionFill(doc, r.sig) ?? null))];
+    return [...new Set([...sc.entities.map((e) => e.colour ?? color.construction), ...sc.fairKeys.map((k) => strokeOf(doc, k).colour)].map((c) => c.toLowerCase()))];
+  }
+  /** What a swatch row shows as current for several colours: the one they share (null = all default /
+   * unfilled), or '' — no swatch lit — when they differ. */
+  const currentOf = (xs: (string | null)[]): string | null => {
+    const lower = xs.map((c) => c?.toLowerCase() ?? null);
+    return lower.every((c) => c === lower[0]) ? (xs[0] ?? null) : '';
+  };
   function refreshCcBtn(): void {
     const doc = controller.doc;
     const kind = appearanceKind();
-    const targets = kind === 'construction' ? ccTargets() : [];
-    ccDot.classList.remove('none');
-    const shown =
-      kind === 'fair'
-        ? doc.fairDefaults.colour
-        : kind === 'fill'
-          ? withAlpha(doc.fillDefaults.colour, doc.fillDefaults.opacity)
-          : targets.length > 0
-            ? targets.every((e) => (e.colour ?? null) === (targets[0]!.colour ?? null))
-              ? (targets[0]!.colour ?? color.construction)
-              : color.construction
-            : (doc.toolPrefs?.constructionColour ?? color.construction);
-    ccDot.style.background = shown;
-    ccBtn.dataset.kind = kind;
-    ccBtn.classList.toggle('recolour', targets.length > 0);
+    const sc = selectionColouring();
+    ccDot.classList.remove('none', 'mixed');
+    ccDot.style.background = '';
+    if (sc && (sc.entities.length || sc.fairKeys.length || sc.regions.length)) {
+      const colours = selectionColours(sc);
+      if (colours.length > 1) {
+        // Mixed: a little wheel of the selection's own colours.
+        ccDot.classList.add('mixed');
+        const cs = colours.slice(0, 4).map((c) => c ?? 'transparent');
+        ccDot.style.background = `conic-gradient(${cs.map((c, i) => `${c} ${(i * 100) / cs.length}% ${((i + 1) * 100) / cs.length}%`).join(', ')})`;
+      } else if (colours[0] === null) ccDot.classList.add('none');
+      else ccDot.style.background = colours[0]!;
+    } else {
+      ccDot.style.background =
+        kind === 'fair' ? doc.fairDefaults.colour : kind === 'fill' ? withAlpha(doc.fillDefaults.colour, doc.fillDefaults.opacity) : (doc.toolPrefs?.constructionColour ?? color.construction);
+    }
+    const mode = sc ? 'selection' : kind;
+    ccBtn.dataset.kind = mode;
+    ccBtn.classList.toggle('recolour', !!sc);
     ccBtn.setAttribute(
       'aria-label',
-      kind === 'fair' ? 'Fair appearance' : kind === 'fill' ? 'Fill appearance' : targets.length > 0 ? 'Appearance · selected construction' : 'Construction colour',
+      sc ? `Colour · selected ${sc.label}` : kind === 'fair' ? 'Fair appearance' : kind === 'fill' ? 'Fill appearance' : 'Construction colour',
     );
-    if (openPopoverAnchor === ccBtn && ccBtn.dataset.open !== kind) closeAnyPopover(); // the tool changed under it
+    if (openPopoverAnchor === ccBtn && ccBtn.dataset.open !== `${mode}|${sc?.label ?? ''}`) closeAnyPopover(); // the tool or selection changed under it
   }
   /** A drawing preference changed: no Undo step; the artwork remembers it in the working draft — and in
    * its saved version only through Save or Save As (Sprint S2). */
@@ -1974,10 +2036,62 @@ export function buildShell(
   };
   function showConstructAppearance(): void {
     const kind = appearanceKind();
-    ccBtn.dataset.open = kind;
+    const sc = selectionColouring();
+    ccBtn.dataset.open = `${sc ? 'selection' : kind}|${sc?.label ?? ''}`;
     mountPopover(ccBtn, (menu) => {
       menu.classList.add('appearance-panel');
       const doc = controller.doc;
+      if (sc) {
+        const doc = lens().doc; // in Intersect: its own construction layer
+        // A selection: its own colours — one Undo step each — and nothing about the next drawing (that
+        // returns as soon as the selection is cleared).
+        popoverSectionLabel(menu, `Selected · ${sc.label}`);
+        if (!sc.entities.length && !sc.fairKeys.length && !sc.regions.length) {
+          panelHint(menu, 'The frame keeps its own colour. Select lines, circles or Fair pieces to recolour them.');
+          return;
+        }
+        if (sc.regions.length) {
+          popoverSectionLabel(menu, 'Fill');
+          colourSwatchRow(menu, currentOf(sc.regions.map((r) => getRegionFill(doc, r.sig) ?? null)), (colour) =>
+            lens().commit((d) => {
+              for (const r of sc.regions) {
+                if (colour === null) {
+                  removeRegionFill(d, r.sig);
+                  continue;
+                }
+                const existing = getRegionFill(d, r.sig);
+                setRegionFill(d, r.sig, withAlpha(colour, existing ? colourAlpha(existing) : d.fillDefaults.opacity));
+              }
+            }),
+          { label: 'No fill', value: null });
+        }
+        if (sc.entities.length || sc.fairKeys.length) {
+          if (sc.regions.length) popoverSectionLabel(menu, 'Line');
+          const current = currentOf([...sc.entities.map((e) => e.colour ?? null), ...sc.fairKeys.map((k) => doc.segmentStates.get(k)?.stroke?.colour ?? null)]);
+          colourSwatchRow(menu, current, (colour) =>
+            lens().commit((d) => {
+              if (sc.entities.length) setEntityColour(d, sc.entities.map((e) => e.id), colour);
+              for (const k of sc.fairKeys) setSegmentStroke(d, k, colour ?? color.ink, d.segmentStates.get(k)?.stroke?.width ?? d.fairDefaults.width);
+            }),
+          { label: 'Default', value: null, swatch: sc.entities.length ? color.construction : color.ink });
+        }
+        if (sc.fairKeys.length) {
+          popoverSectionLabel(menu, 'Fair width');
+          sliderRow(menu, {
+            min: 1,
+            max: 8,
+            step: 0.5,
+            value: strokeOf(doc, sc.fairKeys[0]!).width,
+            format: (v) => `${v} px`,
+            onCommit: (width) =>
+              lens().commit((d) => {
+                for (const k of sc.fairKeys) setSegmentStroke(d, k, d.segmentStates.get(k)?.stroke?.colour ?? d.fairDefaults.colour, width);
+              }),
+          });
+        }
+        if (sc.entities.length) panelHint(menu, 'A construction colour belongs to the whole line or circle — every construction piece of it changes.');
+        return;
+      }
       if (kind === 'fair') {
         popoverSectionLabel(menu, 'Fair colour · new strokes');
         colourSwatchRow(menu, doc.fairDefaults.colour, (c) => {
@@ -2020,14 +2134,6 @@ export function buildShell(
         });
         panelHint(menu, 'Regions already filled keep their colour.');
         return;
-      }
-      const targets = ccTargets();
-      if (targets.length > 0) {
-        const first = targets[0]!.colour ?? null;
-        const same = targets.every((e) => (e.colour ?? null) === first);
-        const what = targets.length === 1 ? (targets[0]!.kind === 'circle' ? 'whole circle' : 'whole line') : `${targets.length} lines and circles`;
-        popoverSectionLabel(menu, `Selected · ${what}`);
-        colourSwatchRow(menu, same ? first : null, (colour) => controller.commit((d) => setEntityColour(d, targets.map((e) => e.id), colour)), { label: 'Default', value: null, swatch: color.construction });
       }
       popoverSectionLabel(menu, 'Construction · new lines, circles, arcs');
       colourSwatchRow(menu, doc.toolPrefs?.constructionColour ?? null, (colour) => {
@@ -2137,7 +2243,7 @@ export function buildShell(
     controller.notify();
   });
 
-  // Intersection: in Grid / guides' slot, Snapshots — discoveries kept on purpose (not Undo history),
+  // Intersection: in Grid / guides' slot, Bookmarks — arrangements kept on purpose (not Undo history),
   // with how many there are.
   const ixSnapshotsBtn = document.createElement('button');
   ixSnapshotsBtn.className = 'icon-btn badge-host';
@@ -2145,12 +2251,12 @@ export function buildShell(
   const ixSnapshotsBadge = document.createElement('span');
   ixSnapshotsBadge.className = 'icon-badge';
   ixSnapshotsBtn.appendChild(ixSnapshotsBadge);
-  onTap(ixSnapshotsBtn, () => togglePanel(ixSnapshotsBtn, () => showIntersectionSnapshotsPanel(ixSnapshotsBtn, controller, { spreadRow: ixSpreadRow, refresh: () => refreshIntersectionRows() })));
+  onTap(ixSnapshotsBtn, () => togglePanel(ixSnapshotsBtn, () => showIntersectionSnapshotsPanel(ixSnapshotsBtn, controller)));
   function refreshIxSnapshotsBtn(): void {
     const n = controller.doc.intersectionSnapshots?.length ?? 0;
     ixSnapshotsBadge.textContent = n ? String(n) : '';
     ixSnapshotsBadge.style.display = n ? '' : 'none';
-    ixSnapshotsBtn.setAttribute('aria-label', `Snapshots · ${n} saved`);
+    ixSnapshotsBtn.setAttribute('aria-label', `Bookmarks · ${n} saved`);
   }
 
   rightSide.appendChild(guidesBtn);
@@ -2382,14 +2488,19 @@ export function buildShell(
   contextBar.className = 'context-bar';
   contextSlot.appendChild(contextBar);
 
+  // Selection first: when a selection can't start the tool just chosen, say what to tap instead.
+  controller.onNotice = (text) => showToast(text, 2600);
+
   const dock = document.createElement('div');
   dock.className = 'dock';
   const dockButtonEls = new Map<ToolId, HTMLButtonElement>();
+  const dockDividers: HTMLElement[] = [];
   for (const spec of DOCK_BUTTONS) {
     if (spec.divider) {
       const d = document.createElement('div');
       d.className = 'divider';
       dock.appendChild(d);
+      dockDividers.push(d);
     }
     const btn = document.createElement('button');
     btn.setAttribute('aria-label', spec.label);
@@ -2401,10 +2512,67 @@ export function buildShell(
         setDivideTarget(controller, null);
         return;
       }
+      // Develop (Intersect's Fair) is a geometry mode: Spread, an arrangement control, steps aside.
+      if (spec.id === 'fair' && controller.doc.view.workspace === 'intersection') setSpreadOpen(false);
       controller.setTool(spec.id);
     });
     dockButtonEls.set(spec.id, btn);
     dock.appendChild(btn);
+  }
+  // Intersect's own dock: Select · Develop · Spread · Reset. Circle, Line, Arc and Divide stay in
+  // Construct; Fair is called Develop here (it develops Intersect's own design, never Construct's Fair).
+  const dockLabel = (btn: HTMLButtonElement, label: string) => {
+    btn.setAttribute('aria-label', label);
+    const l = btn.querySelector('.label');
+    if (l) l.textContent = label;
+  };
+  const ixDockBtn = (label: string, icon: IconName, aria: string) => {
+    const btn = document.createElement('button');
+    btn.className = 'ix-dock-btn';
+    btn.setAttribute('aria-label', aria);
+    btn.innerHTML = `${iconSvg(icon)}<span class="label">${label}</span>`;
+    dock.appendChild(btn);
+    return btn;
+  };
+  const ixSpreadDockBtn = ixDockBtn('Spread', 'spread', 'Spread');
+  ixSpreadDockBtn.setAttribute('aria-pressed', 'false');
+  ixSpreadDockBtn.addEventListener('click', () => {
+    const open = !spreadOpen;
+    // Spread arranges the copies: Select is the tool it belongs to.
+    if (open && controller.tool !== 'select') controller.setTool('select');
+    setSpreadOpen(open);
+  });
+  const ixResetDockBtn = ixDockBtn('Reset', 'resetIx', 'Reset Intersect');
+  ixResetDockBtn.addEventListener('click', () => confirmIntersectReset());
+
+  /** Reset Intersect, after asking (never on a single tap): back to the Original and two copies in the
+   * starting arrangement; Construct is kept. One Undo step. */
+  function confirmIntersectReset(): void {
+    if (!intersectResettable(controller.doc)) {
+      showToast('Intersect is already as it starts');
+      return;
+    }
+    openConfirmSheet({
+      title: 'Reset Intersect?',
+      body: 'Puts back the Original and two copies in their starting arrangement and colours, and removes the other copies, every copy setting and the developed design. Construct and its Fair are kept, and so are saved arrangements. Undo brings it all back.',
+      confirmLabel: 'Reset',
+      onConfirm: () => {
+        const next = withIntersectReset(controller.doc);
+        controller.intersectionSelected = null;
+        controller.intersectionBox = null;
+        controller.intersectionPicks = [];
+        controller.intersectionPickKind = 'instance';
+        controller.intersectionSpreadDraft = null;
+        controller.selection = [];
+        controller.formPress = null;
+        controller.lineChoice = null;
+        closeAnyPopover();
+        controller.commit((d) => {
+          d.intersection = next;
+        });
+        showToast('Intersect reset · Undo brings it back');
+      },
+    });
   }
 
   // ---- Phase 5: Repeat's own compact control panel — family, orientation rule, Guide toggle,
@@ -2420,32 +2588,100 @@ export function buildShell(
   // The lattice is shaped by its handles alone (precise 90° / 60° relations and equal arms snap —
   // geometry/latticeSnap.ts); Grid and guides keeps a Reset lattice.
 
+  // Stage 2: two choices instead of Uniform / Alternate / Mirror — WHAT changes on the changed copies
+  // (nothing, a half turn, or a reflection across either of the motif's own axes) and WHICH copies
+  // change (every other copy, row or column). Existing rules read exactly as before: Uniform = As drawn;
+  // Alternate = Rotate 180° on alternating copies; Mirror = Reflect ↕ (top and bottom swap) on
+  // alternating copies. `flip` and `by` are written only when chosen (lattice.ts ruleKey).
+  type Transform = 'none' | 'rotate' | 'reflect-h' | 'reflect-v';
+  type Placement = 'cells' | 'rows' | 'columns';
+  const transformOf = (rule: RepeatSystem['rule']): Transform =>
+    rule.kind === 'alternate' ? 'rotate' : rule.kind === 'mirror' ? (rule.flip === 'h' ? 'reflect-h' : 'reflect-v') : 'none';
+  const placementOf = (rule: RepeatSystem['rule']): Placement => rule.by ?? 'cells';
+  const ruleFor = (t: Transform, by: Placement): RepeatSystem['rule'] => {
+    const where = by === 'cells' ? {} : { by };
+    if (t === 'rotate') return { kind: 'alternate', ...where };
+    if (t === 'reflect-v') return { kind: 'mirror', ...where };
+    if (t === 'reflect-h') return { kind: 'mirror', flip: 'h', ...where };
+    return { kind: 'same' };
+  };
+  const setRule = (t: Transform, by: Placement) => {
+    const next = ruleFor(t, by);
+    const now = controller.doc.repeat.rule;
+    if (transformOf(now) === t && (t === 'none' || placementOf(now) === by)) return;
+    controller.commit((d) => {
+      d.repeat.rule = next;
+    });
+  };
   const ruleRow = document.createElement('div');
   ruleRow.className = 'segmented-mini';
-  const RULES: { id: RepeatSystem['rule']['kind']; label: string }[] = [
-    { id: 'same', label: 'Uniform' },
-    { id: 'alternate', label: 'Alternate' },
-    { id: 'mirror', label: 'Mirror' },
+  ruleRow.setAttribute('role', 'group');
+  ruleRow.setAttribute('aria-label', 'Transformation');
+  const TRANSFORMS: { id: Transform; label: string; title: string }[] = [
+    { id: 'none', label: 'As drawn', title: 'Every copy as drawn' },
+    { id: 'rotate', label: 'Rotate 180°', title: 'Rotate the changed copies by half a turn' },
+    { id: 'reflect-h', label: 'Reflect ↔', title: 'Reflect the changed copies horizontally — left and right swap' },
+    { id: 'reflect-v', label: 'Reflect ↕', title: 'Reflect the changed copies vertically — top and bottom swap' },
   ];
-  const ruleBtns = new Map<RepeatSystem['rule']['kind'], HTMLButtonElement>();
-  for (const r of RULES) {
+  const ruleBtns = new Map<Transform, HTMLButtonElement>();
+  for (const r of TRANSFORMS) {
     const btn = document.createElement('button');
     btn.textContent = r.label;
-    btn.addEventListener('click', () => {
-      if (controller.doc.repeat.rule.kind === r.id) return;
-      controller.commit((d) => {
-        d.repeat.rule = { kind: r.id };
-      });
-    });
+    btn.title = r.title;
+    btn.setAttribute('aria-label', r.title);
+    btn.addEventListener('click', () => setRule(r.id, placementOf(controller.doc.repeat.rule)));
     ruleBtns.set(r.id, btn);
     ruleRow.appendChild(btn);
+  }
+  // Which copies change — shown only while something changes.
+  const placeRow = document.createElement('div');
+  placeRow.className = 'space-row placement-row';
+  const placeGroup = document.createElement('div');
+  placeGroup.className = 'source-group pattern-group';
+  const placeLabel = document.createElement('span');
+  placeLabel.className = 'space-label';
+  placeLabel.textContent = 'Apply to';
+  const placeSeg = document.createElement('div');
+  placeSeg.className = 'segmented-mini';
+  placeSeg.setAttribute('role', 'group');
+  placeSeg.setAttribute('aria-label', 'Apply to');
+  const placeBtns = new Map<Placement, HTMLButtonElement>();
+  for (const [id, label, title] of [
+    ['cells', 'Alternating', 'Every other copy'],
+    ['rows', 'Rows', 'Every other row (along handle A)'],
+    ['columns', 'Columns', 'Every other column (along handle B)'],
+  ] as const) {
+    const b = document.createElement('button');
+    b.textContent = label;
+    b.title = title;
+    b.setAttribute('aria-label', title);
+    b.addEventListener('click', () => setRule(transformOf(controller.doc.repeat.rule), id));
+    placeBtns.set(id, b);
+    placeSeg.appendChild(b);
+  }
+  placeGroup.appendChild(placeLabel);
+  placeGroup.appendChild(placeSeg);
+  placeRow.appendChild(placeGroup);
+  function refreshRuleRows(): void {
+    const rule = controller.doc.repeat.rule;
+    const t = transformOf(rule);
+    for (const [id, btn] of ruleBtns) btn.classList.toggle('active', t === id);
+    const changing = t !== 'none';
+    placeRow.style.display = changing && ruleLine.style.display !== 'none' ? '' : 'none';
+    for (const [id, btn] of placeBtns) btn.classList.toggle('active', changing && placementOf(rule) === id);
   }
   // Repeat Colouring (geometry/repeatColour.ts): beside the rule — how copies alternate in
   // orientation there, how they may differ in colour here. A toggle; while on, the lattice rows
   // step aside for its own few controls and a tap colours a region of the repeated design.
-  // UI-4: this row holds the repetition rules only; Fill is its own action on the Source row.
+  // UI-4: this row holds the repetition rules only; Fill is its own action, on its own row (Stage 4).
+  // A small visible caption above the four choices (its group already carries the same accessible name).
   const ruleLine = document.createElement('div');
-  ruleLine.className = 'space-row';
+  ruleLine.className = 'space-row rule-line';
+  const ruleCaption = document.createElement('span');
+  ruleCaption.className = 'row-caption';
+  ruleCaption.textContent = 'Transformation';
+  ruleCaption.setAttribute('aria-hidden', 'true');
+  ruleLine.appendChild(ruleCaption);
   ruleLine.appendChild(ruleRow);
   const colouringBtn = document.createElement('button');
   colouringBtn.className = 'space-chip fill-action';
@@ -2455,6 +2691,54 @@ export function buildShell(
   colouringBtn.setAttribute('aria-pressed', 'false');
   onTap(colouringBtn, () => setFillScope(fillScope() ? null : 'motif'));
   repeatPanel.appendChild(ruleLine);
+  repeatPanel.appendChild(placeRow);
+
+  // The interface is Source → Fill; the motif's turn, reflection and scale are on its bounding box.
+  // An artwork that uses an alternating rule keeps it, exactly as it looks, and says so here — with the
+  // way to see or change it (Edit) and back to Uniform (one Undo step). Edit, or Grid settings →
+  // Alternating rules…, shows the older Transformation · Apply to rows until Done.
+  const legacyRow = document.createElement('div');
+  legacyRow.className = 'space-row legacy-rule-row';
+  const legacyText = document.createElement('span');
+  legacyText.className = 'close-gap-cue legacy-rule-text';
+  const legacyEdit = document.createElement('button');
+  legacyEdit.className = 'space-chip';
+  legacyEdit.textContent = 'Edit';
+  legacyEdit.setAttribute('aria-label', 'Edit the alternating rule');
+  onTap(legacyEdit, () => {
+    controller.repeatLegacyRules = !controller.repeatLegacyRules;
+    controller.notify();
+  });
+  const legacyUniform = document.createElement('button');
+  legacyUniform.className = 'space-chip';
+  legacyUniform.textContent = 'Uniform';
+  legacyUniform.setAttribute('aria-label', 'Use Uniform: every copy as drawn (Undo brings the rule back)');
+  onTap(legacyUniform, () => {
+    if (!alternationOf(controller.doc.repeat.rule)) return;
+    controller.commit((d) => {
+      d.repeat.rule = { kind: 'same' };
+    });
+    showToast('Uniform · every copy as drawn · Undo brings the alternating rule back');
+  });
+  legacyRow.append(legacyText, legacyEdit, legacyUniform);
+  repeatPanel.insertBefore(legacyRow, ruleLine);
+  const describeRule = (rule: RepeatSystem['rule']): string => {
+    const what = { none: 'As drawn', rotate: 'Rotate 180°', 'reflect-h': 'Reflect ↔', 'reflect-v': 'Reflect ↕' }[transformOf(rule)];
+    const where = { cells: 'every other copy', rows: 'every other row', columns: 'every other column' }[placementOf(rule)];
+    return `${what} · ${where}`;
+  };
+  function refreshLegacyRow(show: boolean): void {
+    const rule = controller.doc.repeat.rule;
+    const alternating = !!alternationOf(rule);
+    const open = controller.repeatLegacyRules;
+    legacyRow.style.display = show && (alternating || open) ? '' : 'none';
+    ruleLine.style.display = show && open ? '' : 'none';
+    legacyText.textContent = open ? 'Alternating rules' : `Alternating rule · ${describeRule(rule)}`;
+    legacyEdit.textContent = open ? 'Done' : 'Edit';
+    legacyEdit.setAttribute('aria-label', open ? 'Done with the alternating rules' : 'Edit the alternating rule');
+    legacyEdit.classList.toggle('active', open);
+    legacyUniform.style.display = alternating ? '' : 'none';
+  }
 
   // Final sprint, Stage 1: one Fill. While filling the row shows only Fill itself (on, with the colour
   // it applies) and a cue: tap any enclosed region — the app works out whether it is a region of the
@@ -2574,20 +2858,23 @@ export function buildShell(
   patternRow.className = 'space-row';
   const patternLabel = document.createElement('span');
   patternLabel.className = 'space-label';
-  patternLabel.textContent = 'Alternate';
+  // Stage 4: "Colour every other …" — which copies take the second colouring, never how copies are
+  // arranged (that is Repeat's Transformation · Apply to).
+  patternLabel.textContent = 'Colour every other';
   const patternSeg = document.createElement('div');
   patternSeg.className = 'segmented-mini';
   patternSeg.setAttribute('role', 'group');
-  patternSeg.setAttribute('aria-label', 'Alternate');
+  patternSeg.setAttribute('aria-label', 'Colour every other');
   const patternBtns = new Map<PatternBy, HTMLButtonElement>();
   for (const [id, label, title] of [
-    ['copies', 'Copies', 'Every other copy'],
-    ['rows', 'Rows', 'Every other row'],
-    ['columns', 'Columns', 'Every other column'],
+    ['copies', 'Copy', 'Colour every other copy'],
+    ['rows', 'Row', 'Colour every other row'],
+    ['columns', 'Column', 'Colour every other column'],
   ] as const) {
     const b = document.createElement('button');
     b.textContent = label;
     b.title = title;
+    b.setAttribute('aria-label', title);
     onTap(b, () => setPatternBy(id));
     patternBtns.set(id, b);
     patternSeg.appendChild(b);
@@ -2686,35 +2973,119 @@ export function buildShell(
   sourceGroup.appendChild(sourceSeg);
 
   spaceRow.appendChild(sourceGroup);
-  spaceRow.appendChild(colouringBtn);
-  repeatPanel.appendChild(spaceRow);
+  // Stage 4: Repeat reads top to bottom — Source; what changes on every other copy (Transformation) and
+  // which copies (Apply to); then Fill, an editing action of its own, on its own row. (Appearance is the
+  // top-left button.)
+  repeatPanel.insertBefore(spaceRow, legacyRow);
+  const fillRow = document.createElement('div');
+  fillRow.className = 'space-row fill-entry-row';
+  fillRow.appendChild(colouringBtn);
+  repeatPanel.insertBefore(fillRow, colourKindRow);
 
-  // Spread: centres in or out about the reference group's centre (100% = the reference); Reference
-  // makes what is shown now the reference. Sizes and rotations never change. Logarithmic, 25–500%,
-  // so 100% sits mid-way with fine control either side. Once a copy is added or removed, the old
-  // reference is out of date: Spread rests (and says so) until Reference is set again.
-  const ixSpreadRow = document.createElement('div');
-  ixSpreadRow.className = 'space-row spread-row';
-  const spreadLabel = document.createElement('span');
-  spreadLabel.className = 'space-label';
-  spreadLabel.textContent = 'Spread';
-  const spreadSlider = document.createElement('input');
-  spreadSlider.type = 'range';
-  spreadSlider.className = 'width-slider spread-slider';
-  spreadSlider.min = '0';
-  spreadSlider.max = String(SPREAD_SLIDER_MAX);
-  spreadSlider.step = '1';
-  spreadSlider.setAttribute('aria-label', 'Spread');
+  // Spread (Intersect's dock): centres in or out about the reference group's centre (100 % = the
+  // reference); Set as reference makes what is shown now the reference. Sizes and rotations never
+  // change. Logarithmic, 25–500 %, so 100 % sits mid-way with fine control either side. Once a copy is
+  // added or removed, the old reference is out of date: Spread rests (and says so) until the reference
+  // is set again — 100 % is never silently redefined. A compact column on the canvas's left edge, open
+  // while Spread is lit; the canvas stays live beside it (copies can still be moved and turned).
+  const spreadPanel = document.createElement('div');
+  spreadPanel.className = 'ix-spread-panel';
+  spreadPanel.style.display = 'none';
+  const spreadTitle = document.createElement('span');
+  spreadTitle.className = 'ix-spread-title';
+  spreadTitle.textContent = 'Spread';
   const spreadValue = document.createElement('span');
-  spreadValue.className = 'space-label spread-value';
-  spreadSlider.addEventListener('input', () => {
-    const spread = sliderToSpread(Number(spreadSlider.value));
-    controller.intersectionSpreadDraft = spread;
-    spreadValue.textContent = `${Math.round(spread * 100)}%`;
-    controller.notifyView();
-  });
-  spreadSlider.addEventListener('change', () => {
-    const spread = sliderToSpread(Number(spreadSlider.value));
+  spreadValue.className = 'ix-spread-value';
+  const spreadTrack = document.createElement('div');
+  spreadTrack.className = 'ix-spread-track';
+  spreadTrack.tabIndex = 0;
+  spreadTrack.setAttribute('role', 'slider');
+  spreadTrack.setAttribute('aria-label', 'Spread');
+  spreadTrack.setAttribute('aria-orientation', 'vertical');
+  spreadTrack.setAttribute('aria-valuemin', String(Math.round(SPREAD_MIN * 100)));
+  spreadTrack.setAttribute('aria-valuemax', String(Math.round(SPREAD_MAX * 100)));
+  const spreadFill = document.createElement('div');
+  spreadFill.className = 'ix-spread-fill';
+  const spreadThumb = document.createElement('div');
+  spreadThumb.className = 'ix-spread-thumb';
+  // The reference (100 %): a line across the track (only a mark — the thumb is dragged over it) and,
+  // beside it, Ref: a tap there goes back to the reference arrangement.
+  const spreadRefLine = document.createElement('div');
+  spreadRefLine.className = 'ix-spread-ref-line';
+  spreadRefLine.setAttribute('aria-hidden', 'true');
+  const spreadRefMark = document.createElement('button');
+  spreadRefMark.className = 'ix-spread-ref';
+  spreadRefMark.textContent = 'Ref';
+  spreadRefMark.setAttribute('aria-label', 'Back to the reference arrangement (Spread 100 %)');
+  spreadRefMark.title = 'The reference arrangement — Spread 100 %';
+  spreadTrack.append(spreadFill, spreadRefLine, spreadThumb, spreadRefMark);
+  const referenceBtn = document.createElement('button');
+  referenceBtn.className = 'ix-spread-set';
+  referenceBtn.textContent = 'Set ref.';
+  referenceBtn.title = 'Make this arrangement the Spread reference (100 %)';
+  referenceBtn.setAttribute('aria-label', 'Set this arrangement as the Spread reference (100 %)');
+  const spreadNote = document.createElement('span');
+  spreadNote.className = 'ix-spread-note';
+  spreadPanel.append(spreadTitle, spreadValue, spreadTrack, referenceBtn, spreadNote);
+  canvasWrap.appendChild(spreadPanel);
+  let spreadOpen = false;
+  function setSpreadOpen(on: boolean): void {
+    if (spreadOpen === on) return;
+    spreadOpen = on;
+    if (!on && controller.intersectionSpreadDraft !== null) {
+      controller.intersectionSpreadDraft = null;
+      controller.notifyView();
+    }
+    if (on) controller.intersectionBox = null; // arranging every copy, not one
+    spreadPanel.style.display = on ? '' : 'none';
+    if (on) placeSpreadPanel();
+    ixSpreadDockBtn.classList.toggle('active', on);
+    ixSpreadDockBtn.setAttribute('aria-pressed', String(on));
+    if (on) refreshIntersectionRows();
+    controller.notify();
+  }
+  /** The column sits on the canvas's right edge: on a phone (a narrow canvas) low down, just above the
+   * controls that float over the canvas (the Fit button among them); elsewhere — or when there is no room
+   * below — at the top right. Placement only: the layout is unchanged. */
+  function placeSpreadPanel(): void {
+    const wrap = canvasWrap.getBoundingClientRect();
+    if (wrap.width >= 600) {
+      spreadPanel.style.top = '';
+      spreadPanel.style.bottom = '';
+      return;
+    }
+    // (On the right edge: above the Fit button and whatever else floats over the bottom of the canvas.)
+    let chrome = overlay.getBoundingClientRect().top;
+    for (const el of overlay.querySelectorAll<HTMLElement>('button, [role="group"], .snap-row, .space-label')) {
+      if (!el.offsetParent) continue;
+      const r = el.getBoundingClientRect();
+      if (r.height > 0 && r.top < chrome) chrome = r.top;
+    }
+    const bottom = Math.max(0, wrap.bottom - chrome) + 10;
+    const fits = wrap.height - bottom - spreadPanel.offsetHeight >= 12;
+    spreadPanel.style.top = fits ? 'auto' : '';
+    spreadPanel.style.bottom = fits ? `${bottom}px` : '';
+  }
+  /** Track position (0 at the bottom … 1 at the top) of a Spread value. */
+  const spreadPos = (spread: number) => spreadToSlider(spread) / SPREAD_SLIDER_MAX;
+  const showSpread = (spread: number, current: boolean) => {
+    const v = spreadPos(spread);
+    spreadFill.style.height = `calc(9px + ${v} * (100% - 18px))`;
+    spreadThumb.style.bottom = `calc(${v} * (100% - 18px))`;
+    spreadValue.textContent = current ? `${Math.round(spread * 100)} %` : '—';
+    spreadTrack.setAttribute('aria-valuenow', String(Math.round(spread * 100)));
+    spreadTrack.setAttribute('aria-valuetext', current ? `${Math.round(spread * 100)} %` : 'Reference out of date');
+  };
+  spreadRefLine.style.bottom = `calc(${spreadPos(1)} * (100% - 18px) + 8px)`;
+  spreadRefMark.style.bottom = `calc(${spreadPos(1)} * (100% - 18px) - 2px)`;
+  /** The Spread under a finger at `clientY` — a light hold at 100 % so the reference is easy to find. */
+  const spreadAt = (clientY: number) => {
+    const r = spreadTrack.getBoundingClientRect();
+    const v = Math.min(1, Math.max(0, (r.bottom - 9 - clientY) / (r.height - 18)));
+    const spread = sliderToSpread(v * SPREAD_SLIDER_MAX);
+    return Math.abs(Math.log(spread)) < 0.02 ? 1 : spread;
+  };
+  const commitSpread = (spread: number) => {
     controller.intersectionSpreadDraft = null;
     if (Math.abs(spread - layoutOf(controller.doc).spread) < 1e-9) {
       controller.notify();
@@ -2724,22 +3095,81 @@ export function buildShell(
       // Locked constructions stay where they are; the others spread about the centre.
       d.intersection = withLayout(d, withSpreadAround(d, spread));
     });
+  };
+  // Every press on the track — Ref included (a touch near it is often given to it) — may drag; a press
+  // on Ref that never moves goes back to the reference (100 %).
+  let spreadDrag: { id: number; y: number; onRef: boolean; moved: boolean } | null = null;
+  /** An arrangement stored with an out-of-date reference (before the reference followed the copies):
+   * this arrangement becomes the 100 % reference — nothing moves (one Undo step). Never refuses. */
+  const stale = () => {
+    if (referenceCurrent(layoutOf(controller.doc))) return false;
+    controller.commit((d) => {
+      d.intersection = withLayout(d, asReference(layoutOf(d)));
+    });
+    showToast('Spread reference set · this arrangement is 100 %');
+    return false;
+  };
+  spreadTrack.addEventListener('pointerdown', (e) => {
+    e.preventDefault();
+    e.stopPropagation();
+    if (stale()) return;
+    const onRef = !!(e.target as HTMLElement).closest('.ix-spread-ref');
+    spreadDrag = { id: e.pointerId, y: e.clientY, onRef, moved: !onRef };
+    try {
+      spreadTrack.setPointerCapture(e.pointerId);
+    } catch {
+      /* a synthetic pointer has nothing to capture */
+    }
+    if (onRef) return;
+    const spread = spreadAt(e.clientY);
+    controller.intersectionSpreadDraft = spread;
+    showSpread(spread, true);
+    controller.notifyView();
   });
-  const referenceBtn = document.createElement('button');
-  referenceBtn.className = 'space-chip';
-  referenceBtn.textContent = 'Reference';
-  referenceBtn.title = 'Make this arrangement the Spread reference (100%)';
-  referenceBtn.setAttribute('aria-label', 'Set this arrangement as the Spread reference');
+  spreadTrack.addEventListener('pointermove', (e) => {
+    if (spreadDrag?.id !== e.pointerId) return;
+    if (!spreadDrag.moved && Math.abs(e.clientY - spreadDrag.y) < 4) return;
+    spreadDrag.moved = true;
+    const spread = spreadAt(e.clientY);
+    controller.intersectionSpreadDraft = spread;
+    showSpread(spread, true);
+    controller.notifyView();
+  });
+  const endSpreadDrag = (e: PointerEvent, keep: boolean) => {
+    if (spreadDrag?.id !== e.pointerId) return;
+    const { onRef, moved } = spreadDrag;
+    spreadDrag = null;
+    const draft = controller.intersectionSpreadDraft;
+    if (keep && onRef && !moved) commitSpread(1);
+    else if (keep && draft !== null) commitSpread(draft);
+    else {
+      controller.intersectionSpreadDraft = null;
+      controller.notify();
+    }
+  };
+  spreadTrack.addEventListener('pointerup', (e) => endSpreadDrag(e, true));
+  spreadTrack.addEventListener('pointercancel', (e) => endSpreadDrag(e, false));
+  spreadTrack.addEventListener('keydown', (e) => {
+    if (!['ArrowUp', 'ArrowRight', 'ArrowDown', 'ArrowLeft', 'PageUp', 'PageDown', 'Home', 'End'].includes(e.key)) return;
+    stale();
+    const step = { ArrowUp: 10, ArrowRight: 10, ArrowDown: -10, ArrowLeft: -10, PageUp: 50, PageDown: -50 }[e.key];
+    const now = spreadToSlider(layoutOf(controller.doc).spread);
+    const pos = step !== undefined ? now + step : e.key === 'Home' ? 0 : e.key === 'End' ? SPREAD_SLIDER_MAX : null;
+    if (pos === null) return;
+    e.preventDefault();
+    commitSpread(sliderToSpread(Math.min(SPREAD_SLIDER_MAX, Math.max(0, pos))));
+  });
+  // Ref by keyboard: Enter / Space on it goes back to 100 %.
+  spreadRefMark.addEventListener('click', (e) => {
+    if (e.detail !== 0) return; // a pointer press is handled by the track
+    if (!stale()) commitSpread(1);
+  });
   onTap(referenceBtn, () => {
     controller.commit((d) => {
       d.intersection = withLayout(d, asReference(layoutOf(d)));
     });
-    showToast('Spread reference set');
+    showToast('Spread reference set · this arrangement is 100 %');
   });
-  ixSpreadRow.appendChild(spreadLabel);
-  ixSpreadRow.appendChild(spreadSlider);
-  ixSpreadRow.appendChild(spreadValue);
-  ixSpreadRow.appendChild(referenceBtn);
 
   // Snap: only once something is picked (a tap on a line or point — see intersectionTool). Two
   // lines offer Parallel (turn only) and Join (slide only, once parallel); two points offer Snap
@@ -2776,6 +3206,7 @@ export function buildShell(
   /** Taps pick `kind` from now on; what is picked becomes that kind where it was tapped. */
   function setPickKind(kind: PickKind): void {
     if (controller.intersectionPickKind === kind) return;
+    controller.intersectionBox = null; // an alignment is not arranging: the bounding box closes
     // Match Edge picks in its own order (the moving edge first): its picks and the others' never
     // turn into one another — switching in or out starts afresh; so does starting or ending an
     // alignment from instance selection.
@@ -2884,7 +3315,12 @@ export function buildShell(
     controller.commit((d) => {
       d.intersection = withLayout(d, placedAt(layoutOf(d), plan.moving, plan.translate, plan.rotation));
     });
+    if (scaledMismatch(plan)) showToast('Edges of different lengths (a copy is scaled) · their middles meet, not their ends', 3200, 'warning');
   });
+  /** Match Edge between edges of different lengths, where a copy's scale is (part of) why. */
+  function scaledMismatch(plan: { lengthsDiffer: boolean; moving: string; target: string }): boolean {
+    return plan.lengthsDiffer && (copyScale(controller.doc, plan.moving) !== 1 || copyScale(controller.doc, plan.target) !== 1);
+  }
   onTap(snapClearBtn, () => {
     controller.intersectionPicks = [];
     controller.intersectionPickKind = 'instance'; // back to arranging whole instances
@@ -2901,7 +3337,7 @@ export function buildShell(
   ixSnapRow.appendChild(alignRow);
   repeatPanel.appendChild(ixSnapRow);
 
-  // Release R3: Spread lives in the bookmark popover (showIntersectionSnapshotsPanel), not on the canvas.
+  // Stage 3: Spread lives in the Copies panel (showIntersectionCopiesPanel), not on the canvas.
 
   /** The Snap row for the current picks — after first dropping any pick that no longer exists
    * (never kept at an old position). */
@@ -2928,7 +3364,14 @@ export function buildShell(
       snapControls.style.display = 'none';
       alignRow.style.display = '';
       if (!sel) return;
-      snapText.textContent = sel.locked ? `${sel.label} locked · stays in place` : `${sel.label} selected · drag to move, handle to turn`;
+      // While its bounding box is open, how to use and close it; otherwise how to open it.
+      const boxOpen = controller.intersectionBox === sel.key;
+      const more = window.matchMedia?.('(pointer: coarse)').matches ? 'hold for more' : 'right-click for more';
+      snapText.textContent = boxOpen
+        ? `${sel.label} · reflect, delete, lock or scale at the corners · tap outside to close`
+        : sel.locked
+          ? `${sel.label} locked · stays in place · ${more}`
+          : `${sel.label} selected · drag to move, handle to turn · ${more}`;
       snapDot.style.display = '';
       snapDot.style.background = sel.colour;
       // A padlock (closed while locked) — compact enough for the row on a phone; the status says it.
@@ -2956,6 +3399,7 @@ export function buildShell(
       else if (edgePlan.kind === 'none') edgeText = edgePlan.note;
       else if (edgePlan.matched) edgeText = 'Edges matched';
       else if (isLocked(controller.doc, edgePlan.moving)) edgeText = `${labelOf(edgePlan.moving)} is locked · unlock it to move`;
+      else if (scaledMismatch(edgePlan)) edgeText = `${labelOf(edgePlan.moving)} onto ${labelOf(edgePlan.target)} · ⚠ a scaled copy’s edges differ in length: their middles meet, not their ends`;
       else edgeText = `Match Edge moves ${labelOf(edgePlan.moving)} onto ${labelOf(edgePlan.target)}`;
       const dotKey = edgePlan?.kind === 'edge' ? edgePlan.moving : reference?.kind === 'line' ? reference.copy : '';
       snapText.textContent = edgeText;
@@ -3004,18 +3448,15 @@ export function buildShell(
 
   function refreshIntersectionRows(): void {
     const layout = layoutOf(controller.doc);
+    // An out-of-date reference (an older artwork) reads as 100 %: using Spread makes this arrangement the
+    // reference first (stale()).
     const current = referenceCurrent(layout);
-    spreadSlider.disabled = !current;
-    ixSpreadRow.classList.toggle('stale', !current);
-    referenceBtn.classList.toggle('active', !current);
-    referenceBtn.title = current ? 'Make this arrangement the Spread reference (100%)' : 'Copies have changed — set a new reference to use Spread';
-    if (!current) {
-      spreadSlider.value = String(spreadToSlider(1));
-      spreadValue.textContent = 'Set ref.';
-    } else if (controller.intersectionSpreadDraft === null) {
-      spreadSlider.value = String(spreadToSlider(layout.spread));
-      spreadValue.textContent = `${Math.round(layout.spread * 100)}%`;
-    }
+    spreadPanel.classList.remove('stale');
+    spreadTrack.setAttribute('aria-disabled', 'false');
+    referenceBtn.classList.remove('active');
+    referenceBtn.title = 'Make this arrangement the Spread reference (100 %)';
+    spreadNote.textContent = '';
+    if (controller.intersectionSpreadDraft === null) showSpread(current ? layout.spread : 1, true);
   }
 
   function refreshSpaceRow(): void {
@@ -3078,7 +3519,7 @@ export function buildShell(
   emptyTitle.className = 'empty-composition-title';
   emptyTitle.textContent = 'Nothing to repeat yet';
   const emptyText = document.createElement('p');
-  emptyText.textContent = 'From Intersect, Repeat repeats the Developed Primary and any construction set In Repeat — and there is neither. Develop the Primary with Fair in Intersect, or repeat the Construct motif.';
+  emptyText.textContent = 'From Intersect, Repeat repeats the Developed Primary and any construction set In Repeat — and there is neither. Develop a design in Intersect (Develop), or repeat the Construct motif.';
   const emptyActions = document.createElement('div');
   emptyActions.className = 'empty-composition-actions';
   const backBtn = document.createElement('button');
@@ -3096,11 +3537,12 @@ export function buildShell(
   emptyCard.append(emptyTitle, emptyText, emptyActions);
   canvasWrap.appendChild(emptyCard);
   function refreshOwnerTag(building: boolean): void {
-    ownerTag.style.display = building ? '' : 'none';
+    // Develop needs no banner: the dock and its ribbon say what is in hand (Intersect has no other tool).
+    ownerTag.style.display = 'none';
     if (!building) return;
     const primary = controller.tool === 'fair';
     ownerTag.dataset.owner = primary ? 'primary' : 'construct';
-    ownerText.textContent = primary ? 'Developed Primary · Intersect’s own geometry' : 'Construct source · every copy follows';
+    ownerText.textContent = primary ? 'Develop · Intersect’s own design' : 'Intersect’s own construction';
   }
 
   // While two fingers turn the view: a quiet readout of the camera's angle, gone after the gesture.
@@ -3189,10 +3631,10 @@ export function buildShell(
 
   /** Phase 5.2 item 5: removes the whole shape(s) — confirmed first only when that would also take
    * other constructions built on them (Undo restores either way). */
-  function confirmDelete(plan: DeletionPlan, rootCount: number, noun: string, after: () => void): void {
+  function confirmDelete(plan: DeletionPlan, rootCount: number, noun: string, after: () => void, target: AppController = controller): void {
     const extra = plan.entityIds.size - rootCount;
     const run = () => {
-      controller.commit((d) => applyDeletionPlan(d, plan));
+      target.commit((d) => applyDeletionPlan(d, plan));
       after();
     };
     if (extra <= 0) {
@@ -3250,7 +3692,55 @@ export function buildShell(
     }
   }
 
+  /** Select in Intersect, with Intersect's own construction selected: what it is, and Delete — whole
+   * shapes (with what is built on them, confirmed), pieces, or a point. Colour: the top-right control.
+   * Developed Fair taken from it stays (it is Intersect's own fixed geometry). */
+  function renderLayerSelectRibbon(): void {
+    const g = layerController(controller);
+    const doc = g.doc;
+    const sel = controller.selection;
+    if (sel.length === 0) return;
+    if (sel.length === 1 && sel[0]!.kind === 'point') {
+      cue('Intersect construction · point');
+      const plan = computePointDeletionPlan(doc, sel[0]!.id);
+      if (!plan) return;
+      chip('Delete', () => {
+        const run = () => {
+          g.commit((d) => applyPointDeletionPlan(d, plan));
+          controller.select([]);
+        };
+        if (plan.entityIds.size === 0) return run();
+        openConfirmSheet({
+          title: 'Delete this point?',
+          body: `Also removes ${plan.entityIds.size} construction${plan.entityIds.size === 1 ? '' : 's'} built on it. Undo will bring ${plan.entityIds.size === 1 ? 'it' : 'them'} back.`,
+          confirmLabel: 'Delete',
+          onConfirm: run,
+        });
+      });
+      return;
+    }
+    const keys = selectionKeys(doc, sel);
+    const scope = selectionScope(doc, sel, keys);
+    cue(`Intersect construction${scope.label ? ` · ${scope.label}` : ''}`);
+    const entityIds = selectionEntityIds(doc, sel, keys);
+    if (!scope.whole) {
+      if (keys.length > 0)
+        chip(`Delete ${scope.noun}`, () => {
+          g.commit((d) => {
+            for (const k of keys) trimSegment(d, k.split(':')[0]!, k);
+          });
+          controller.select([]);
+        });
+      return;
+    }
+    const plan = computeEntitiesDeletionPlan(doc, entityIds);
+    if (!plan) return;
+    const noun = entityIds.length === 1 ? (doc.entities.find((e) => e.id === plan.rootEntityId)?.kind === 'circle' ? 'this circle' : 'this line') : `${entityIds.length} shapes`;
+    chip(`Delete ${scope.noun}`, () => confirmDelete(plan, entityIds.length, noun, () => controller.select([]), g));
+  }
+
   function renderSelectRibbon(): void {
+    if (controller.doc.view.workspace === 'intersection') return renderLayerSelectRibbon();
     const doc = controller.doc;
     const sel = controller.selection;
 
@@ -3329,63 +3819,7 @@ export function buildShell(
       }
     }
 
-    // (Construction colour: the top-bar swatch — Stage A — recolours a construction selection.)
-
-    if (fair) {
-      const firstStroke = doc.segmentStates.get(keys[0]!)?.stroke ?? doc.fairDefaults;
-      const filled = regions.map((r) => getRegionFill(doc, r.sig)).find((c) => c !== undefined) ?? null;
-      chip(
-        'Colour',
-        (el) => {
-          const sections: Parameters<typeof showColourPopover>[1] = [];
-          if (regions.length > 0) {
-            // Phase 5.2 item 10: a region's Colour covers its fill too — "No fill" instead of a
-            // separate Remove fill action.
-            sections.push({
-              title: 'Fill',
-              current: filled,
-              noFill: true,
-              onPick: (colour) =>
-                controller.commit((d) => {
-                  for (const r of regions) {
-                    if (colour === null) {
-                      removeRegionFill(d, r.sig);
-                      continue;
-                    }
-                    const existing = getRegionFill(d, r.sig);
-                    setRegionFill(d, r.sig, withAlpha(colour, existing ? colourAlpha(existing) : d.fillDefaults.opacity));
-                  }
-                }),
-            });
-          }
-          sections.push({
-            title: regions.length > 0 ? 'Line' : 'Stroke colour',
-            current: firstStroke.colour,
-            onPick: (colour) => {
-              if (!colour) return;
-              controller.commit((d) => {
-                for (const k of keys) setSegmentStroke(d, k, colour, d.segmentStates.get(k)?.stroke?.width ?? d.fairDefaults.width);
-              });
-            },
-          });
-          showColourPopover(el, sections);
-        },
-        regions.length > 0 ? filled : firstStroke.colour,
-      );
-      chip('Width', (el) =>
-        showSliderPopover(el, 'Stroke width', {
-          min: 1,
-          max: 8,
-          step: 0.5,
-          value: firstStroke.width,
-          format: (v) => `${v}px`,
-          onCommit: (width) =>
-            controller.commit((d) => {
-              for (const k of keys) setSegmentStroke(d, k, d.segmentStates.get(k)?.stroke?.colour ?? d.fairDefaults.colour, width);
-            }),
-        }),
-      );
-    }
+    // Colour, width and a region's fill: the top-right colour control (Stage 4) — the one place for colour.
   }
 
   /** Phase 5.10: what the selection covers, in words — for the ribbon label and action names. */
@@ -3421,6 +3855,10 @@ export function buildShell(
 
   // ---- tools ----
 
+  /** Who the construction tools' ribbon edits: in Intersect, Intersect's own construction layer
+   * (geometry/intersectLayer.ts) — never Construct; elsewhere the artwork itself. */
+  const geo = lens;
+
   function renderDivideRibbon(): void {
     const state = controller.divide;
     if (!state) return;
@@ -3445,7 +3883,7 @@ export function buildShell(
       const d = controller.divide;
       if (!d) return;
       d.n = Math.max(DIVIDE_MIN, Math.min(DIVIDE_MAX, Math.round(n)));
-      controller.dividePreview = { target: d.target, points: dividePreviewPoints(controller.doc, d.target, d.n, d.angle) };
+      controller.dividePreview = { target: d.target, points: dividePreviewPoints(geo().doc, d.target, d.n, d.angle) };
       count.textContent = String(d.n);
       slider.value = String(d.n);
       minus.disabled = d.n <= DIVIDE_MIN;
@@ -3471,13 +3909,14 @@ export function buildShell(
     if (!state) return;
     const { target, n, angle } = state;
     let created: PointId[] = [];
-    controller.commit((d) => {
+    const g = geo();
+    g.commit((d) => {
       const entity = d.entities.find((e) => e.id === target.entityId);
       if (!entity) return;
       created = target.kind === 'circle-whole' ? addCircleDivision(d, entity.id, n, angle) : addSegmentDivisionPoints(d, target, n);
     });
     controller.doc.dividePrefs.lastN = n;
-    setDivideTarget(controller, null);
+    setDivideTarget(g, null);
     if (created.length > 0) controller.setRecentPoints(created);
   }
 
@@ -3534,21 +3973,23 @@ export function buildShell(
       } else if (pending?.kind === 'line') {
         cue('Choose B, or');
         // …from A alone, the horizontal / vertical extension through it.
-        chip('Horizontal', () => axisThrough(controller, 'h'));
-        chip('Vertical', () => axisThrough(controller, 'v'));
+        chip('Horizontal', () => axisThrough(geo(), 'h'));
+        chip('Vertical', () => axisThrough(geo(), 'v'));
       }
       const extendFor = controller.extendChip;
       if (extendFor && !pending) {
         chip('Extend', () => {
-          controller.commit((d) => {
+          geo().commit((d) => {
             const e = d.entities.find((en) => en.id === extendFor.entityId);
             if (e && e.kind === 'line') e.extended = true;
           });
           controller.setExtendChip(null);
         });
       }
+      // Construct only: in Intersect, Fair develops Intersect's own Primary and never Construct's Fair
+      // (Stage 1 — Promote to Fair would change the source motif of every copy and the Construct Repeat).
       const promoteFor = controller.fairPromoteChip;
-      if (promoteFor && !pending) {
+      if (promoteFor && !pending && controller.doc.view.workspace === 'construct') {
         chip('Promote to Fair', () => {
           controller.commit((d) => promoteEntityToFair(d, promoteFor.entityId));
           controller.setFairPromoteChip(null);
@@ -3574,23 +4015,41 @@ export function buildShell(
     } else if (tool === 'divide') {
       renderDivideRibbon();
     } else if (tool === 'fair' && doc.view.workspace === 'intersection') {
-      // Fair in Intersect develops the Primary, in its one Primary style: Construct's Fair colour and
-      // width are not its to change (the owner tag says what it edits). Release R2: what it offers to
-      // take — Fair only (default), or Construction too, or Extensions too.
-      modeToggle(
-        [
-          { id: 'fair', label: 'Fair only' },
-          { id: 'construction', label: 'Construction' },
-          { id: 'extension', label: 'Extensions' },
-        ],
-        controller.formLayer,
-        (layer) => {
-          controller.formLayer = layer;
-          controller.formPress = null;
-          controller.lineChoice = null;
-          controller.notify();
-        },
-      );
+      // Develop: Whole | Fair | Construction | Extension, always together and always fitting the width.
+      // Whole is a mode — a tap on a copy puts its whole Fair into the design or takes it out. Fair,
+      // Construction and Extension each say what a tap on a single segment can take; choosing one leaves
+      // Whole. Develop starts on Fair alone (controller.setTool). None of them changes the design.
+      contextBar.classList.add('develop-bar');
+      const toggle = (long: string, short: string, on: boolean, aria: string, run: () => void) => {
+        const b = chip('', run);
+        b.classList.add('toggle', 'develop-toggle');
+        b.innerHTML = `<span class="lbl-long">${long}</span><span class="lbl-short" aria-hidden="true">${short}</span>`;
+        b.classList.toggle('on', on);
+        b.setAttribute('aria-pressed', String(on));
+        b.setAttribute('aria-label', aria);
+        b.title = aria;
+        return b;
+      };
+      const settle = () => {
+        controller.formPress = null;
+        controller.lineChoice = null;
+        controller.notify();
+      };
+      const segments = !controller.formWhole;
+      toggle('Whole', 'Whole', controller.formWhole, 'Whole: tap a copy to put all its Fair in the design, or take it out', () => {
+        controller.formWhole = !controller.formWhole;
+        settle();
+      });
+      const source = (key: 'formFair' | 'formConstruction' | 'formExtension') => () => {
+        if (controller.formWhole) {
+          controller.formWhole = false;
+          if (!controller[key]) controller[key] = true; // leaving Whole for this source turns it on
+        } else controller[key] = !controller[key];
+        settle();
+      };
+      toggle('Fair', 'Fair', segments && controller.formFair, 'Fair: tap a Fair segment to add it to the design or take it out', source('formFair'));
+      toggle('Construction', 'Constr.', segments && controller.formConstruction, 'Construction: show and offer construction segments', source('formConstruction'));
+      toggle('Extension', 'Ext.', segments && controller.formExtension, 'Extension: show and offer extension segments', source('formExtension'));
     }
     // UI-2: Fair's colour and width and Fill's colour and opacity are set in the contextual Appearance
     // panel (the swatch at the top right), not on the ribbon.
@@ -3600,6 +4059,7 @@ export function buildShell(
    * otherwise it hides — but its slot keeps its height, so Undo/Redo and the dock never move. */
   function renderRibbon(): void {
     contextBar.innerHTML = '';
+    contextBar.classList.remove('develop-bar');
     contextBar.classList.toggle('circle-bar', controller.tool === 'circle' && controller.doc.view.workspace !== 'repeat');
     if (controller.tool === 'select') renderSelectRibbon();
     else renderToolRibbon(controller.tool);
@@ -3611,7 +4071,8 @@ export function buildShell(
    * handles no longer snap, so there are no contacts to announce.) */
   function updateRepeatStatus(): void {
     const rotating = controller.repeatRotateDrag;
-    const text = rotating ? (rotationFractionLabel(rotating.rawRotation) ?? 'Rotating…') : null;
+    const scaling = controller.repeatScaleDrag;
+    const text = rotating ? (rotationFractionLabel(rotating.rawRotation) ?? 'Rotating…') : scaling ? `Scale ${Math.round(scaling.scale * 100)} %` : null;
     if (text) repeatStatus.textContent = text; // keep the last text while fading out
     repeatStatus.classList.toggle('show', !!text);
   }
@@ -3655,7 +4116,10 @@ export function buildShell(
     refreshReferenceButtons();
 
     appearanceBtn.style.display = inRepeat ? '' : 'none';
-    ccBtn.style.display = controller.doc.view.workspace === 'construct' ? '' : 'none';
+    // Intersect: the colour of its own construction — a selection of it, or the drawing colour while a
+    // construction tool is in hand.
+    const ixColour = inIntersection && ((controller.tool === 'select' && controller.selection.length > 0) || (['circle', 'line', 'arc', 'divide'] as ToolId[]).includes(controller.tool));
+    ccBtn.style.display = controller.doc.view.workspace === 'construct' || ixColour ? '' : 'none';
     refreshCcBtn();
     guidesBtn.style.display = inRepeat ? '' : 'none';
     handlesBtn.style.display = inRepeat ? '' : 'none';
@@ -3663,8 +4127,20 @@ export function buildShell(
     if (inRepeat) refreshGuidesBtn();
 
     dock.style.display = inRepeat ? 'none' : 'flex';
-    dockButtonEls.get('fill')!.style.display = inIntersection ? 'none' : '';
-    contextSlot.style.display = inRepeat || (inIntersection && !building) ? 'none' : 'flex';
+    // Intersect's dock: Select · Develop · Spread · Reset (the construction tools and Fill stay in
+    // Construct). Develop is Intersect's name for its Fair; Construct's Fair keeps its own.
+    dock.classList.toggle('ix-dock', inIntersection);
+    for (const id of ['circle', 'line', 'arc', 'divide', 'fill'] as ToolId[]) dockButtonEls.get(id)!.style.display = inIntersection ? 'none' : '';
+    for (const d of dockDividers) d.style.display = inIntersection ? 'none' : '';
+    dockLabel(dockButtonEls.get('fair')!, inIntersection ? 'Develop' : 'Fair');
+    ixSpreadDockBtn.style.display = inIntersection ? '' : 'none';
+    ixResetDockBtn.style.display = inIntersection ? '' : 'none';
+    ixResetDockBtn.disabled = inIntersection && !intersectResettable(controller.doc);
+    // Spread belongs to arranging with Select — never with Develop, an alignment being picked, or
+    // outside Intersect.
+    if (spreadOpen && (!inIntersection || controller.tool !== 'select' || controller.intersectionPickKind !== 'instance')) setSpreadOpen(false);
+    if (spreadOpen) placeSpreadPanel();
+    contextSlot.style.display = inRepeat || (inIntersection && !building && controller.selection.length === 0) ? 'none' : 'flex';
     lineStrip.style.display = !inRepeat && controller.tool === 'line' ? '' : 'none';
     for (const [id, b] of lineGuideBtns) b.classList.toggle('active', controller.lineGuide === id);
     repeatPanel.style.display = placing ? 'flex' : 'none';
@@ -3677,8 +4153,11 @@ export function buildShell(
     const weaving = inRepeat && controller.weaveEdit && !colouring && !closingGap;
     weaveRow.style.display = weaving ? '' : 'none';
     if (weaving) refreshWeaveRow();
-    ruleLine.style.display = inRepeat && !colouring && !closingGap && !weaving ? '' : 'none';
+    // Source → Fill; the alternating rules only for an artwork that uses one (or when asked for).
+    refreshLegacyRow(inRepeat && !colouring && !closingGap && !weaving);
+    if (!inRepeat) controller.repeatLegacyRules = false;
     spaceRow.style.display = inRepeat && !colouring && !closingGap && !weaving ? '' : 'none';
+    fillRow.style.display = spaceRow.style.display;
     closeGapRow.style.display = closingGap ? '' : 'none';
     if (closingGap) refreshCloseGapRow();
     colourKindRow.style.display = colouring ? '' : 'none';
@@ -3692,21 +4171,21 @@ export function buildShell(
     // Spread arranges the instances: it belongs to Select's instance arranging — never under a
     // construction tool's ribbon, nor while an alignment (Parallel · Join, Point Snap, Match Edge)
     // is being picked.
-    if (ixSpreadRow.isConnected && !inIntersection) closeAnyPopover();
     if (!inIntersection) ixSnapRow.style.display = 'none';
     ixCopiesBtn.style.display = inIntersection ? '' : 'none';
     ixSnapshotsBtn.style.display = inIntersection ? '' : 'none';
 
     if (placing) {
-      for (const [id, btn] of ruleBtns) btn.classList.toggle('active', controller.doc.repeat.rule.kind === id);
+      refreshRuleRows();
       if (inRepeat) refreshSpaceRow();
       else {
         refreshIxCopiesBtn();
         refreshIxSnapshotsBtn();
         refreshIntersectionRows();
         refreshSnapRow();
-        // The Snap row belongs to arranging (Select); a construction tool has its own ribbon.
-        if (building) {
+        // The Snap row belongs to arranging (Select); a construction tool has its own ribbon — and so
+        // does a selection of Intersect's own construction (Select): what it is, and Delete.
+        if (building || controller.selection.length > 0) {
           ixSnapRow.style.display = 'none';
           renderRibbon();
         }

@@ -378,7 +378,20 @@ export function describeChange(a: ArtworkState, b: ArtworkState, source: Process
   const rb = b.repeat;
   if (ra.family !== rb.family) tags.push(ra.family === undefined ? 'repeat-setup' : 'repeat-family');
   else if (!same(ra.a, rb.a) || !same(ra.b, rb.b) || ra.rowOffset !== rb.rowOffset) tags.push('repeat-spacing');
-  if (!same(ra.motif, rb.motif)) tags.push('repeat-rotation');
+  if (!same(ra.motif, rb.motif)) {
+    // The motif's turn, scale or reflection (each its own moment; anything else, as ever, a turn).
+    const ma = ra.motif as { rotation?: number; scale?: number; mirror?: unknown } | undefined;
+    const mb = rb.motif as { rotation?: number; scale?: number; mirror?: unknown } | undefined;
+    const scaleOf = (m: typeof ma) => (typeof m?.scale === 'number' && m.scale > 0 ? m.scale : 1);
+    const before = tags.length;
+    if (ma?.rotation !== mb?.rotation) tags.push('repeat-rotation');
+    if (scaleOf(ma) !== scaleOf(mb)) tags.push('repeat-scale');
+    if (!same(ma?.mirror, mb?.mirror)) tags.push('repeat-reflect');
+    // Reset (the box's top-left corner): back to no turn, 100 % and no reflection.
+    const plain = (m: typeof ma) => !!m && m.rotation === 0 && scaleOf(m) === 1 && !m.mirror;
+    if (plain(mb) && !plain(ma) && tags.length > before) tags.push('repeat-reset');
+    if (tags.length === before) tags.push('repeat-rotation');
+  }
   if (!same(ra.rule, rb.rule)) tags.push('repeat-rule');
   if (!same(ra.gapFills, rb.gapFills)) tags.push('repeat-space');
   if (!same(a.appearance, b.appearance)) tags.push('appearance');
@@ -394,7 +407,7 @@ export function describeChange(a: ArtworkState, b: ArtworkState, source: Process
 
   // Intersect's arrangement: what happened to the instances.
   if (!same(a.intersect, b.intersect)) {
-    type Piece = { key: string; x: number; y: number; rotation: number };
+    type Piece = { key: string; x: number; y: number; rotation: number; mirror?: true; scale?: number };
     type Layout = { pieces?: Piece[]; spread?: number } | undefined;
     const la = (a.intersect as { layout?: Layout } | undefined)?.layout;
     const lb = (b.intersect as { layout?: Layout } | undefined)?.layout;
@@ -405,11 +418,34 @@ export function describeChange(a: ArtworkState, b: ArtworkState, source: Process
     if (!la && lb) tags.push('intersect-arrange');
     else {
       if (la && lb && (pa.size !== pb.size || [...pb.keys()].some((k) => !pa.has(k)))) tags.push('intersect-copies');
+      // Duplicate: one copy more, turned, reflected and scaled exactly as one already there, and offset
+      // from it equally right and down (geometry/intersection.ts withDuplicate).
+      const added = [...pb.values()].filter((q) => !pa.has(q.key));
+      if (la && lb && added.length === 1 && pb.size === pa.size + 1 && [...pa.values()].some((p) => p.rotation === added[0]!.rotation && !!p.mirror === !!added[0]!.mirror && p.scale === added[0]!.scale && added[0]!.x - p.x > 0 && added[0]!.x - p.x === added[0]!.y - p.y)) tags.push('intersect-duplicate');
+      // Reset Intersect: back to the starting arrangement (the Original and the two first copies, plain,
+      // the Original at its centre — or, as recorded before November 2026, the Original alone), with
+      // nothing developed and no construction of its own.
+      const ia = a.intersect as { form?: { developed?: unknown[] }; construction?: unknown } | undefined;
+      const ib = b.intersect as { form?: { developed?: unknown[] }; construction?: unknown } | undefined;
+      const plainPiece = (x: Piece) => x.rotation === 0 && !x.mirror && x.scale === undefined;
+      const o = pb.get('0,0');
+      const startShape =
+        !!o && o.x === 0 && o.y === 0 && [...pb.values()].every(plainPiece) && (pb.size === 1 || (pb.size === 3 && pb.has('1,0') && pb.has('0,1') && lb?.spread === 1));
+      const hadOwn = pa.size !== pb.size || [...pa.values()].some((p) => !plainPiece(p) || pb.get(p.key)?.x !== p.x || pb.get(p.key)?.y !== p.y) || (ia?.form?.developed?.length ?? 0) > 0 || !!ia?.construction;
+      // (Deleting the one extra copy of an otherwise untouched start is a deletion, not a reset.)
+      const onlyDeleted = pa.size === pb.size + 1 && [...pb.keys()].every((k) => pa.has(k)) && same(ia?.form, ib?.form) && same(ia?.construction, ib?.construction);
+      if (la && lb && startShape && hadOwn && !onlyDeleted && ib?.form?.developed?.length === 0 && !ib.construction) tags.push('intersect-clear');
       for (const [k, q] of pb) {
         const p = pa.get(k);
         if (!p) continue;
         if (p.x !== q.x || p.y !== q.y) tags.push('intersect-move');
         if (p.rotation !== q.rotation) tags.push('intersect-rotate');
+        const scaleOf = (x: Piece) => (typeof x.scale === 'number' && x.scale > 0 ? x.scale : 1);
+        if (scaleOf(p) !== scaleOf(q)) tags.push('intersect-scale');
+        if (!!p.mirror !== !!q.mirror) tags.push('intersect-reflect');
+        // Reset: back to 100 %, no turn and no reflection, where it was.
+        const plain = (x: Piece) => x.rotation === 0 && !x.mirror && scaleOf(x) === 1;
+        if (plain(q) && !plain(p) && p.x === q.x && p.y === q.y) tags.push('intersect-reset');
       }
       if (la && lb && la.spread !== lb.spread) tags.push('intersect-spread');
     }
@@ -423,6 +459,6 @@ export function describeChange(a: ArtworkState, b: ArtworkState, source: Process
 
   const unique = [...new Set(tags)];
   if (source === 'undo' || source === 'redo' || source === 'baseline' || source === 'resync') return { kind: source, tags: unique };
-  const priority = ['arc', 'circle', 'line', 'divide', 'delete', 'trim', 'fair', 'unfair', 'stroke', 'fill', 'edit-point', 'edit', 'intersect-copies', 'intersect-arrange', 'intersect-move', 'intersect-rotate', 'intersect-spread', 'intersect-primary', 'intersect-style', 'intersect', 'repeat-setup', 'repeat-source', 'repeat-family', 'repeat-spacing', 'repeat-rotation', 'repeat-rule', 'repeat-space', 'repeat-colour', 'repeat-stroke', 'appearance', 'segment'];
+  const priority = ['arc', 'circle', 'line', 'divide', 'delete', 'trim', 'fair', 'unfair', 'stroke', 'fill', 'edit-point', 'edit', 'intersect-clear', 'intersect-duplicate', 'intersect-copies', 'intersect-arrange', 'intersect-reset', 'intersect-reflect', 'intersect-scale', 'intersect-move', 'intersect-rotate', 'intersect-spread', 'intersect-primary', 'intersect-style', 'intersect', 'repeat-setup', 'repeat-source', 'repeat-family', 'repeat-spacing', 'repeat-reset', 'repeat-rotation', 'repeat-scale', 'repeat-reflect', 'repeat-rule', 'repeat-space', 'repeat-colour', 'repeat-stroke', 'appearance', 'segment'];
   return { kind: priority.find((t) => unique.includes(t)) ?? 'other', tags: unique };
 }

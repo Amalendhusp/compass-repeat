@@ -286,6 +286,22 @@ canvas.stage {
   gap: 6px;
   align-items: center;
 }
+/* Repeat → Transformation: a small caption above its four choices. */
+.space-row.rule-line {
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 3px;
+}
+.row-caption {
+  padding: 1px 8px;
+  border-radius: 7px;
+  background: color-mix(in srgb, var(--paper) 86%, transparent);
+  color: var(--muted);
+  font-size: 11px;
+  font-weight: 600;
+  letter-spacing: 0.02em;
+  line-height: 16px;
+}
 .space-chip {
   display: flex;
   align-items: center;
@@ -352,21 +368,6 @@ canvas.stage {
   color: var(--muted);
   cursor: pointer;
 }
-.copy-row .copy-remove {
-  width: 32px;
-  min-width: 32px;
-  height: 32px;
-  border: none;
-  background: transparent;
-  color: var(--muted);
-  cursor: pointer;
-}
-.copy-row .copy-remove:disabled {
-  visibility: hidden;
-}
-.copy-add {
-  font-weight: 600;
-}
 /* A small count on a top-bar icon (Intersection's Snapshots). */
 .badge-host {
   position: relative;
@@ -391,23 +392,6 @@ canvas.stage {
 .spread-row.stale .spread-value {
   color: var(--muted);
   font-size: 11px;
-}
-.copies-header {
-  display: flex;
-  justify-content: space-between;
-}
-.copy-row .copy-colour {
-  width: 22px;
-  height: 22px;
-  min-width: 22px;
-  border-radius: 50%;
-  border: 2px solid var(--paper);
-  box-shadow: 0 0 0 1px var(--hairline);
-  padding: 0;
-  cursor: pointer;
-}
-.copy-row .popover-row-label {
-  flex: 1;
 }
 /* The workspace switch: Intersection's shorter name only where three full names can't fit. */
 .ws-short {
@@ -1063,6 +1047,22 @@ canvas.stage {
   z-index: 10;
 }
 /* UI-1: Recover last session — the one unsaved draft, apart from the saved artworks (dashed brass). */
+/* My Artworks → Open project file… (an artwork from a file, as a new artwork). */
+.start-open-project {
+  display: inline-flex;
+  align-items: center;
+  height: 38px;
+  margin: 6px 0 14px;
+  padding: 0 14px;
+  border: 1px solid var(--hairline);
+  border-radius: 12px;
+  background: var(--paper);
+  color: var(--ink);
+  font: inherit;
+  font-size: 14px;
+  font-weight: 500;
+  cursor: pointer;
+}
 .start-recover {
   display: flex;
   align-items: stretch;
@@ -2475,9 +2475,6 @@ canvas.stage {
 .copies-header > .popover-section-label:last-child {
   margin-right: 32px; /* over the switch, clear of the remove button */
 }
-.copy-row .toggle-switch {
-  margin: 0 12px;
-}
 
 /* Stage D (D10): Repeat from an empty Intersect composition — what is missing, and the ways on. */
 .empty-composition {
@@ -2654,4 +2651,391 @@ canvas.stage {
   padding: 4px 0;
   font-size: 14px;
   color: var(--ink);
+}
+
+/* Stage 3 — Intersection's Copies panel: the arrangement (Spread), then one compact row per copy; the
+ * selected copy's settings open beneath its row. */
+.popover-menu.panel.copies-panel {
+  width: min(340px, calc(100vw - 16px));
+  max-height: calc(100vh - 150px);
+  overflow-y: auto;
+}
+.copies-panel .spread-row {
+  padding: 2px 10px;
+  min-width: 0;
+}
+.copies-panel .spread-row .space-label {
+  font-size: 13px;
+}
+.copies-panel .spread-slider {
+  flex: 1 1 auto;
+  width: auto;
+  min-width: 60px;
+}
+.copies-panel .spread-row .space-chip {
+  flex: none;
+  height: 30px;
+  padding: 0 10px;
+  font-size: 13px;
+}
+.popover-menu.panel.copies-panel {
+  overflow-x: hidden;
+}
+/* The copies, side by side: a colour dot each (⇋ reflected, dashed = hidden, ◆ = whole motif in the
+ * design, ring = selected), then a small + to add one. */
+.copy-chips {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px;
+  padding: 4px 4px 2px;
+}
+.copy-chip {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 3px;
+  min-width: 44px;
+  padding: 4px 2px;
+  border: none;
+  border-radius: 10px;
+  background: transparent;
+  color: var(--ink);
+  font: inherit;
+  cursor: pointer;
+}
+.copy-chip-dot {
+  position: relative;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 30px;
+  height: 30px;
+  border-radius: 50%;
+  border: 2px solid transparent;
+  color: var(--paper);
+  font-size: 14px;
+  font-weight: 700;
+}
+.copy-chip.selected .copy-chip-dot {
+  box-shadow: 0 0 0 2px var(--paper), 0 0 0 4px var(--ink);
+}
+/* A hidden copy: its circle faint (about 20 %), still selectable. */
+.copy-chip.hidden-copy .copy-chip-dot {
+  opacity: 0.2;
+}
+.copy-cell {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+}
+.copy-eye {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 36px;
+  height: 26px;
+  margin-top: -2px;
+  border: none;
+  border-radius: 8px;
+  background: transparent;
+  color: var(--muted);
+  cursor: pointer;
+}
+.copy-eye.off {
+  color: var(--muted);
+  opacity: 0.7;
+}
+.copy-eye:not(.off) {
+  color: var(--ink);
+}
+.copy-chip-diamond {
+  position: absolute;
+  right: -5px;
+  bottom: -4px;
+  font-size: 11px;
+  line-height: 1;
+  color: var(--ink);
+  text-shadow: 0 0 2px var(--paper), 0 0 2px var(--paper);
+}
+.copy-chip-name {
+  font-size: 11px;
+  line-height: 14px;
+  color: var(--muted);
+}
+.copy-chip.selected .copy-chip-name {
+  color: var(--ink);
+  font-weight: 600;
+}
+.copy-add-chip .copy-chip-dot {
+  border: 1px solid var(--hairline);
+  color: var(--muted);
+  font-weight: 500;
+  font-size: 18px;
+}
+.copy-add-chip:disabled {
+  opacity: 0.4;
+  cursor: default;
+}
+.copy-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  padding: 6px 10px 4px;
+  font-size: 12.5px;
+  font-weight: 600;
+  color: var(--ink);
+}
+.copy-actions {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(84px, 1fr));
+  gap: 6px;
+  padding: 0 8px 4px;
+}
+.copy-action {
+  min-width: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
+  height: 36px;
+  padding: 0 6px;
+  border: none;
+  border-radius: 10px;
+  background: var(--well);
+  color: var(--ink);
+  font: inherit;
+  font-size: 13px;
+  font-weight: 500;
+  white-space: nowrap;
+  cursor: pointer;
+}
+.copy-action.on {
+  background: var(--ink);
+  color: var(--paper);
+}
+.copy-action:disabled {
+  opacity: 0.4;
+  cursor: default;
+}
+.copy-action-dot {
+  width: 14px;
+  height: 14px;
+  border-radius: 50%;
+  box-shadow: 0 0 0 1.5px var(--paper);
+}
+.copy-action-icon {
+  display: inline-flex;
+  margin-right: -2px;
+}
+.copies-foot {
+  margin-top: 6px;
+  padding-top: 4px;
+  border-top: 1px solid var(--hairline);
+}
+.copies-reset-ix {
+  display: block;
+  margin: 4px 8px 2px auto;
+  min-height: 36px;
+  padding: 0 10px;
+  border: none;
+  border-radius: 10px;
+  background: none;
+  color: #a3392b;
+  font: inherit;
+  font-size: 13px;
+  font-weight: 500;
+  cursor: pointer;
+}
+.copies-reset-ix:disabled {
+  opacity: 0.4;
+  cursor: default;
+}
+.copies-foot .popover-hint {
+  padding-top: 0;
+}
+
+/* Repeat: an artwork's alternating rule, kept and named (Edit · Uniform). */
+.legacy-rule-row {
+  flex-wrap: wrap;
+  gap: 6px;
+}
+.legacy-rule-text {
+  flex: 1 1 auto;
+  min-width: 0;
+  white-space: normal;
+}
+
+/* Intersect's dock: Select · Develop · Spread · Reset, evenly spaced. */
+.dock.ix-dock {
+  justify-content: space-around;
+}
+
+/* Intersect's Spread: a compact column on the canvas's left edge, with the reference (100 %) marked. */
+.ix-spread-panel {
+  position: absolute;
+  top: 12px;
+  right: 6px;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 5px;
+  width: 54px;
+  padding: 7px 3px;
+  border-radius: 18px;
+  background: color-mix(in srgb, var(--paper) 88%, transparent);
+  border: 1px solid var(--hairline);
+  box-shadow: 0 4px 12px rgba(30, 42, 54, 0.08);
+  z-index: 2;
+  color: var(--ink);
+}
+.ix-spread-title {
+  font: 600 11px/1 var(--font-ui);
+  color: var(--muted);
+  letter-spacing: 0.02em;
+}
+.ix-spread-value {
+  font: 600 13px/1 var(--font-ui);
+  font-variant-numeric: tabular-nums;
+}
+.ix-spread-track {
+  position: relative;
+  width: 36px;
+  height: 184px;
+  touch-action: none;
+  cursor: ns-resize;
+  outline: none;
+}
+.ix-spread-track::before {
+  content: '';
+  position: absolute;
+  left: 50%;
+  top: 9px;
+  bottom: 9px;
+  width: 4px;
+  margin-left: -2px;
+  border-radius: 2px;
+  background: var(--well);
+}
+.ix-spread-fill {
+  position: absolute;
+  left: 50%;
+  bottom: 0;
+  clip-path: inset(0 0 9px 0);
+  width: 4px;
+  margin-left: -2px;
+  border-radius: 2px;
+  background: var(--ink);
+  opacity: 0.55;
+}
+.ix-spread-thumb {
+  position: absolute;
+  left: 50%;
+  width: 18px;
+  height: 18px;
+  margin-left: -9px;
+  border-radius: 50%;
+  background: var(--paper);
+  border: 1.5px solid var(--ink);
+  box-shadow: 0 1px 3px rgba(30, 42, 54, 0.2);
+  pointer-events: none;
+}
+.ix-spread-track:focus-visible .ix-spread-thumb {
+  box-shadow: 0 0 0 3px var(--well);
+}
+/* The reference mark: a brass line across the track at 100 % (a mark only), and Ref beside it — a tap
+ * there goes back to the reference. */
+.ix-spread-ref-line {
+  position: absolute;
+  left: 50%;
+  width: 26px;
+  height: 2px;
+  margin-left: -13px;
+  border-radius: 1px;
+  background: var(--brass);
+  pointer-events: none;
+}
+.ix-spread-ref {
+  position: absolute;
+  left: -7px;
+  width: 22px;
+  height: 22px;
+  padding: 0;
+  border: none;
+  border-radius: 6px;
+  background: transparent;
+  color: var(--brass);
+  font: 700 9px/22px var(--font-ui);
+  text-align: left;
+  cursor: pointer;
+}
+.ix-spread-set {
+  min-height: 30px;
+  width: 46px;
+  padding: 0 4px;
+  border: none;
+  border-radius: 10px;
+  background: var(--well);
+  color: var(--ink);
+  font: 500 11px/1.1 var(--font-ui);
+  cursor: pointer;
+}
+.ix-spread-set.active {
+  background: var(--brass);
+  color: var(--paper);
+}
+.ix-spread-note:empty {
+  display: none;
+}
+.ix-spread-note {
+  font: 400 10px/1.2 var(--font-ui);
+  color: var(--muted);
+  text-align: center;
+}
+.ix-spread-panel.stale .ix-spread-track {
+  opacity: 0.4;
+  cursor: default;
+}
+
+/* Copies panel: a quiet Delete beside the selected copy's name (never for the Original). */
+.copy-delete {
+  flex: none;
+  min-height: 30px;
+  padding: 0 8px;
+  border: none;
+  border-radius: 8px;
+  background: none;
+  color: #a3392b;
+  font: inherit;
+  font-size: 12.5px;
+  font-weight: 500;
+  cursor: pointer;
+}
+
+
+/* Develop's ribbon: Whole | Fair | Construction | Extension share the width equally — never a scroll. */
+.context-bar.develop-bar {
+  gap: 6px;
+  padding: 0 8px;
+  overflow-x: hidden;
+}
+.context-bar.develop-bar .chip.develop-toggle {
+  flex: 1 1 0;
+  min-width: 0;
+  padding: 0 6px;
+}
+.context-bar .chip .lbl-short {
+  display: none;
+}
+@media (max-width: 480px) {
+  .context-bar.develop-bar .chip.develop-toggle {
+    font-size: 12.5px;
+    padding: 0 4px;
+  }
+  .context-bar.develop-bar .chip .lbl-long {
+    display: none;
+  }
+  .context-bar.develop-bar .chip .lbl-short {
+    display: inline;
+  }
 }
