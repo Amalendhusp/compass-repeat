@@ -218,23 +218,16 @@ export function withDuplicate(doc: Doc, key: string): NonNullable<Doc['intersect
 
 /**
  * Reset Intersect: back to the starting arrangement — the Original and two copies in the default
- * three-cell group (`defaultLayout`), unturned, unreflected, at 100 %, Spread 100 % with that group
- * as its reference. Every other copy, every copy setting (lock, hidden, colour, whole motif), Intersect's
- * own construction and the developed design are removed; the Original keeps its colour and Extensions
- * setting. Construct — the Original's geometry and its Fair — is never touched; nor are bookmarks
- * (saved arrangements), which stay to be restored. The result is a Form Development arrangement whose
- * design is the Original's whole motif (as for a new artwork). One Undo step brings everything back.
+ * three-cell group (`defaultLayout`), unturned, unreflected, at 100 %, Spread 100 % with that group as its
+ * reference, every copy (the Original included) with its default colour and Extensions setting. Every other
+ * copy, every copy setting (lock, hidden, colour, whole motif, Develop's exclusions), Intersect's own
+ * construction and the developed design are removed. Construct — the Original's geometry and its Fair —
+ * is never touched; nor are bookmarks (saved arrangements), which stay to be restored. The result is a
+ * Form Development arrangement whose design is the Original's whole motif (as for a new artwork). One Undo
+ * step brings everything back.
  */
 export function withIntersectReset(doc: Doc): NonNullable<Doc['intersection']> {
-  const own = doc.intersection?.copies?.[PRIMARY] ?? {};
-  const kept: NonNullable<Doc['intersection']>['copies'][string] = {};
-  if (own.colour) kept.colour = own.colour;
-  if (own.extensions !== undefined) kept.extensions = own.extensions;
-  return {
-    copies: Object.keys(kept).length ? { [PRIMARY]: kept } : {},
-    layout: defaultLayout(doc),
-    form: { developed: [] },
-  };
+  return { copies: {}, layout: defaultLayout(doc), form: { developed: [] } };
 }
 
 /** Whether Intersect differs in any way from what Reset Intersect would give. */
@@ -243,12 +236,7 @@ export function intersectResettable(doc: Doc): boolean {
   if (!ix) return formMode(doc) === 'legacy';
   if (!ix.form || ix.form.developed.length > 0) return true;
   if ((ix.construction?.entities.length ?? 0) > 0 || (ix.construction?.points.length ?? 0) > 0) return true;
-  // Only the Original's colour and Extensions setting survive a reset.
-  for (const [key, c] of Object.entries(ix.copies ?? {})) {
-    const { colour, extensions, ...rest } = c;
-    if (key !== PRIMARY && (colour !== undefined || extensions !== undefined)) return true;
-    if (Object.values(rest).some((v) => v !== undefined)) return true;
-  }
+  if (Object.values(ix.copies ?? {}).some((c) => Object.values(c ?? {}).some((v) => v !== undefined))) return true;
   const now = layoutOf(doc);
   const start = defaultLayout(doc);
   if (now.spread !== 1 || now.pieces.length !== start.pieces.length) return true;
@@ -478,6 +466,16 @@ export function withArrangement(doc: Doc, copies: NonNullable<Doc['intersection'
       [...new Set([...Object.keys(copies), ...layout.pieces.map((p) => p.key)])].map((k) => [k, now[k]?.primaryCopy === undefined ? { ...copies[k] } : { ...copies[k], primaryCopy: now[k]!.primaryCopy }]),
     );
   }
+  // Develop's exclusions belong to the design, not the arrangement: a restore keeps them as they are now.
+  const nowCopies = doc.intersection?.copies ?? {};
+  copies = Object.fromEntries(
+    [...new Set([...Object.keys(copies), ...Object.keys(nowCopies)])]
+      .filter((k) => copies[k] || (nowCopies[k]?.excluded && layout.pieces.some((p) => p.key === k)))
+      .map((k) => {
+        const { excluded: _x, ...rest } = copies[k] ?? {};
+        return [k, nowCopies[k]?.excluded && layout.pieces.some((p) => p.key === k) ? { ...rest, excluded: nowCopies[k]!.excluded } : rest];
+      }),
+  );
   return { ...baseOf(doc), copies, layout };
 }
 

@@ -836,10 +836,59 @@ stopping for review after each; Stage A is the interface only (Develop's behavio
 - **Checks:** `stage-a.mjs` 59/59 phone (touch) and desktop (mouse, right-click). `run.sh` now calls
   `/usr/bin/python3` (the Homebrew python3 first on bash's PATH is an x86 build that no longer runs).
 
+## Intersect refinement, Stage B: Develop independent of Construct Fair (November 2026)
+
+Stage A decisions applied with it: the Original is never reflected (it stays the reference); a quiet Delete for
+the selected copy in the Copies panel (`.copy-delete`, never the Original; asks first only when the copy's whole
+Fair is in the design; one Undo step); Reset Intersect now gives every copy its default colour and Extensions
+setting too (`copies: {}`); no permanent Extensions switch; older Intersect construction kept (selectable,
+deletable, used in Develop with Construction on); the Spread column sits low on the left on a narrow canvas,
+just above the floating controls (`placeSpreadPanel`; top-left on wider screens or when there is no room).
+
+- **Develop ribbon** (`shell.ts`, Intersect + `fair`): the copy it works with (chip with its colour — a tap moves to
+  the next shown copy; selection only, never a change to the design), then **Whole · Construction · Extension**,
+  always together. The canvas "Whole motif" mode and its "Which copy?" chooser are gone.
+- **Whole** (`setWhole` in `interaction/formPick.ts`): the target copy's whole Construct Fair in or out of the design
+  — the existing `primaryCopy` flag, unchanged in meaning and storage; turning it on or off forgets that copy's
+  exclusions (one Undo step).
+- **Exclusions** (`geometry/developExclusions.ts`, `intersection.copies[key].excluded?: { entity, t0, t1 }[]`, written
+  only when there is one): a stretch of a Whole copy's Fair taken out of the design, as a range along one Construct
+  line (t along A→B) or circle (start angle, start + sweep) — the copy's OWN coordinates, so it follows every move,
+  turn, reflection and scale, other copies moving never changes it, and Construct is never touched. Interval
+  helpers: `remainingRanges`, `withExcluded` (merge), `withoutExcluded`, `localRange` (a placed segment back into
+  the copy's coordinates via `inversePoint`), `cutFeature`.
+- **A tap** (`formPicksAt` / `commitPick`): a segment is in the design when a developed segment lies along it or it is
+  Fair of a Whole copy not excluded there (`segmentIncluded`, `wholeRefsOf` — Fair origins only). In → out removes
+  the developed segment along it and excludes it on every Whole copy it belongs to; out → in restores a Whole
+  copy's excluded stretch, otherwise adds the exact geometry as a developed segment (as before). Developed
+  segments no offered segment stands for stay removable. The chooser / loupe for crowded taps are unchanged
+  (Stage C replaces them); wording "Add to the design" / "Take out of the design".
+- **Construction / Extension** (`controller.formConstruction`, `formExtension`, session only): independent;
+  `formSegments(doc, { construction, extension })` (a FormLayer string still reads as before). Each shows its
+  pieces as quiet guides (1.1 px; Extension dashed; Intersect construction only while one is on) and offers them;
+  neither ever changes what is already developed.
+- **Editing widths** (`drawDevelop`, intersectionRenderer): every copy's Fair 2 px at 50 % (the source), what is in
+  the design 4 px — Whole copies' Fair less exclusions in the copy's colour on a paper casing, developed segments
+  in ink cased. Screen px, Develop only; Select draws as before (developed 3.2 px).
+- **Repeat** reads exclusions everywhere the composition is used: `compositionFeatures` (Fill spaces, unit regions,
+  crossings / interlacing, Close Gap) cuts them out of Whole members (untouched features keep their ids, so every
+  artwork without exclusions is unchanged); `repeatUnit` key gains `|ex:…` only when there are any, and
+  `notDrawnBy` uses the cut runs; `drawCopy` strokes only the kept ranges (`keptRanges`); `unitSkips` never lets a
+  partly drawn stroke stand in for a whole one. Repeat draws with its own stroke settings — never the 4 px.
+- **Bookmarks** restore arrangements, not the design: `withArrangement` keeps the current exclusions (as it keeps
+  developed segments).
+- **Checks:** `stage-b.mjs` 47/47 phone and desktop (ribbon; independent offers; Whole segment out → excluded, not
+  developed; back in; non-Whole copy → developed; exclusion through move / turn / reflect / scale; target chip;
+  Repeat composition, pixels and one stroke width; Save → reload identical; project file round trip; bookmark;
+  Whole off / on; 2 px / 4 px; Delete; Reset defaults; Spread placement). `whole.mjs` rewritten for the ribbon
+  (16/16). Suites updated for the new controls (Intersect construction now injected — `setup.mjs` `layerAdd`):
+  hidden, layer-fair, layer-select, stage2-ui, stage3-ui, box, repeat-cases. Retired (kept in
+  `refine-tests/retired/` with a note): copies-panel, intersect-extra, layer.
+
 ## Exact next step
 
-Intersect refinement Stage A is committed locally; stop for the user's review before Stage B (Develop:
-Whole / Construction / Extension together, reversible inclusion with exclusions, 4 pt editing highlight). Do not
+Intersect refinement Stage B is committed locally; stop for the user's review before Stage C (proximity selection:
+nearest segment, the selected copy first in a near-tie, non-modal switching for coincident candidates). Do not
 merge, push or deploy.
 
 ## Commands

@@ -18,6 +18,7 @@ import { closestOn, endsOf, len, motifRuns, placePrim, sub, type Prim } from './
 import { developedSegments } from './intersection.ts';
 import { formEps, midOf } from './formSegments.ts';
 import { repeatSourceOf, type RepeatSourceKind } from './repeatSetup.ts';
+import { cutFeature, exclusionMap, exclusionSignature } from './developExclusions.ts';
 
 export type RepeatSource = RepeatSourceKind;
 
@@ -58,7 +59,7 @@ export function repeatUnit(doc: Doc): RepeatUnit | null {
       ...members.map((m) => Math.hypot(m.translate.x, m.translate.y) + motifExtent(doc) * poseScale(m)),
       ...developed.map((p) => reachOf(doc.frame.origin, p)),
     ];
-    const devIds = developed.length ? `|dev:${developedSegments(doc).map((s) => s.id).join(',')}` : '';
+    const devIds = (developed.length ? `|dev:${developedSegments(doc).map((s) => s.id).join(',')}` : '') + exclusionSignature(doc, comp.map((m) => m.key));
     unit = {
       members,
       keys: comp.map((m) => m.key),
@@ -90,7 +91,11 @@ function notDrawnBy(doc: Doc, developed: Prim[], members: CompositionMember[]): 
   if (!members.length) return developed;
   const pivot = doc.frame.origin;
   const runs = motifRuns(doc);
-  const placed = members.flatMap((m) => runs.map((r) => placePrim(r.prim, pivot, m.pose)));
+  // (What Develop took out of a Whole copy is not drawn by it.)
+  const placed = members.flatMap((m) => {
+    const cut = exclusionMap(doc, m.key);
+    return runs.flatMap((r) => cutFeature(doc, cut, r.entity, r.prim).map((p) => placePrim(p, pivot, m.pose)));
+  });
   const tol = formEps(doc) * 10;
   const along = (p: Prim, q: Prim): boolean => {
     if (p.k !== q.k) return false;

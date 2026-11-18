@@ -36,7 +36,8 @@ import { onTap } from './tap.ts';
 import { color, fairPalette, stroke } from '../render/tokens.ts';
 import { alternationOf, suggestedFamily, type LatticeFamily } from '../geometry/lattice.ts';
 import { rotationFractionLabel } from '../render/repeatRenderer.ts';
-import { inComposition, withArrangement, asReference, intersectionCopies, layoutOf, MAX_CONSTRUCTIONS, placedAt, PRIMARY, referenceCurrent, sliderToSpread, SPREAD_MAX, SPREAD_MIN, SPREAD_SLIDER_MAX, spreadToSlider, withAddedCopy, withLayout, withLock, withSpreadAround, isLocked, withHidden, copyScale, withIntersectReset, intersectResettable } from '../geometry/intersection.ts';
+import { inComposition, shownCopies, withoutCopy, withArrangement, asReference, intersectionCopies, layoutOf, MAX_CONSTRUCTIONS, placedAt, PRIMARY, referenceCurrent, sliderToSpread, SPREAD_MAX, SPREAD_MIN, SPREAD_SLIDER_MAX, spreadToSlider, withAddedCopy, withLayout, withLock, withSpreadAround, isLocked, withHidden, copyScale, withIntersectReset, intersectResettable } from '../geometry/intersection.ts';
+import { setWhole } from '../interaction/formPick.ts';
 import { canMoveAgainst, convertPick, isPointPick, planMatchEdge, planSnap, resolvePick, type PickKind } from '../geometry/intersectionSnap.ts';
 import { PICK_REACH_PX } from '../interaction/tools/intersectionTool.ts';
 import { repeatSource, type RepeatSource } from '../geometry/repeatUnit.ts';
@@ -1112,7 +1113,41 @@ function showIntersectionCopiesPanel(anchor: HTMLElement, controller: AppControl
         if (sel) {
           const head = document.createElement('div');
           head.className = 'copy-head';
-          head.textContent = `${sel.label} selected${sel.hidden ? ' · hidden' : ''}${sel.locked ? ' · locked' : ''}${inComposition(doc, sel.key) ? ' · ◆ whole motif in the design' : ''}`;
+          const headText = document.createElement('span');
+          headText.textContent = `${sel.label} selected${sel.hidden ? ' · hidden' : ''}${sel.locked ? ' · locked' : ''}${inComposition(doc, sel.key) ? ' · ◆ whole motif in the design' : ''}`;
+          head.appendChild(headText);
+          // Delete: quiet, for the selected copy (hidden ones included) — never the Original. It asks
+          // first only when the copy's whole Fair is in the design; Undo always brings it back.
+          if (sel.key !== PRIMARY) {
+            const del = document.createElement('button');
+            del.className = 'copy-delete';
+            del.textContent = 'Delete';
+            del.setAttribute('aria-label', `Delete ${sel.label}`);
+            del.addEventListener('click', (e) => {
+              e.stopPropagation();
+              const run = () => {
+                const wasCurrent = referenceCurrent(layoutOf(controller.doc));
+                const next = withoutCopy(controller.doc, sel.key);
+                if (!next) return;
+                if (controller.intersectionSelected === sel.key) controller.intersectionSelected = null;
+                if (controller.intersectionBox === sel.key) controller.intersectionBox = null;
+                controller.commit((d) => {
+                  d.intersection = next;
+                });
+                const stale = wasCurrent && !referenceCurrent(layoutOf(controller.doc));
+                showToast(`${sel.label} deleted · Undo brings it back${stale ? ' · set a new reference to use Spread' : ''}`);
+                build();
+              };
+              if (!inComposition(controller.doc, sel.key)) return run();
+              openConfirmSheet({
+                title: `Delete ${sel.label}?`,
+                body: `Its whole Fair is in the design, so the design loses it too. Segments developed from it stay. Undo brings it back.`,
+                confirmLabel: 'Delete',
+                onConfirm: run,
+              });
+            });
+            head.appendChild(del);
+          }
           menu.appendChild(head);
           panelHint(menu, sel.hidden ? 'Hidden: not drawn, picked or developed from, and out of Repeat while hidden. Everything about it is kept — the eye shows it again.' : `Drag to move, the handle to turn; ${more} to reflect, scale, lock${sel.key === PRIMARY ? '' : ' or delete'} it.`);
         } else panelHint(menu, `Tap a circle to select a copy; the eye shows or hides it. On the canvas, drag to move, the handle to turn, and ${more} for Reflect, Scale, Lock and Delete.`);
@@ -2520,7 +2555,7 @@ export function buildShell(
     }
     openConfirmSheet({
       title: 'Reset Intersect?',
-      body: 'Puts back the Original and two copies in their starting arrangement, and removes the other copies, their settings and the developed design. Construct and its Fair are kept, and so are saved arrangements. Undo brings it all back.',
+      body: 'Puts back the Original and two copies in their starting arrangement and colours, and removes the other copies, every copy setting and the developed design. Construct and its Fair are kept, and so are saved arrangements. Undo brings it all back.',
       confirmLabel: 'Reset',
       onConfirm: () => {
         const next = withIntersectReset(controller.doc);
@@ -3004,10 +3039,32 @@ export function buildShell(
     }
     if (on) controller.intersectionBox = null; // arranging every copy, not one
     spreadPanel.style.display = on ? '' : 'none';
+    if (on) placeSpreadPanel();
     ixSpreadDockBtn.classList.toggle('active', on);
     ixSpreadDockBtn.setAttribute('aria-pressed', String(on));
     if (on) refreshIntersectionRows();
     controller.notify();
+  }
+  /** On a phone (a narrow canvas) the column sits low on the left, just above the controls that float over
+   * the canvas — a fitted arrangement is centred, so that corner is usually clear; elsewhere (or when
+   * there is no room below) at the top left. Placement only: the layout is unchanged. */
+  function placeSpreadPanel(): void {
+    const wrap = canvasWrap.getBoundingClientRect();
+    if (wrap.width >= 600) {
+      spreadPanel.style.top = '';
+      spreadPanel.style.bottom = '';
+      return;
+    }
+    let chrome = overlay.getBoundingClientRect().top;
+    for (const el of overlay.querySelectorAll<HTMLElement>('button, [role="group"], .snap-row, .space-label')) {
+      if (!el.offsetParent) continue;
+      const r = el.getBoundingClientRect();
+      if (r.height > 0 && r.top < chrome) chrome = r.top;
+    }
+    const bottom = Math.max(0, wrap.bottom - chrome) + 10;
+    const fits = wrap.height - bottom - spreadPanel.offsetHeight >= 12;
+    spreadPanel.style.top = fits ? 'auto' : '';
+    spreadPanel.style.bottom = fits ? `${bottom}px` : '';
   }
   /** Track position (0 at the bottom … 1 at the top) of a Spread value. */
   const spreadPos = (spread: number) => spreadToSlider(spread) / SPREAD_SLIDER_MAX;
@@ -3477,7 +3534,7 @@ export function buildShell(
     if (!building) return;
     const primary = controller.tool === 'fair';
     ownerTag.dataset.owner = primary ? 'primary' : 'construct';
-    ownerText.textContent = primary ? 'Develop · Intersect’s own design (Construct is never changed)' : 'Intersect’s own construction';
+    ownerText.textContent = primary ? 'Develop · Intersect’s own design' : 'Intersect’s own construction';
   }
 
   // While two fingers turn the view: a quiet readout of the camera's angle, gone after the gesture.
@@ -3950,36 +4007,56 @@ export function buildShell(
     } else if (tool === 'divide') {
       renderDivideRibbon();
     } else if (tool === 'fair' && doc.view.workspace === 'intersection') {
-      // Fair in Intersect develops the Primary, in its one Primary style: Construct's Fair colour and
-      // width are not its to change (the owner tag says what it edits). First, Whole motif: a tap on a
-      // copy includes or excludes its entire Fair motif in the design (strong = in, faint = reference
-      // only). Otherwise, what it offers to take — Fair only (default), or Construction too, or
-      // Extensions too (Release R2).
-      const whole = chip('Whole motif', () => {
-        controller.formWhole = !controller.formWhole;
+      // Develop: the copy it works with (tap for the next shown one), then Whole · Construction ·
+      // Extension, always together. Whole puts that copy's entire Fair into the design, or takes it out;
+      // its segments can then be taken out one by one on the canvas. Construction and Extension each show
+      // their pieces as guides and offer them to tap — neither changes what is already in the design.
+      const shown = shownCopies(doc);
+      let target = shown.find((c) => c.key === controller.intersectionSelected) ?? null;
+      if (!target && shown.length) {
+        target = shown[0]!;
+        controller.intersectionSelected = target.key; // selection only — nothing in the design changes
+      }
+      const targetChip = chip(target ? target.label : 'No copy shown', () => {
+        const list = shownCopies(controller.doc);
+        if (list.length < 2) return;
+        const k = list.findIndex((c) => c.key === controller.intersectionSelected);
+        controller.intersectionSelected = list[(k + 1) % list.length]!.key;
+        controller.formPress = null;
+        controller.lineChoice = null;
+        controller.notify();
+      }, target?.colour ?? null);
+      targetChip.classList.add('develop-target');
+      targetChip.setAttribute('aria-label', target ? `Develop with ${target.label} — tap for the next copy` : 'No copy shown');
+      targetChip.disabled = shown.length < 2;
+      const toggle = (label: string, on: boolean, aria: string, run: () => void) => {
+        const b = chip(label, run);
+        b.classList.add('toggle', 'develop-toggle');
+        b.classList.toggle('on', on);
+        b.setAttribute('aria-pressed', String(on));
+        b.setAttribute('aria-label', aria);
+        return b;
+      };
+      const whole = target ? inComposition(doc, target.key) : false;
+      const wholeBtn = toggle('Whole', whole, target ? `Whole: ${target.label}’s Fair ${whole ? 'is in the design' : 'is not in the design'}` : 'Whole', () => {
+        if (!target) return;
+        controller.formPress = null;
+        controller.lineChoice = null;
+        setWhole(controller, target.key, !inComposition(controller.doc, target.key));
+      });
+      wholeBtn.disabled = !target;
+      toggle('Construction', controller.formConstruction, 'Construction: show and offer construction pieces', () => {
+        controller.formConstruction = !controller.formConstruction;
         controller.formPress = null;
         controller.lineChoice = null;
         controller.notify();
       });
-      whole.classList.add('toggle');
-      whole.classList.toggle('on', controller.formWhole);
-      whole.setAttribute('aria-pressed', String(controller.formWhole));
-      if (controller.formWhole) cue('Tap a copy to include or exclude its whole motif');
-      else
-        modeToggle(
-          [
-            { id: 'fair', label: 'Fair only' },
-            { id: 'construction', label: 'Construction' },
-            { id: 'extension', label: 'Extensions' },
-          ],
-          controller.formLayer,
-          (layer) => {
-            controller.formLayer = layer;
-            controller.formPress = null;
-            controller.lineChoice = null;
-            controller.notify();
-          },
-        );
+      toggle('Extension', controller.formExtension, 'Extension: show and offer extension pieces', () => {
+        controller.formExtension = !controller.formExtension;
+        controller.formPress = null;
+        controller.lineChoice = null;
+        controller.notify();
+      });
     }
     // UI-2: Fair's colour and width and Fill's colour and opacity are set in the contextual Appearance
     // panel (the swatch at the top right), not on the ribbon.
@@ -4068,6 +4145,7 @@ export function buildShell(
     // Spread belongs to arranging with Select — never with Develop, an alignment being picked, or
     // outside Intersect.
     if (spreadOpen && (!inIntersection || controller.tool !== 'select' || controller.intersectionPickKind !== 'instance')) setSpreadOpen(false);
+    if (spreadOpen) placeSpreadPanel();
     contextSlot.style.display = inRepeat || (inIntersection && !building && controller.selection.length === 0) ? 'none' : 'flex';
     lineStrip.style.display = !inRepeat && controller.tool === 'line' ? '' : 'none';
     for (const [id, b] of lineGuideBtns) b.classList.toggle('active', controller.lineGuide === id);

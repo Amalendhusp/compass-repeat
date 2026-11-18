@@ -22,7 +22,7 @@
 // construction's rotation ring showing which construction would move.
 
 import { drawArtworkLayer, type ScreenLayers } from './underlay.ts';
-import type { FormLayer } from '../geometry/formSegments.ts';
+import { exclusionMap, remainingRanges } from '../geometry/developExclusions.ts';
 import type { Doc, Entity, Vec2 } from '../model/types.ts';
 import type { AppController, ViewTransform } from '../app/controller.ts';
 import { screenToWorld, worldToScreen } from '../app/controller.ts';
@@ -141,12 +141,12 @@ export function renderIntersection(ctx: CanvasRenderingContext2D, controller: Ap
   // translucent and the Developed Primary opaque.
   const developing = controller.tool === 'fair';
   drawArtworkLayer(ctx, layers, (ctx) => {
-    if (developing) drawFairOnly(ctx, doc, view, sc, copies, controller.formLayer, controller.formWhole);
+    if (developing) drawDevelop(ctx, doc, view, sc, copies, { construction: controller.formConstruction, extension: controller.formExtension });
     else drawCopies(ctx, doc, view, sc, copies);
-    // Intersect's own construction — over the copies, under the developed Fair; shown while Fair is
-    // the tool too (quieter), since Fair develops from it.
-    if (hasLayerGeometry(doc)) drawConstructionOnly(ctx, layerController(controller), view);
-    drawDevelopedPrimary(ctx, doc, view);
+    // Intersect's own construction (older artworks) — over the copies, under the developed design; in
+    // Develop only while Construction is offered (it is a guide there).
+    if (hasLayerGeometry(doc) && (!developing || controller.formConstruction || controller.formExtension)) drawConstructionOnly(ctx, layerController(controller), view);
+    drawDevelopedPrimary(ctx, doc, view, developing ? DEVELOP_WIDTH : PRIMARY_WIDTH);
   });
   // What a finger on Fair would add or remove, the loupe it is choosing in, and "Which line?".
   if (developing) drawFormFeedback(ctx, controller, view, sc, copies);
@@ -315,10 +315,12 @@ function drawLockMark(ctx: CanvasRenderingContext2D, doc: Doc, view: ViewTransfo
 const EXTENSION_ALPHA = 0.36;
 const CONSTRUCTION_ALPHA = 0.45;
 const FAIR_WIDTH = 2.8;
-/** Fair in Intersect: the copies' Fair strokes, translucent (the Developed Primary is opaque). */
-const REFERENCE_FAIR_ALPHA = 0.3;
-/** …and a Primary-copy's: in Repeat whole, so stronger — still under the opaque Developed Primary. */
-const PRIMARY_COPY_ALPHA = 0.62;
+/** Develop: every copy's Fair as a thin reference (the source), and what is in the design thick — screen
+ * px, so the difference reads at any zoom. Guides (Construction, Extension) thinner still. */
+const SOURCE_FAIR_WIDTH = 2;
+const SOURCE_FAIR_ALPHA = 0.5;
+const DEVELOP_WIDTH = 4;
+const GUIDE_WIDTH = 1.1;
 /** The Developed Primary's one stroke style (screen px, ink, opaque). */
 const PRIMARY_WIDTH = 3.2;
 const PRIMARY_CASING = 1.6;
@@ -336,27 +338,28 @@ function edgeShown(doc: Doc, copies: IntersectionCopy[], pick: IntersectionPick)
   return { copyKey: copy.key, entityId: pick.entity, p: a, u: { x: (b.x - a.x) / len, y: (b.y - a.y) / len }, extent: [0, len] };
 }
 
-/** Fair in Intersect: each copy's Fair strokes only, in its own colour — translucent (a reference), or
- * stronger for a Primary-copy (repeated whole with the Developed Primary). */
-function drawFairOnly(ctx: CanvasRenderingContext2D, doc: Doc, view: ViewTransform, sc: Scaffold, copies: IntersectionCopy[], layer: FormLayer = 'fair', whole = false): void {
+/** Develop: the editing view. Every copy's Fair thin (about 2 px — the source, for reference); what is in
+ * the developed design thick (about 4 px): each Whole copy's Fair, less what was taken out of it, in the
+ * copy's colour (the developed segments are drawn after, in ink). Construction and Extension pieces, while
+ * offered, as quiet guides beneath (Extension dashed). Screen widths: the thickness marks editing only —
+ * Repeat draws the design with its own stroke settings. */
+function drawDevelop(ctx: CanvasRenderingContext2D, doc: Doc, view: ViewTransform, sc: Scaffold, copies: IntersectionCopy[], offer: { construction: boolean; extension: boolean }): void {
   ctx.lineCap = 'round';
   ctx.lineJoin = 'round';
-  // Release R2: Construction (and Extensions) offered too — drawn thin beneath the Fair strokes, in each
-  // copy's colour, so what can be taken is visible (Extension pieces dashed).
-  if (layer !== 'fair') {
+  if (offer.construction || offer.extension) {
     for (const copy of copies) {
       const solid = new Path2D();
       const dashed = new Path2D();
       for (const piece of sc.pieces) {
-        if (piece.kind === 'construction') appendPiece(solid, doc, view, copy.pose, piece);
-        else if (piece.kind === 'extension' && layer === 'extension') appendPiece(dashed, doc, view, copy.pose, piece);
+        if (piece.kind === 'construction' && offer.construction) appendPiece(solid, doc, view, copy.pose, piece);
+        else if (piece.kind === 'extension' && offer.extension) appendPiece(dashed, doc, view, copy.pose, piece);
       }
       ctx.strokeStyle = copy.colour;
-      ctx.globalAlpha = 0.55;
-      ctx.lineWidth = 1.1;
+      ctx.lineWidth = GUIDE_WIDTH;
+      ctx.globalAlpha = 0.5;
       ctx.stroke(solid);
       ctx.setLineDash([...stroke.extensionDash]);
-      ctx.globalAlpha = 0.5;
+      ctx.globalAlpha = 0.45;
       ctx.stroke(dashed);
       ctx.setLineDash([]);
     }
@@ -366,16 +369,42 @@ function drawFairOnly(ctx: CanvasRenderingContext2D, doc: Doc, view: ViewTransfo
     const fair = new Path2D();
     for (const piece of sc.pieces) if (piece.kind === 'fair') appendPiece(fair, doc, view, copy.pose, piece);
     ctx.strokeStyle = copy.colour;
-    // Whole motif: in the design or not, as plainly as possible.
-    ctx.globalAlpha = inComposition(doc, copy.key) ? (whole ? 0.95 : PRIMARY_COPY_ALPHA) : whole ? 0.2 : REFERENCE_FAIR_ALPHA;
-    ctx.lineWidth = FAIR_WIDTH;
+    ctx.globalAlpha = SOURCE_FAIR_ALPHA;
+    ctx.lineWidth = SOURCE_FAIR_WIDTH;
     ctx.stroke(fair);
+  }
+  for (const copy of copies) {
+    if (!inComposition(doc, copy.key)) continue;
+    const cut = exclusionMap(doc, copy.key);
+    const kept = new Path2D();
+    for (const piece of sc.pieces) {
+      if (piece.kind !== 'fair') continue;
+      const ex = cut?.get(piece.entity.id);
+      if (!ex?.length) {
+        appendPiece(kept, doc, view, copy.pose, piece);
+        continue;
+      }
+      const circle = resolveEntityGeom(doc, piece.entity).kind === 'circle';
+      let from = piece.from ?? 0;
+      let to = piece.to ?? (circle ? Math.PI * 2 : 1);
+      if (circle && to <= from) to += Math.PI * 2;
+      if (!circle && to < from) [from, to] = [to, from];
+      for (const [f, t] of remainingRanges(from, to, ex, circle)) appendPiece(kept, doc, view, copy.pose, { ...piece, from: f, to: t });
+    }
+    ctx.strokeStyle = color.paper;
+    ctx.globalAlpha = 0.9;
+    ctx.lineWidth = DEVELOP_WIDTH + 2;
+    ctx.stroke(kept);
+    ctx.strokeStyle = copy.colour;
+    ctx.globalAlpha = 1;
+    ctx.lineWidth = DEVELOP_WIDTH;
+    ctx.stroke(kept);
   }
   ctx.globalAlpha = 1;
 }
 
 /** The Developed Primary — exact lines and arcs where they were developed — in the Primary style. */
-function drawDevelopedPrimary(ctx: CanvasRenderingContext2D, doc: Doc, view: ViewTransform): void {
+function drawDevelopedPrimary(ctx: CanvasRenderingContext2D, doc: Doc, view: ViewTransform, width = PRIMARY_WIDTH): void {
   const segs = developedSegments(doc);
   if (!segs.length) return;
   const path = new Path2D();
@@ -400,10 +429,10 @@ function drawDevelopedPrimary(ctx: CanvasRenderingContext2D, doc: Doc, view: Vie
   ctx.setLineDash([]);
   // Cased: a paper casing under an ink core — apart from every copy colour, the ink Original's too.
   ctx.strokeStyle = color.paper;
-  ctx.lineWidth = PRIMARY_WIDTH + PRIMARY_CASING * 2;
+  ctx.lineWidth = width + PRIMARY_CASING * 2;
   ctx.stroke(path);
   ctx.strokeStyle = color.ink;
-  ctx.lineWidth = PRIMARY_WIDTH;
+  ctx.lineWidth = width;
   ctx.stroke(path);
   ctx.restore();
 }
@@ -472,8 +501,8 @@ function drawFormFeedback(ctx: CanvasRenderingContext2D, controller: AppControll
     const centreWorld = screenToWorld(view, l.centreScreen);
     const zoom = view.zoom * l.mag;
     const mv: ViewTransform = { ...view, zoom, pan: { x: (l.x - view.w / 2) / zoom - centreWorld.x, y: (l.y - view.h / 2) / zoom - centreWorld.y } };
-    drawFairOnly(ctx, doc, mv, sc, copies, controller.formLayer);
-    drawDevelopedPrimary(ctx, doc, mv);
+    drawDevelop(ctx, doc, mv, sc, copies, { construction: controller.formConstruction, extension: controller.formExtension });
+    drawDevelopedPrimary(ctx, doc, mv, DEVELOP_WIDTH);
     press.picks.forEach((p, i) => {
       drawCandidate(ctx, mv, p.prim, p.action === 'add', i === press.active);
       const truePos = worldToScreen(mv, p.marker);

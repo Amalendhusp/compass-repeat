@@ -339,12 +339,11 @@ export class AppController {
   /** Repeat Colouring (geometry/repeatColour.ts): while on, a tap in Repeat colours a region —
    * of every copy ('motif'), or of the second group of copies ('pattern'). Session state. */
   repeatColourMode: 'motif' | 'pattern' | null = null;
-  /** Release R2 — what Intersect Fair offers to develop the Primary from: Fair only (default), or also
-   * Construction, or also Extensions. Session state. */
-  formLayer: import('../geometry/formSegments.ts').FormLayer = 'fair';
-  /** Fair in Intersect — Whole motif: a tap on a copy includes or excludes its entire Fair motif in the
-   * design (what Repeat repeats from Intersect), instead of taking one segment. Never history. */
-  formWhole = false;
+  /** Develop (Intersect) — what it offers beside every copy's Fair: Construction pieces and Extension
+   * pieces, each on its own (shown as guides and tappable while on; what is already developed stays
+   * whatever is shown). Session state, never history. */
+  formConstruction = false;
+  formExtension = false;
   /** Interlaced (Sprint S3): while on, a tap in Repeat reverses the over/under of the crossing under it.
    * Session state. */
   weaveEdit = false;

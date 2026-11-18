@@ -38,6 +38,7 @@ import { colouringInUse, patternGroup, regionColour, regionKey } from '../geomet
 import { drawnLayers, weaves, type DrawnLayer } from '../geometry/repeatStroke.ts';
 import { latticeShape } from '../geometry/latticeSnap.ts';
 import { compositionFeatures } from '../geometry/repeatComposition.ts';
+import { exclusionMap, remainingRanges, type Excluded } from '../geometry/developExclusions.ts';
 import { copyFeatures } from '../geometry/closeGap.ts';
 import { placePrim, type Feature } from '../geometry/fairGeometry.ts';
 import { copyShift, type LocalGap } from '../interaction/closeGapMode.ts';
@@ -482,7 +483,7 @@ function paintFor(colour: RepeatColouring | undefined, instanceKey: string | nul
  * 100% zoom), so lines scale with the pattern exactly as its geometry does — on screen, while a
  * pinch stretches the cached bitmap, in exports and in Timelapse alike, and the layers of a Double
  * or Triple keep their proportions at every zoom. (Guides, handles and rings stay screen-sized.) */
-function drawCopy(ctx: CanvasRenderingContext2D, doc: Doc, view: ViewTransform, pose: InstancePose, flat: FlatMotif, display: RepeatDisplay, showFills: boolean, showStrokes: boolean, skip?: ReadonlySet<number> | null, paint?: RegionPaint | null, layer?: DrawnLayer): void {
+function drawCopy(ctx: CanvasRenderingContext2D, doc: Doc, view: ViewTransform, pose: InstancePose, flat: FlatMotif, display: RepeatDisplay, showFills: boolean, showStrokes: boolean, skip?: ReadonlySet<number> | null, paint?: RegionPaint | null, layer?: DrawnLayer, cut?: Map<string, Excluded[]> | null): void {
   const pivot = doc.frame.origin;
   const filledMap = doc.fills.get(doc.activeColourway);
   if (showFills && flat.holesOf && (filledMap || paint)) {
@@ -512,9 +513,29 @@ function drawCopy(ctx: CanvasRenderingContext2D, doc: Doc, view: ViewTransform, 
     ctx.lineWidth = (widthOverride ?? state.stroke?.width ?? stroke.fairDefault) * view.zoom;
     ctx.lineCap = 'round';
     ctx.lineJoin = 'round';
+    const ex = cut?.get(entity.id);
+    if (ex?.length) {
+      // Develop took part of this Whole copy out of the design: only what is left is drawn.
+      for (const [f, t] of keptRanges(doc, entity, seg.fromParam, seg.toParam, ex)) {
+        pathTransformedPiece(ctx, view, pivot, pose, doc, entity, f, t);
+        ctx.stroke();
+      }
+      continue;
+    }
     pathTransformedPiece(ctx, view, pivot, pose, doc, entity, seg.fromParam, seg.toParam);
     ctx.stroke();
   }
+}
+
+/** A stroke's range [from → to] along its entity with Develop's exclusions taken out (a circle's range
+ * anticlockwise, possibly round past 0). */
+function keptRanges(doc: Doc, entity: Entity, from: number, to: number, ex: Excluded[]): [number, number][] {
+  if (resolveEntityGeom(doc, entity).kind === 'circle') {
+    let span = to - from;
+    if (span <= 0) span += Math.PI * 2;
+    return remainingRanges(from, from + span, ex, true);
+  }
+  return remainingRanges(Math.min(from, to), Math.max(from, to), ex, false);
 }
 
 // ---- Repeat from an Intersect arrangement: the unit ----
@@ -534,8 +555,9 @@ function unitSkips(doc: Doc, flat: FlatMotif, unit: RepeatUnit): (Set<number> | 
   const cell = (p: Vec2) => `${Math.round(p.x / q)},${Math.round(p.y / q)}`;
   const seen = new Set<string>();
   const skips: (Set<number> | null)[] = [];
-  for (const member of unit.members) {
+  unit.members.forEach((member, k) => {
     let skip: Set<number> | null = null;
+    const cut = exclusionMap(doc, unit.keys[k]!);
     flat.strokes.forEach(({ entity, seg, state }, n) => {
       const g = resolveEntityGeom(doc, entity);
       let ends: [Vec2, Vec2];
@@ -554,10 +576,10 @@ function unitSkips(doc: Doc, flat: FlatMotif, unit: RepeatUnit): (Set<number> | 
       const [e0, e1] = ends.map((p) => cell(transformPoint(pivot, member, p))).sort() as [string, string];
       const key = `${g.kind}|${e0}|${e1}|${cell(transformPoint(pivot, member, mid))}|${state.stroke?.colour ?? ''}|${state.stroke?.width ?? ''}`;
       if (seen.has(key)) (skip ??= new Set()).add(n);
-      else seen.add(key);
+      else if (!cut?.has(entity.id)) seen.add(key); // drawn only in part here: never stands in for a whole one
     });
     skips.push(skip);
-  }
+  });
   skipCache.set(doc, { key: unit.key, skips });
   return skips;
 }
@@ -567,7 +589,7 @@ function unitSkips(doc: Doc, flat: FlatMotif, unit: RepeatUnit): (Set<number> | 
 function drawUnit(ctx: CanvasRenderingContext2D, doc: Doc, view: ViewTransform, pose: InstancePose, unit: RepeatUnit, flat: FlatMotif, display: RepeatDisplay, showFills: boolean, showStrokes: boolean, group: 0 | 1, layer?: DrawnLayer): void {
   const skips = unitSkips(doc, flat, unit);
   const colour = doc.repeatSetup?.colour;
-  unit.members.forEach((member, k) => drawCopy(ctx, doc, view, composePose(pose, member), flat, display, showFills, showStrokes, skips[k], paintFor(colour, unit.keys[k]!, group), layer));
+  unit.members.forEach((member, k) => drawCopy(ctx, doc, view, composePose(pose, member), flat, display, showFills, showStrokes, skips[k], paintFor(colour, unit.keys[k]!, group), layer, exclusionMap(doc, unit.keys[k]!)));
   if (showFills) drawUnitRegionFills(ctx, doc, view, pose, display, colour, group);
   if (showStrokes && unit.developed.length) drawDeveloped(ctx, doc, view, pose, unit, display, layer);
 }
