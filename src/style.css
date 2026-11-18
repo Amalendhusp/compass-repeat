@@ -2875,7 +2875,7 @@ canvas.stage {
 .ix-spread-panel {
   position: absolute;
   top: 12px;
-  left: 6px;
+  right: 6px;
   display: flex;
   flex-direction: column;
   align-items: center;
@@ -2901,7 +2901,7 @@ canvas.stage {
 .ix-spread-track {
   position: relative;
   width: 36px;
-  height: 140px;
+  height: 184px;
   touch-action: none;
   cursor: ns-resize;
   outline: none;
@@ -2957,7 +2957,7 @@ canvas.stage {
 }
 .ix-spread-ref {
   position: absolute;
-  right: -10px;
+  left: -7px;
   width: 22px;
   height: 22px;
   padding: 0;
@@ -2966,7 +2966,7 @@ canvas.stage {
   background: transparent;
   color: var(--brass);
   font: 700 9px/22px var(--font-ui);
-  text-align: right;
+  text-align: left;
   cursor: pointer;
 }
 .ix-spread-set {
@@ -3012,8 +3012,30 @@ canvas.stage {
   cursor: pointer;
 }
 
-/* Develop's ribbon: the copy it works with, then Whole · Construction · Extension. */
-.context-bar .chip.develop-target:disabled {
-  opacity: 1;
-  cursor: default;
+
+/* Develop's ribbon: Whole | Fair | Construction | Extension share the width equally — never a scroll. */
+.context-bar.develop-bar {
+  gap: 6px;
+  padding: 0 8px;
+  overflow-x: hidden;
+}
+.context-bar.develop-bar .chip.develop-toggle {
+  flex: 1 1 0;
+  min-width: 0;
+  padding: 0 6px;
+}
+.context-bar .chip .lbl-short {
+  display: none;
+}
+@media (max-width: 480px) {
+  .context-bar.develop-bar .chip.develop-toggle {
+    font-size: 12.5px;
+    padding: 0 4px;
+  }
+  .context-bar.develop-bar .chip .lbl-long {
+    display: none;
+  }
+  .context-bar.develop-bar .chip .lbl-short {
+    display: inline;
+  }
 }

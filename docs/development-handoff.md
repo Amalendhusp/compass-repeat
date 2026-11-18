@@ -885,11 +885,41 @@ just above the floating controls (`placeSpreadPanel`; top-left on wider screens 
   hidden, layer-fair, layer-select, stage2-ui, stage3-ui, box, repeat-cases. Retired (kept in
   `refine-tests/retired/` with a note): copies-panel, intersect-extra, layer.
 
+## Intersect refinement, Stage B review: Fill, Spread, Develop toolbar (November 2026)
+
+- **Fill regression — root cause.** `drawUnit` (repeatRenderer.ts) drew, for each copy of the design, the Whole
+  members' fills AND lines, then the unit's region fills, then the developed lines. Region fills were painted
+  over the members' lines: a line of the design between two filled regions (a Whole copy's Fair — shown as part
+  of the design in Develop — and any developed segment lying along it, which `notDrawnBy` leaves to that member)
+  vanished; with one side filled, half of it. Reproduced through Construct → Intersect → Develop → Repeat: the
+  Original's Fair line between two filled regions went from ink (52,62,72) to the fill colour (215,183,99).
+  Developed segments, exclusions and region keys were never changed — only the paint order. **Fix:** within a
+  unit, every fill (members' own, then region fills) before every line (members', then developed); and, from
+  Intersect with fills in use, a fill pass for every lattice copy before a line pass (sprite keys `fill` / `all`),
+  so a neighbouring unit's fill never covers a line where units overlap. Construct-source Repeat is drawn exactly
+  as before (one pass).
+- **Spread.** The reference follows the copies: `withAddedCopy`, `withDuplicate` and `withoutCopy` make the
+  arrangement (unchanged, nothing moves) the 100 % reference at once (`asReference`). An artwork stored earlier
+  with an out-of-date reference is made current, as one step, the first time Spread is used (`stale()` in shell.ts
+  — never refuses). Set ref. kept. The column is on the canvas's right edge (`right: 6px`), its track 184 px; on a
+  narrow canvas low down, above the floating controls (Fit included); Ref on the track's left.
+- **Develop toolbar:** Whole | Fair | Construction | Extension (`.develop-bar`: equal shares, short labels "Constr." /
+  "Ext." under 480 px, never a scroll). Whole is a mode (`controller.formWhole`): a tap on a copy's Fair puts its
+  whole Fair in or out (`setWhole`; nearest copy, the selected one in a near-tie, no chooser). Fair, Construction
+  and Extension (`formFair`, `formConstruction`, `formExtension`) are independent sources for segment taps
+  (`FormOffer.fair` — Fair off still splits the other pieces where Fair meets them); choosing one leaves Whole.
+  Entering Develop always starts Fair on, Whole off, no guides (`setTool`); no switch ever changes the design.
+  The target-copy chip is gone; the "Develop · Intersect's own design" banner is never shown.
+- **Checks:** `stage-b2.mjs` 39/39 phone and desktop (toolbar order / defaults / fit / no banner / dock; Whole mode
+  taps with Undo; Fair off; not carried over; Fill: line between two filled regions and the developed arc still
+  ink, design unchanged by filling, a real Fill tap, Undo, Save → reload; Spread: start = reference, Add → reference
+  at once, works at once, Set ref., older stale reference, right edge, track ≥ 180 px, clear of Fit / Undo / dock;
+  Construct unchanged). `stage-a`, `stage-b`, `whole` updated.
+
 ## Exact next step
 
-Intersect refinement Stage B is committed locally; stop for the user's review before Stage C (proximity selection:
-nearest segment, the selected copy first in a near-tie, non-modal switching for coincident candidates). Do not
-merge, push or deploy.
+The Stage B review refinements are committed locally; stop for the user's review before Stage C (proximity
+selection). Do not merge, push or deploy.
 
 ## Commands
 

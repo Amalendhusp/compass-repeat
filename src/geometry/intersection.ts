@@ -14,7 +14,9 @@
 // and the group centre stays put — so nothing ever drifts. Setting the reference makes what is
 // shown now the 100% arrangement (nothing moves), with its own mean as the new centre — for exactly
 // the copies present then. Adding or removing a copy never silently redefines it: the arrangement
-// is kept exactly as shown, and Spread waits for a new Reference (referenceCurrent()).
+// is kept exactly as shown and — since November 2026 (Stage B review) — becomes the new 100 % reference at
+// once, for exactly the copies now present (nothing moves). An arrangement stored earlier with an out-of-date
+// reference is made current the first time Spread is used (shell.ts). Set ref. still sets it explicitly.
 
 import type { Doc, IntersectionLayout, Vec2 } from '../model/types.ts';
 import { defaultLatticeVectors, motifRadius, poseScale, scaleField, type InstancePose } from './lattice.ts';
@@ -141,7 +143,8 @@ export function placedAt(layout: IntersectionLayout, key: string, shown: Vec2, r
 /** The arrangement as shown now, made the reference: nothing moves; Spread reads 100% again, about
  * the mean of the centres, for exactly the copies present. */
 export function asReference(layout: IntersectionLayout): IntersectionLayout {
-  const pieces = layout.pieces.map((p) => ({ ...p, ...shownAt(layout, p, layout.spread) }));
+  // At 100 % the pieces already stand where they are shown: kept exactly (no rounding drift).
+  const pieces = layout.spread === 1 ? layout.pieces.map((p) => ({ ...p })) : layout.pieces.map((p) => ({ ...p, ...shownAt(layout, p, layout.spread) }));
   return { ...layout, pieces, centre: mean(pieces), spread: 1, referenceKeys: pieces.map((p) => p.key) };
 }
 
@@ -177,7 +180,7 @@ export function withAddedCopy(doc: Doc): NonNullable<Doc['intersection']> | null
   return {
     ...baseOf(doc),
     copies: { ...(doc.intersection?.copies ?? {}), [key]: { colour } },
-    layout: { ...layout, pieces: [...layout.pieces, { key, x: place.x, y: place.y, rotation: 0 }] },
+    layout: asReference({ ...layout, pieces: [...layout.pieces, { key, x: place.x, y: place.y, rotation: 0 }] }),
   };
 }
 
@@ -212,7 +215,7 @@ export function withDuplicate(doc: Doc, key: string): NonNullable<Doc['intersect
   return {
     ...baseOf(doc),
     copies: { ...(doc.intersection?.copies ?? {}), [nkey]: settings },
-    layout: { ...layout, pieces: [...layout.pieces, { key: nkey, x: x + off, y: y + off, ...pose }] },
+    layout: asReference({ ...layout, pieces: [...layout.pieces, { key: nkey, x: x + off, y: y + off, ...pose }] }),
   };
 }
 
@@ -254,7 +257,7 @@ export function withoutCopy(doc: Doc, key: string): NonNullable<Doc['intersectio
   const layout = baked(layoutOf(doc));
   if (!layout.pieces.some((p) => p.key === key)) return null;
   const { [key]: _gone, ...copies } = doc.intersection?.copies ?? {};
-  return { ...baseOf(doc), copies, layout: { ...layout, pieces: layout.pieces.filter((p) => p.key !== key) } };
+  return { ...baseOf(doc), copies, layout: asReference({ ...layout, pieces: layout.pieces.filter((p) => p.key !== key) }) };
 }
 
 export const SPREAD_MIN = 0.25;

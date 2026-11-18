@@ -185,5 +185,5 @@ export function setWhole(controller: AppController, key: string, on: boolean): v
     ix.copies[key] = own;
     d.intersection = ix;
   });
-  showToast(on ? `Whole · ${label}’s Fair is in the design — tap a segment to take it out` : `Whole off · ${label}’s Fair is out of the design`, 2200);
+  showToast(on ? `${label}’s whole Fair is in the design` : `${label}’s whole Fair is out of the design`, 2200);
 }

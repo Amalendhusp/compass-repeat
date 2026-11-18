@@ -36,8 +36,7 @@ import { onTap } from './tap.ts';
 import { color, fairPalette, stroke } from '../render/tokens.ts';
 import { alternationOf, suggestedFamily, type LatticeFamily } from '../geometry/lattice.ts';
 import { rotationFractionLabel } from '../render/repeatRenderer.ts';
-import { inComposition, shownCopies, withoutCopy, withArrangement, asReference, intersectionCopies, layoutOf, MAX_CONSTRUCTIONS, placedAt, PRIMARY, referenceCurrent, sliderToSpread, SPREAD_MAX, SPREAD_MIN, SPREAD_SLIDER_MAX, spreadToSlider, withAddedCopy, withLayout, withLock, withSpreadAround, isLocked, withHidden, copyScale, withIntersectReset, intersectResettable } from '../geometry/intersection.ts';
-import { setWhole } from '../interaction/formPick.ts';
+import { inComposition, withoutCopy, withArrangement, asReference, intersectionCopies, layoutOf, MAX_CONSTRUCTIONS, placedAt, PRIMARY, referenceCurrent, sliderToSpread, SPREAD_MAX, SPREAD_MIN, SPREAD_SLIDER_MAX, spreadToSlider, withAddedCopy, withLayout, withLock, withSpreadAround, isLocked, withHidden, copyScale, withIntersectReset, intersectResettable } from '../geometry/intersection.ts';
 import { canMoveAgainst, convertPick, isPointPick, planMatchEdge, planSnap, resolvePick, type PickKind } from '../geometry/intersectionSnap.ts';
 import { PICK_REACH_PX } from '../interaction/tools/intersectionTool.ts';
 import { repeatSource, type RepeatSource } from '../geometry/repeatUnit.ts';
@@ -3045,9 +3044,9 @@ export function buildShell(
     if (on) refreshIntersectionRows();
     controller.notify();
   }
-  /** On a phone (a narrow canvas) the column sits low on the left, just above the controls that float over
-   * the canvas — a fitted arrangement is centred, so that corner is usually clear; elsewhere (or when
-   * there is no room below) at the top left. Placement only: the layout is unchanged. */
+  /** The column sits on the canvas's right edge: on a phone (a narrow canvas) low down, just above the
+   * controls that float over the canvas (the Fit button among them); elsewhere — or when there is no room
+   * below — at the top right. Placement only: the layout is unchanged. */
   function placeSpreadPanel(): void {
     const wrap = canvasWrap.getBoundingClientRect();
     if (wrap.width >= 600) {
@@ -3055,6 +3054,7 @@ export function buildShell(
       spreadPanel.style.bottom = '';
       return;
     }
+    // (On the right edge: above the Fit button and whatever else floats over the bottom of the canvas.)
     let chrome = overlay.getBoundingClientRect().top;
     for (const el of overlay.querySelectorAll<HTMLElement>('button, [role="group"], .snap-row, .space-label')) {
       if (!el.offsetParent) continue;
@@ -3099,10 +3099,15 @@ export function buildShell(
   // Every press on the track — Ref included (a touch near it is often given to it) — may drag; a press
   // on Ref that never moves goes back to the reference (100 %).
   let spreadDrag: { id: number; y: number; onRef: boolean; moved: boolean } | null = null;
+  /** An arrangement stored with an out-of-date reference (before the reference followed the copies):
+   * this arrangement becomes the 100 % reference — nothing moves (one Undo step). Never refuses. */
   const stale = () => {
     if (referenceCurrent(layoutOf(controller.doc))) return false;
-    showToast('Copies changed — set a new reference to use Spread', 2400, 'warning');
-    return true;
+    controller.commit((d) => {
+      d.intersection = withLayout(d, asReference(layoutOf(d)));
+    });
+    showToast('Spread reference set · this arrangement is 100 %');
+    return false;
   };
   spreadTrack.addEventListener('pointerdown', (e) => {
     e.preventDefault();
@@ -3145,7 +3150,8 @@ export function buildShell(
   spreadTrack.addEventListener('pointerup', (e) => endSpreadDrag(e, true));
   spreadTrack.addEventListener('pointercancel', (e) => endSpreadDrag(e, false));
   spreadTrack.addEventListener('keydown', (e) => {
-    if (!referenceCurrent(layoutOf(controller.doc))) return;
+    if (!['ArrowUp', 'ArrowRight', 'ArrowDown', 'ArrowLeft', 'PageUp', 'PageDown', 'Home', 'End'].includes(e.key)) return;
+    stale();
     const step = { ArrowUp: 10, ArrowRight: 10, ArrowDown: -10, ArrowLeft: -10, PageUp: 50, PageDown: -50 }[e.key];
     const now = spreadToSlider(layoutOf(controller.doc).spread);
     const pos = step !== undefined ? now + step : e.key === 'Home' ? 0 : e.key === 'End' ? SPREAD_SLIDER_MAX : null;
@@ -3442,14 +3448,15 @@ export function buildShell(
 
   function refreshIntersectionRows(): void {
     const layout = layoutOf(controller.doc);
+    // An out-of-date reference (an older artwork) reads as 100 %: using Spread makes this arrangement the
+    // reference first (stale()).
     const current = referenceCurrent(layout);
-    spreadPanel.classList.toggle('stale', !current);
-    spreadTrack.setAttribute('aria-disabled', String(!current));
-    referenceBtn.classList.toggle('active', !current);
-    referenceBtn.title = current ? 'Make this arrangement the Spread reference (100 %)' : 'Copies have changed — set a new reference to use Spread';
-    spreadNote.textContent = current ? '' : 'Copies changed';
-    if (!current) showSpread(1, false);
-    else if (controller.intersectionSpreadDraft === null) showSpread(layout.spread, true);
+    spreadPanel.classList.remove('stale');
+    spreadTrack.setAttribute('aria-disabled', 'false');
+    referenceBtn.classList.remove('active');
+    referenceBtn.title = 'Make this arrangement the Spread reference (100 %)';
+    spreadNote.textContent = '';
+    if (controller.intersectionSpreadDraft === null) showSpread(current ? layout.spread : 1, true);
   }
 
   function refreshSpaceRow(): void {
@@ -3530,7 +3537,8 @@ export function buildShell(
   emptyCard.append(emptyTitle, emptyText, emptyActions);
   canvasWrap.appendChild(emptyCard);
   function refreshOwnerTag(building: boolean): void {
-    ownerTag.style.display = building ? '' : 'none';
+    // Develop needs no banner: the dock and its ribbon say what is in hand (Intersect has no other tool).
+    ownerTag.style.display = 'none';
     if (!building) return;
     const primary = controller.tool === 'fair';
     ownerTag.dataset.owner = primary ? 'primary' : 'construct';
@@ -4007,56 +4015,41 @@ export function buildShell(
     } else if (tool === 'divide') {
       renderDivideRibbon();
     } else if (tool === 'fair' && doc.view.workspace === 'intersection') {
-      // Develop: the copy it works with (tap for the next shown one), then Whole · Construction ·
-      // Extension, always together. Whole puts that copy's entire Fair into the design, or takes it out;
-      // its segments can then be taken out one by one on the canvas. Construction and Extension each show
-      // their pieces as guides and offer them to tap — neither changes what is already in the design.
-      const shown = shownCopies(doc);
-      let target = shown.find((c) => c.key === controller.intersectionSelected) ?? null;
-      if (!target && shown.length) {
-        target = shown[0]!;
-        controller.intersectionSelected = target.key; // selection only — nothing in the design changes
-      }
-      const targetChip = chip(target ? target.label : 'No copy shown', () => {
-        const list = shownCopies(controller.doc);
-        if (list.length < 2) return;
-        const k = list.findIndex((c) => c.key === controller.intersectionSelected);
-        controller.intersectionSelected = list[(k + 1) % list.length]!.key;
-        controller.formPress = null;
-        controller.lineChoice = null;
-        controller.notify();
-      }, target?.colour ?? null);
-      targetChip.classList.add('develop-target');
-      targetChip.setAttribute('aria-label', target ? `Develop with ${target.label} — tap for the next copy` : 'No copy shown');
-      targetChip.disabled = shown.length < 2;
-      const toggle = (label: string, on: boolean, aria: string, run: () => void) => {
-        const b = chip(label, run);
+      // Develop: Whole | Fair | Construction | Extension, always together and always fitting the width.
+      // Whole is a mode — a tap on a copy puts its whole Fair into the design or takes it out. Fair,
+      // Construction and Extension each say what a tap on a single segment can take; choosing one leaves
+      // Whole. Develop starts on Fair alone (controller.setTool). None of them changes the design.
+      contextBar.classList.add('develop-bar');
+      const toggle = (long: string, short: string, on: boolean, aria: string, run: () => void) => {
+        const b = chip('', run);
         b.classList.add('toggle', 'develop-toggle');
+        b.innerHTML = `<span class="lbl-long">${long}</span><span class="lbl-short" aria-hidden="true">${short}</span>`;
         b.classList.toggle('on', on);
         b.setAttribute('aria-pressed', String(on));
         b.setAttribute('aria-label', aria);
+        b.title = aria;
         return b;
       };
-      const whole = target ? inComposition(doc, target.key) : false;
-      const wholeBtn = toggle('Whole', whole, target ? `Whole: ${target.label}’s Fair ${whole ? 'is in the design' : 'is not in the design'}` : 'Whole', () => {
-        if (!target) return;
-        controller.formPress = null;
-        controller.lineChoice = null;
-        setWhole(controller, target.key, !inComposition(controller.doc, target.key));
-      });
-      wholeBtn.disabled = !target;
-      toggle('Construction', controller.formConstruction, 'Construction: show and offer construction pieces', () => {
-        controller.formConstruction = !controller.formConstruction;
+      const settle = () => {
         controller.formPress = null;
         controller.lineChoice = null;
         controller.notify();
+      };
+      const segments = !controller.formWhole;
+      toggle('Whole', 'Whole', controller.formWhole, 'Whole: tap a copy to put all its Fair in the design, or take it out', () => {
+        controller.formWhole = !controller.formWhole;
+        settle();
       });
-      toggle('Extension', controller.formExtension, 'Extension: show and offer extension pieces', () => {
-        controller.formExtension = !controller.formExtension;
-        controller.formPress = null;
-        controller.lineChoice = null;
-        controller.notify();
-      });
+      const source = (key: 'formFair' | 'formConstruction' | 'formExtension') => () => {
+        if (controller.formWhole) {
+          controller.formWhole = false;
+          if (!controller[key]) controller[key] = true; // leaving Whole for this source turns it on
+        } else controller[key] = !controller[key];
+        settle();
+      };
+      toggle('Fair', 'Fair', segments && controller.formFair, 'Fair: tap a Fair segment to add it to the design or take it out', source('formFair'));
+      toggle('Construction', 'Constr.', segments && controller.formConstruction, 'Construction: show and offer construction segments', source('formConstruction'));
+      toggle('Extension', 'Ext.', segments && controller.formExtension, 'Extension: show and offer extension segments', source('formExtension'));
     }
     // UI-2: Fair's colour and width and Fill's colour and opacity are set in the contextual Appearance
     // panel (the swatch at the top right), not on the ribbon.
@@ -4066,6 +4059,7 @@ export function buildShell(
    * otherwise it hides — but its slot keeps its height, so Undo/Redo and the dock never move. */
   function renderRibbon(): void {
     contextBar.innerHTML = '';
+    contextBar.classList.remove('develop-bar');
     contextBar.classList.toggle('circle-bar', controller.tool === 'circle' && controller.doc.view.workspace !== 'repeat');
     if (controller.tool === 'select') renderSelectRibbon();
     else renderToolRibbon(controller.tool);

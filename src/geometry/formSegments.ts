@@ -35,6 +35,8 @@ export type FormLayer = 'fair' | 'construction' | 'extension';
 /** Develop (Stage B): Fair is always offered; Construction and Extension each on their own. A FormLayer
  * reads as before ('construction' = Construction; 'extension' = Construction and Extension). */
 export interface FormOffer {
+  /** Fair segments (absent = offered, as always). */
+  fair?: boolean;
   construction: boolean;
   extension: boolean;
 }
@@ -50,7 +52,7 @@ const cache = new WeakMap<Doc, Map<string, FormSegment[]>>();
 /** Every selectable segment of the arrangement as committed (one list per artwork state and offer). */
 export function formSegments(doc: Doc, layer: FormLayer | FormOffer = 'fair'): FormSegment[] {
   const offer = offerOf(layer);
-  const key = `${offer.construction ? 'c' : ''}${offer.extension ? 'e' : ''}`;
+  const key = `${offer.fair === false ? 'nf' : ''}${offer.construction ? 'c' : ''}${offer.extension ? 'e' : ''}`;
   let byLayer = cache.get(doc);
   if (!byLayer) cache.set(doc, (byLayer = new Map()));
   let segs = byLayer.get(key);
@@ -106,7 +108,9 @@ function buildSegments(doc: Doc, offer: FormOffer): FormSegment[] {
     }
     for (const prim of splitAt(f.prim, cuts, eps)) pieces.push({ prim, origin: f.origin });
   };
-  for (const f of runs) cut(f, runs);
+  // Fair off (Develop): the other pieces are still split where Fair meets them (so a piece is the same
+  // piece either way) — only the Fair pieces themselves are not offered.
+  if (offer.fair !== false) for (const f of runs) cut(f, runs);
   for (const f of extra) cut(f, all);
   return merged(pieces, eps);
 }

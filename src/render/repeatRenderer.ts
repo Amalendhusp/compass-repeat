@@ -589,9 +589,18 @@ function unitSkips(doc: Doc, flat: FlatMotif, unit: RepeatUnit): (Set<number> | 
 function drawUnit(ctx: CanvasRenderingContext2D, doc: Doc, view: ViewTransform, pose: InstancePose, unit: RepeatUnit, flat: FlatMotif, display: RepeatDisplay, showFills: boolean, showStrokes: boolean, group: 0 | 1, layer?: DrawnLayer): void {
   const skips = unitSkips(doc, flat, unit);
   const colour = doc.repeatSetup?.colour;
-  unit.members.forEach((member, k) => drawCopy(ctx, doc, view, composePose(pose, member), flat, display, showFills, showStrokes, skips[k], paintFor(colour, unit.keys[k]!, group), layer, exclusionMap(doc, unit.keys[k]!)));
-  if (showFills) drawUnitRegionFills(ctx, doc, view, pose, display, colour, group);
-  if (showStrokes && unit.developed.length) drawDeveloped(ctx, doc, view, pose, unit, display, layer);
+  // Every fill under every line: the members' own fills, then the unit's region fills — and only then
+  // the members' lines and the developed lines. (Painting a region fill after a member's lines hid any
+  // line of the design lying between two filled regions — a Whole copy's Fair, and a developed segment
+  // that copy draws for it.)
+  if (showFills) {
+    unit.members.forEach((member, k) => drawCopy(ctx, doc, view, composePose(pose, member), flat, display, true, false, skips[k], paintFor(colour, unit.keys[k]!, group), layer));
+    drawUnitRegionFills(ctx, doc, view, pose, display, colour, group);
+  }
+  if (showStrokes) {
+    unit.members.forEach((member, k) => drawCopy(ctx, doc, view, composePose(pose, member), flat, display, false, true, skips[k], null, layer, exclusionMap(doc, unit.keys[k]!)));
+    if (unit.developed.length) drawDeveloped(ctx, doc, view, pose, unit, display, layer);
+  }
 }
 
 /** Final sprint, Stage 1: the Intersect unit's own regions (spaces.ts `unitRegions` — bounded by any
@@ -927,9 +936,15 @@ export function renderRepeat(ctx: CanvasRenderingContext2D, controller: AppContr
   // The outline style: one pass for a single style (or as designed), or one per layer.
   const style = drawnLayers(doc, exp ? null : controller.repeatStrokeDraft);
   const layered = style.length > 1;
+  // Repeat from Intersect with fills in use: every copy's fills go down before any copy's lines (one pass
+  // each), so a neighbouring unit's fill never covers a line where units overlap (developed designs often
+  // reach past the lattice spacing). Without fills — and from Construct, exactly as published — one pass.
+  const fillsInUse = !!unit && showFills && showStrokes && (colouringInUse(colour) || (doc.fills.get(doc.activeColourway)?.size ?? 0) > 0);
   const passes: StampPass[] = layered
     ? [{ key: 'fill', fills: showFills, strokes: false, layer: style[0]! }, ...style.map((layer, k) => ({ key: `L${k}`, fills: false, strokes: showStrokes, layer }))]
-    : [{ key: 'all', fills: showFills, strokes: showStrokes, layer: style[0]! }];
+    : fillsInUse
+      ? [{ key: 'fill', fills: true, strokes: false, layer: style[0]! }, { key: 'all', fills: false, strokes: true, layer: style[0]! }]
+      : [{ key: 'all', fills: showFills, strokes: showStrokes, layer: style[0]! }];
   const used = new Set<string>();
   const bitmapFor = (group: 0 | 1, pass: StampPass): Sprite | null => {
     if (exp) return null;

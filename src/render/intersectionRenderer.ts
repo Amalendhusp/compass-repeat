@@ -141,11 +141,13 @@ export function renderIntersection(ctx: CanvasRenderingContext2D, controller: Ap
   // translucent and the Developed Primary opaque.
   const developing = controller.tool === 'fair';
   drawArtworkLayer(ctx, layers, (ctx) => {
-    if (developing) drawDevelop(ctx, doc, view, sc, copies, { construction: controller.formConstruction, extension: controller.formExtension });
+    // (Guides only while their switches are on — never in Whole mode, which takes whole copies.)
+    const guides = { construction: !controller.formWhole && controller.formConstruction, extension: !controller.formWhole && controller.formExtension };
+    if (developing) drawDevelop(ctx, doc, view, sc, copies, guides);
     else drawCopies(ctx, doc, view, sc, copies);
     // Intersect's own construction (older artworks) — over the copies, under the developed design; in
     // Develop only while Construction is offered (it is a guide there).
-    if (hasLayerGeometry(doc) && (!developing || controller.formConstruction || controller.formExtension)) drawConstructionOnly(ctx, layerController(controller), view);
+    if (hasLayerGeometry(doc) && (!developing || guides.construction || guides.extension)) drawConstructionOnly(ctx, layerController(controller), view);
     drawDevelopedPrimary(ctx, doc, view, developing ? DEVELOP_WIDTH : PRIMARY_WIDTH);
   });
   // What a finger on Fair would add or remove, the loupe it is choosing in, and "Which line?".
@@ -501,7 +503,7 @@ function drawFormFeedback(ctx: CanvasRenderingContext2D, controller: AppControll
     const centreWorld = screenToWorld(view, l.centreScreen);
     const zoom = view.zoom * l.mag;
     const mv: ViewTransform = { ...view, zoom, pan: { x: (l.x - view.w / 2) / zoom - centreWorld.x, y: (l.y - view.h / 2) / zoom - centreWorld.y } };
-    drawDevelop(ctx, doc, mv, sc, copies, { construction: controller.formConstruction, extension: controller.formExtension });
+    drawDevelop(ctx, doc, mv, sc, copies, { construction: !controller.formWhole && controller.formConstruction, extension: !controller.formWhole && controller.formExtension });
     drawDevelopedPrimary(ctx, doc, mv, DEVELOP_WIDTH);
     press.picks.forEach((p, i) => {
       drawCandidate(ctx, mv, p.prim, p.action === 'add', i === press.active);

@@ -344,6 +344,11 @@ export class AppController {
    * whatever is shown). Session state, never history. */
   formConstruction = false;
   formExtension = false;
+  /** Develop's Fair switch: every copy's Fair segments can be tapped (on whenever Develop starts). */
+  formFair = true;
+  /** Develop's Whole mode: a tap on a copy includes or excludes its whole Fair motif (off whenever Develop
+   * starts — never carried over from an earlier visit). */
+  formWhole = false;
   /** Interlaced (Sprint S3): while on, a tap in Repeat reverses the over/under of the crossing under it.
    * Session state. */
   weaveEdit = false;
@@ -696,6 +701,13 @@ export class AppController {
         : null;
     this.lineChoice = null;
     this.formPress = null;
+    // Develop always starts the same way: Fair, Whole off, no guides (nothing in the design changes).
+    if (next === 'fair' && was !== 'fair') {
+      this.formWhole = false;
+      this.formFair = true;
+      this.formConstruction = false;
+      this.formExtension = false;
+    }
     this.intersectionBox = null;
     this.incircle = null;
     this.copyRadius = null;
